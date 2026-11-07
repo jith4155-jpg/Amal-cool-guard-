@@ -4,11 +4,16 @@ import { db } from '../firebase';
 import { collection, getDocs, doc, setDoc, query, where, getDoc } from 'firebase/firestore';
 
 export interface PromoterProfile {
-  id: string; // unique referral code e.g. AMALYOU, LIBIN100
+  id: string; // Auto-generated code e.g. L01N (First Letter + Counter + Last Letter)
   name: string;
   phone: string;
   channelName?: string; // YouTube / Instagram channel
-  upiId: string; // for receiving commission payouts
+  paymentType: 'upi' | 'bank'; // 'upi' or 'bank'
+  upiId?: string; // for receiving commission payouts
+  bankName?: string;
+  accountNumber?: string;
+  ifscCode?: string;
+  accountHolderName?: string;
   password?: string;
   createdAt: string;
   commissionPerSale: number; // default ₹100
@@ -33,8 +38,12 @@ export default function PromoterPortal() {
   const [phone, setPhone] = useState('');
   const [loginPhone, setLoginPhone] = useState('');
   const [channelName, setChannelName] = useState('');
+  const [paymentType, setPaymentType] = useState<'upi' | 'bank'>('upi');
   const [upiId, setUpiId] = useState('');
-  const [desiredCode, setDesiredCode] = useState('');
+  const [bankName, setBankName] = useState('');
+  const [accountNumber, setAccountNumber] = useState('');
+  const [ifscCode, setIfscCode] = useState('');
+  const [accountHolderName, setAccountHolderName] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [copiedLink, setCopiedLink] = useState(false);
@@ -91,42 +100,66 @@ export default function PromoterPortal() {
     e.preventDefault();
     setErrorMsg('');
 
-    if (!name.trim() || !phone.trim() || !upiId.trim() || !desiredCode.trim()) {
-      setErrorMsg('Please fill in all required fields (പേര്, ഫോൺ, UPI ID, കോഡ് നിർബന്ധമാണ്).');
+    if (!name.trim() || !phone.trim()) {
+      setErrorMsg('Please enter your Name and WhatsApp Mobile Number.');
       return;
     }
 
-    const cleanCode = desiredCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (cleanCode.length < 3) {
-      setErrorMsg('Referral code must be at least 3 alphanumeric characters (e.g. COOL100, YOUTUBE).');
+    if (paymentType === 'upi' && !upiId.trim()) {
+      setErrorMsg('Please enter your UPI ID (e.g. name@okaxis) to receive payouts.');
       return;
     }
 
-    // Check if code already taken in promoters registry
+    if (paymentType === 'bank' && (!accountNumber.trim() || !ifscCode.trim())) {
+      setErrorMsg('Please enter Bank Account Number and IFSC code.');
+      return;
+    }
+
+    // Auto-generate promoter code from Name: First Letter + Counter (01, 02, 03...) + Last Letter
+    // Example: "Libin" -> L + 01 + N = "L01N"
+    const trimmedName = name.trim().toUpperCase().replace(/[^A-Z]/g, '');
+    const firstLetter = trimmedName.charAt(0) || 'P';
+    const lastLetter = trimmedName.length > 1 ? trimmedName.charAt(trimmedName.length - 1) : 'M';
+
     const allPromoters = JSON.parse(localStorage.getItem('amal_promoters_list') || '{}');
-    if (allPromoters[cleanCode]) {
-      setErrorMsg(`Code "${cleanCode}" is already taken! Please choose another unique referral code.`);
-      return;
+    let counterVal = Number(localStorage.getItem('amal_promoter_counter') || '1');
+    let generatedCode = '';
+
+    while (true) {
+      const paddedNum = String(counterVal).padStart(2, '0'); // '01', '02', '03'...
+      generatedCode = `${firstLetter}${paddedNum}${lastLetter}`;
+      if (!allPromoters[generatedCode]) {
+        break;
+      }
+      counterVal++;
     }
+
+    // Save incremented counter
+    localStorage.setItem('amal_promoter_counter', String(counterVal + 1));
 
     const newProfile: PromoterProfile = {
-      id: cleanCode,
+      id: generatedCode,
       name: name.trim(),
       phone: phone.trim(),
       channelName: channelName.trim() || 'YouTuber / Influencer',
-      upiId: upiId.trim(),
+      paymentType,
+      upiId: paymentType === 'upi' ? upiId.trim() : undefined,
+      bankName: paymentType === 'bank' ? bankName.trim() : undefined,
+      accountNumber: paymentType === 'bank' ? accountNumber.trim() : undefined,
+      ifscCode: paymentType === 'bank' ? ifscCode.trim().toUpperCase() : undefined,
+      accountHolderName: paymentType === 'bank' ? (accountHolderName.trim() || name.trim()) : undefined,
       password: password.trim() || '123456',
       createdAt: new Date().toISOString(),
       commissionPerSale: 100, // ₹100 per coat
       paidAmount: 0
     };
 
-    allPromoters[cleanCode] = newProfile;
+    allPromoters[generatedCode] = newProfile;
     localStorage.setItem('amal_promoters_list', JSON.stringify(allPromoters));
     localStorage.setItem('amal_promoter_session', JSON.stringify(newProfile));
 
     try {
-      await setDoc(doc(db, 'promoters', cleanCode), newProfile);
+      await setDoc(doc(db, 'promoters', generatedCode), newProfile);
     } catch (err) {
       console.warn('Promoter firestore sync err:', err);
     }
@@ -137,7 +170,7 @@ export default function PromoterPortal() {
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
-    const inputVal = (loginPhone || desiredCode).trim().toUpperCase();
+    const inputVal = loginPhone.trim().toUpperCase();
 
     if (!inputVal) {
       setErrorMsg('Please enter your Mobile Number or Referral Code.');
@@ -299,21 +332,142 @@ export default function PromoterPortal() {
                     />
                   </div>
 
+                  {/* Payment Receiving Method: UPI or Bank Account */}
+                  <div className="bg-slate-900/90 border border-slate-700/80 p-3.5 rounded-2xl space-y-3">
+                    <label className="block font-bold text-slate-200">
+                      Commission Payout Method (കമ്മീഷൻ സ്വീകരിക്കേണ്ട രീതി) *
+                    </label>
+
+                    {/* Radio Switcher: UPI vs Bank Account */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPaymentType('upi')}
+                        className={`py-2 px-3 rounded-xl font-bold flex items-center justify-center gap-1.5 transition ${
+                          paymentType === 'upi'
+                            ? 'bg-blue-600 text-white shadow-md'
+                            : 'bg-slate-800 text-slate-400 hover:text-white border border-slate-700'
+                        }`}
+                      >
+                        <span>📱</span> UPI ID
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPaymentType('bank')}
+                        className={`py-2 px-3 rounded-xl font-bold flex items-center justify-center gap-1.5 transition ${
+                          paymentType === 'bank'
+                            ? 'bg-blue-600 text-white shadow-md'
+                            : 'bg-slate-800 text-slate-400 hover:text-white border border-slate-700'
+                        }`}
+                      >
+                        <span>🏦</span> Bank Account
+                      </button>
+                    </div>
+
+                    {paymentType === 'upi' ? (
+                      <div className="pt-1">
+                        <label className="block font-bold text-slate-300 mb-1">
+                          UPI ID for Payouts (UPI ഐഡി) *
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. vincentlibin487-5@okicici / 9876543210@paytm"
+                          required={paymentType === 'upi'}
+                          value={upiId}
+                          onChange={e => setUpiId(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    ) : (
+                      <div className="space-y-2.5 pt-1">
+                        <div>
+                          <label className="block font-bold text-slate-300 mb-1">Account Holder Name *</label>
+                          <input
+                            type="text"
+                            placeholder="Name as per bank passbook"
+                            required={paymentType === 'bank'}
+                            value={accountHolderName}
+                            onChange={e => setAccountHolderName(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block font-bold text-slate-300 mb-1">Bank Name</label>
+                            <input
+                              type="text"
+                              placeholder="e.g. SBI, Federal, HDFC"
+                              value={bankName}
+                              onChange={e => setBankName(e.target.value)}
+                              className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-bold text-slate-300 mb-1">IFSC Code *</label>
+                            <input
+                              type="text"
+                              placeholder="e.g. SBIN0001234"
+                              required={paymentType === 'bank'}
+                              value={ifscCode}
+                              onChange={e => setIfscCode(e.target.value.toUpperCase())}
+                              className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white font-mono uppercase placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block font-bold text-slate-300 mb-1">Bank Account Number *</label>
+                          <input
+                            type="text"
+                            placeholder="Enter bank account number"
+                            required={paymentType === 'bank'}
+                            value={accountNumber}
+                            onChange={e => setAccountNumber(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Auto-generated Referral Code Notice */}
+                  <div className="bg-gradient-to-r from-blue-950/60 to-purple-950/60 border border-blue-800/60 p-3.5 rounded-2xl flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] text-blue-300 font-extrabold uppercase tracking-wider">
+                        Auto-Generated Unique Referral Code
+                      </p>
+                      <p className="text-xs text-slate-300 mt-0.5">
+                        {name.trim() ? (
+                          <>
+                            Generated from name:{' '}
+                            <span className="font-mono font-black text-amber-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                              {name.trim().charAt(0).toUpperCase()}01{name.trim().charAt(name.trim().length - 1).toUpperCase()}
+                            </span>
+                          </>
+                        ) : (
+                          'Your unique code (e.g. L01N) will be automatically created!'
+                        )}
+                      </p>
+                    </div>
+                    <span className="text-xs bg-emerald-500/20 text-emerald-300 font-bold px-2.5 py-1 rounded-full border border-emerald-500/30">
+                      ⚡ Auto Code
+                    </span>
+                  </div>
+
                   <div>
-                    <label className="block font-bold text-slate-300 mb-1">UPI ID for Commission Payouts (കമ്മീഷൻ ലഭിക്കേണ്ട UPI ID) *</label>
+                    <label className="block font-bold text-slate-300 mb-1">Set Password (പാസ്‌വേഡ്) *</label>
                     <input
-                      type="text"
-                      placeholder="e.g. yourname@okaxis / 9876543210@paytm"
+                      type="password"
+                      placeholder="Enter a secret password"
                       required
-                      value={upiId}
-                      onChange={e => setUpiId(e.target.value)}
+                      value={password}
+                      onChange={e => setPassword(e.target.value)}
                       className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
                 </>
               )}
 
-              {isLogin ? (
+              {isLogin && (
                 <div>
                   <label className="block font-bold text-slate-300 mb-1">
                     Registered Mobile Number or Referral Code *
@@ -328,37 +482,6 @@ export default function PromoterPortal() {
                   />
                   <p className="text-[10px] text-slate-400 mt-1">Enter the mobile number you used while creating promoter account.</p>
                 </div>
-              ) : (
-                <>
-                  <div>
-                    <label className="block font-bold text-slate-300 mb-1">
-                      Choose Your Unique Referral Code *
-                    </label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        placeholder="e.g. RAHUL100, MOTOVLOG"
-                        required
-                        value={desiredCode}
-                        onChange={e => setDesiredCode(e.target.value.toUpperCase())}
-                        className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-amber-400 font-mono font-black text-sm uppercase placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                      <span className="absolute right-3 top-3 text-[10px] text-slate-400">Unique Code</span>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block font-bold text-slate-300 mb-1">Password (പാസ്‌വേഡ്) *</label>
-                    <input
-                      type="password"
-                      placeholder="Enter a secret password"
-                      required
-                      value={password}
-                      onChange={e => setPassword(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                </>
               )}
 
               {errorMsg && (
@@ -387,7 +510,13 @@ export default function PromoterPortal() {
                   </span>
                   <h2 className="text-xl font-black text-white">{promoter.name}</h2>
                   <p className="text-xs text-slate-400">{promoter.channelName || 'Affiliate Partner'} • 📱 {promoter.phone}</p>
-                  <p className="text-xs text-emerald-400 font-semibold mt-1">UPI: {promoter.upiId}</p>
+                  {promoter.paymentType === 'bank' ? (
+                    <div className="text-xs text-emerald-400 font-semibold mt-1">
+                      <span>🏦 Bank: {promoter.bankName || 'A/C'} • {promoter.accountNumber} • IFSC: {promoter.ifscCode}</span>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-emerald-400 font-semibold mt-1">📱 UPI: {promoter.upiId || 'N/A'}</p>
+                  )}
                 </div>
                 <div className="text-right">
                   <span className="text-[10px] text-slate-400 block uppercase">Commission Rate</span>

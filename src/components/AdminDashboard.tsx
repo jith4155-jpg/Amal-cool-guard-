@@ -1324,7 +1324,16 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                               </span>
                             </div>
                             <p className="text-xs text-gray-500 mt-0.5">{prom.channelName || 'Affiliate'} • 📱 +91 {prom.phone}</p>
-                            <p className="text-xs text-emerald-700 font-bold mt-1">UPI for Payout: {prom.upiId}</p>
+                            {prom.paymentType === 'bank' ? (
+                              <div className="mt-1 bg-blue-50 p-2 rounded-xl border border-blue-200 text-xs">
+                                <p className="font-bold text-blue-900">🏦 Bank Transfer Details:</p>
+                                <p className="text-gray-700 font-medium">A/C: <span className="font-mono font-bold text-gray-900">{prom.accountNumber}</span></p>
+                                <p className="text-gray-700 font-medium">IFSC: <span className="font-mono font-bold text-gray-900">{prom.ifscCode}</span> ({prom.bankName || 'Bank'})</p>
+                                <p className="text-gray-600 text-[11px]">Holder: {prom.accountHolderName || prom.name}</p>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-emerald-700 font-bold mt-1">📱 UPI for Payout: <span className="font-mono">{prom.upiId || 'N/A'}</span></p>
+                            )}
                           </div>
                           <div className="text-right">
                             <span className="text-[10px] text-gray-400 font-bold block uppercase">Balance Due</span>
@@ -1363,13 +1372,14 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                             <button
                               type="button"
                               onClick={() => {
-                                if (window.confirm(`Mark payout of ₹${prom.balancePayable} via UPI (${prom.upiId}) as completed for ${prom.name}?`)) {
+                                const payDetail = prom.paymentType === 'bank' ? `Bank A/C ${prom.accountNumber}` : `UPI ${prom.upiId}`;
+                                if (window.confirm(`Mark payout of ₹${prom.balancePayable} via ${payDetail} as completed for ${prom.name}?`)) {
                                   handleMarkPayout(prom.id, prom.balancePayable);
                                 }
                               }}
                               className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs py-2.5 rounded-xl shadow transition"
                             >
-                              ✓ Pay ₹{prom.balancePayable} via UPI
+                              ✓ Pay ₹{prom.balancePayable} ({prom.paymentType === 'bank' ? 'Bank' : 'UPI'})
                             </button>
                           ) : (
                             <span className="flex-1 bg-gray-100 text-gray-500 font-extrabold text-xs py-2.5 rounded-xl text-center">
