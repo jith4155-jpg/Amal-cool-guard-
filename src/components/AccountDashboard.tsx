@@ -38,7 +38,8 @@ export default function AccountDashboard() {
     }
   };
 
-  // Read admin settings for block status & whatsapp number
+  // Read customer session & admin settings
+  const session = JSON.parse(localStorage.getItem('amal_customer_session') || 'null');
   const savedSettings = JSON.parse(localStorage.getItem('amal_payment_settings') || '{}');
   const whatsappNum = savedSettings.whatsappNumber || '6238113451';
 
@@ -53,9 +54,35 @@ export default function AccountDashboard() {
 
   return (
     <div className="min-h-screen bg-gray-100 pb-20 pt-6">
-      <div className="px-4 mb-4">
-        <h1 className="text-xl font-extrabold text-gray-900 mb-1">My Account</h1>
-        <p className="text-xs text-gray-500">Manage orders, wishlist, coupons and customer support.</p>
+      <div className="px-4 mb-4 flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-extrabold text-gray-900 mb-0.5">My Account</h1>
+          <p className="text-xs text-gray-500">
+            {session ? `Welcome, ${session.name} (${session.mobile})` : 'Manage orders, wishlist & customer support.'}
+          </p>
+        </div>
+
+        {/* Customer Sign In / Sign Up Header Button */}
+        {session ? (
+          <button
+            onClick={() => {
+              localStorage.removeItem('amal_customer_session');
+              window.location.reload();
+            }}
+            className="bg-red-50 text-red-600 border border-red-200 text-xs font-extrabold px-3.5 py-2 rounded-xl shadow-xs"
+          >
+            Logout 🚪
+          </button>
+        ) : (
+          <div className="flex gap-2">
+            <button
+              onClick={() => navigate('/login')}
+              className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold px-3.5 py-2 rounded-xl shadow transition"
+            >
+              Sign In / Sign Up 👤
+            </button>
+          </div>
+        )}
       </div>
 
       {activeShortcuts.length > 0 ? (
@@ -121,24 +148,52 @@ export default function AccountDashboard() {
             </div>
           )}
 
-          {!savedSettings.blockAccountHelp && (
-            <a 
-              href={`https://wa.me/91${whatsappNum}`} 
-              target="_blank" 
-              rel="noreferrer"
-              className="flex items-center justify-between p-3 bg-green-50 rounded-xl cursor-pointer border border-green-200 transition text-green-900"
-            >
-              <div className="flex items-center gap-3">
-                <span className="text-lg">💬</span>
-                <div>
-                  <p className="font-bold">WhatsApp Customer Support ({whatsappNum})</p>
-                  <p className="text-[11px] text-green-700">Chat directly with Amal Coolguard team</p>
-                </div>
+          {/* Promoter & Influencer Portal Entry */}
+          <Link 
+            to="/promoter" 
+            className="flex items-center justify-between p-3 bg-purple-50 rounded-xl cursor-pointer border border-purple-200 transition text-purple-950 hover:bg-purple-100"
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-xl">🤝</span>
+              <div>
+                <p className="font-extrabold text-purple-950 flex items-center gap-1.5">
+                  <span>Promoter / Affiliate Portal</span>
+                  <span className="bg-purple-600 text-white text-[9.5px] font-black px-2 py-0.5 rounded-full">
+                    Earn ₹100 / Sale
+                  </span>
+                </p>
+                <p className="text-[11px] text-purple-800">YouTubers & Influencers: Get unique link & track commission</p>
               </div>
-              <span className="text-green-700 font-bold">›</span>
-            </a>
-          )}
+            </div>
+            <span className="text-purple-700 font-bold">›</span>
+          </Link>
         </div>
+      </div>
+
+      {/* Saved Delivery Address Management Section */}
+      <div className="mx-4 mt-4 bg-white p-5 rounded-2xl shadow-sm border border-gray-100 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-base">📍</span>
+            <h3 className="font-bold text-sm text-gray-800 uppercase tracking-wider">Default Delivery Address</h3>
+          </div>
+          <button 
+            onClick={() => setActiveModal('Address')}
+            className="text-xs text-blue-600 font-extrabold hover:underline"
+          >
+            {localStorage.getItem('amal_saved_address') ? 'Edit ✏️' : '+ Add Address'}
+          </button>
+        </div>
+
+        {localStorage.getItem('amal_saved_address') ? (
+          <div className="bg-gray-50 p-3.5 rounded-xl text-xs space-y-1 border border-gray-100">
+            <p className="font-bold text-gray-900">{session?.name || 'Customer'}</p>
+            <p className="text-gray-700 font-medium">{localStorage.getItem('amal_saved_address')}</p>
+            <p className="text-gray-500 font-semibold">PIN: {localStorage.getItem('amal_saved_pincode') || 'N/A'}</p>
+          </div>
+        ) : (
+          <p className="text-xs text-gray-400 italic">No delivery address saved yet. Save an address for 1-click checkout.</p>
+        )}
       </div>
 
       {/* Info & Wishlist Modals */}
@@ -214,13 +269,85 @@ export default function AccountDashboard() {
               </>
             )}
 
+            {activeModal === 'Address' && (
+              <div className="text-left space-y-3">
+                <div className="flex justify-between items-center border-b pb-2">
+                  <h3 className="text-base font-extrabold text-gray-900 flex items-center gap-2">
+                    <span>📍</span> Manage Delivery Address
+                  </h3>
+                  <button onClick={() => setActiveModal(null)} className="text-gray-400 font-bold text-xl">✕</button>
+                </div>
+
+                <form 
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const target = e.target as any;
+                    const addressVal = target.address.value.trim();
+                    const pinVal = target.pincode.value.trim();
+                    localStorage.setItem('amal_saved_address', addressVal);
+                    localStorage.setItem('amal_saved_pincode', pinVal);
+
+                    // Update session
+                    const curSession = JSON.parse(localStorage.getItem('amal_customer_session') || 'null');
+                    if (curSession) {
+                      curSession.address = addressVal;
+                      curSession.pincode = pinVal;
+                      localStorage.setItem('amal_customer_session', JSON.stringify(curSession));
+                    }
+
+                    // Update registered users
+                    if (curSession?.mobile) {
+                      const regUsers = JSON.parse(localStorage.getItem('amal_registered_users') || '{}');
+                      if (regUsers[curSession.mobile]) {
+                        regUsers[curSession.mobile].address = addressVal;
+                        regUsers[curSession.mobile].pincode = pinVal;
+                        localStorage.setItem('amal_registered_users', JSON.stringify(regUsers));
+                      }
+                    }
+
+                    setActiveModal(null);
+                  }}
+                  className="space-y-3 text-xs"
+                >
+                  <div>
+                    <label className="block font-bold text-gray-700 mb-1">House / Shop / Delivery Address *</label>
+                    <textarea 
+                      name="address"
+                      defaultValue={localStorage.getItem('amal_saved_address') || ''}
+                      required
+                      placeholder="e.g. Vengakkal House, Near Town Hall, Kozhikode, Kerala"
+                      className="w-full p-2.5 border rounded-xl font-medium focus:ring-2 focus:ring-blue-500 outline-none"
+                      rows={3}
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-gray-700 mb-1">Pincode *</label>
+                    <input 
+                      type="text"
+                      name="pincode"
+                      defaultValue={localStorage.getItem('amal_saved_pincode') || ''}
+                      required
+                      placeholder="6-digit Pincode"
+                      className="w-full p-2.5 border rounded-xl font-medium focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-3 rounded-xl shadow transition"
+                  >
+                    Save Delivery Address (സേവ് ചെയ്യുക)
+                  </button>
+                </form>
+              </div>
+            )}
+
             {activeModal === 'Help Center' && (
               <>
                 <span className="text-4xl">🎧</span>
                 <h3 className="text-xl font-extrabold text-gray-900">Help Center</h3>
                 <p className="text-xs text-gray-600">Need help with your order? Contact us on WhatsApp or Call.</p>
                 <a 
-                  href="https://wa.me/916238113451" 
+                  href={`https://wa.me/91${whatsappNum}`} 
                   target="_blank" 
                   rel="noreferrer"
                   className="block w-full bg-green-600 text-white font-extrabold py-3 rounded-xl text-xs shadow"

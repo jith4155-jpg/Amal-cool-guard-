@@ -4,8 +4,19 @@ import { collection, getDocs, query, orderBy, doc, updateDoc } from 'firebase/fi
 import { Link } from 'react-router-dom';
 
 export default function OrdersView() {
-  const [orders, setOrders] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [orders, setOrders] = useState<any[]>(() => {
+    try {
+      const cached = localStorage.getItem('amal_cached_orders');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+      return JSON.parse(localStorage.getItem('amal_orders') || '[]');
+    } catch {
+      return [];
+    }
+  });
+  const [loading, setLoading] = useState(false);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [confirmCancelModal, setConfirmCancelModal] = useState<any | null>(null);
 
@@ -17,11 +28,15 @@ export default function OrdersView() {
     let combined: any[] = [];
     try {
       const q = query(collection(db, 'bookings'), orderBy('createdAt', 'desc'));
-      const snapshot = await getDocs(q);
+      const fetchPromise = getDocs(q);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Timeout')), 1200)
+      );
+      const snapshot = await Promise.race([fetchPromise, timeoutPromise]);
       const remote = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       combined = [...remote];
     } catch (err) {
-      console.warn('Firestore fetch orders fallback:', err);
+      // Fallback
     }
 
     // Merge local storage orders
@@ -33,7 +48,12 @@ export default function OrdersView() {
       }
     }
 
-    setOrders(combined);
+    if (combined.length > 0) {
+      setOrders(combined);
+      try {
+        localStorage.setItem('amal_cached_orders', JSON.stringify(combined));
+      } catch {}
+    }
     setLoading(false);
   };
 

@@ -16,23 +16,57 @@ export interface PaymentSettings {
 }
 
 export default function AdminDashboard() {
-  const [activeTab, setActiveTab] = useState<'orders' | 'products' | 'payments' | 'analytics'>('orders');
-  const [products, setProducts] = useState<Product[]>([]);
-  const [orders, setOrders] = useState<any[]>([]);
-  const [loadingOrders, setLoadingOrders] = useState(true);
-  const [loadingProducts, setLoadingProducts] = useState(true);
+  const [activeTab, setActiveTab] = useState<'orders' | 'customers' | 'products' | 'payments' | 'promoters' | 'analytics'>('orders');
 
-  // Payment settings state
-  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>({
-    enableCOD: true,
-    enableUPI: true,
-    enableCard: true,
-    merchantUpiId: 'amalcoolguard@upi',
-    whatsappNumber: '6238113451',
-    blockAccountOrders: false,
-    blockAccountWishlist: false,
-    blockAccountCoupons: false,
-    blockAccountHelp: false,
+  // Synchronous initial product list from cache / local storage so dashboard opens immediately
+  const [products, setProducts] = useState<Product[]>(() => {
+    try {
+      const cachedRemote = localStorage.getItem('amal_cached_products');
+      if (cachedRemote) {
+        const parsed = JSON.parse(cachedRemote);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+      const customLocal = JSON.parse(localStorage.getItem('amal_custom_products') || '[]');
+      return [...customLocal, ...MOCK_PRODUCTS];
+    } catch {
+      return MOCK_PRODUCTS;
+    }
+  });
+
+  // Synchronous initial orders from local cache
+  const [orders, setOrders] = useState<any[]>(() => {
+    try {
+      const cached = localStorage.getItem('amal_cached_orders');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+      return JSON.parse(localStorage.getItem('amal_orders') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  const [loadingOrders, setLoadingOrders] = useState(false);
+  const [loadingProducts, setLoadingProducts] = useState(false);
+
+  // Payment settings state with instant local fallback
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(() => {
+    try {
+      const local = JSON.parse(localStorage.getItem('amal_payment_settings') || 'null');
+      if (local) return local;
+    } catch {}
+    return {
+      enableCOD: true,
+      enableUPI: true,
+      enableCard: true,
+      merchantUpiId: 'amalcoolguard@upi',
+      whatsappNumber: '6238113451',
+      blockAccountOrders: false,
+      blockAccountWishlist: false,
+      blockAccountCoupons: false,
+      blockAccountHelp: false,
+    };
   });
   const [settingsSavedMsg, setSettingsSavedMsg] = useState(false);
 
@@ -63,20 +97,18 @@ export default function AdminDashboard() {
   const fetchPaymentSettings = async () => {
     try {
       const docRef = doc(db, 'settings', 'payment');
-      const docSnap = await getDoc(docRef);
+      const fetchPromise = getDoc(docRef);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Timeout')), 1200)
+      );
+      const docSnap = await Promise.race([fetchPromise, timeoutPromise]);
       if (docSnap.exists()) {
         const data = docSnap.data() as PaymentSettings;
         setPaymentSettings(data);
         localStorage.setItem('amal_payment_settings', JSON.stringify(data));
-        return;
       }
     } catch (err) {
-      console.warn('Fetch payment settings error:', err);
-    }
-
-    const localSettings = JSON.parse(localStorage.getItem('amal_payment_settings') || 'null');
-    if (localSettings) {
-      setPaymentSettings(localSettings);
+      // Local settings already initialized synchronously
     }
   };
 
@@ -92,34 +124,41 @@ export default function AdminDashboard() {
   };
 
   const fetchProducts = async () => {
-    setLoadingProducts(true);
     try {
-      const snapshot = await getDocs(collection(db, 'products'));
+      const fetchPromise = getDocs(collection(db, 'products'));
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Timeout')), 1200)
+      );
+      const snapshot = await Promise.race([fetchPromise, timeoutPromise]);
       if (!snapshot.empty) {
         const fetched = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as Product));
         setProducts(fetched);
-        setLoadingProducts(false);
+        try {
+          localStorage.setItem('amal_cached_products', JSON.stringify(fetched));
+        } catch {}
         return;
       }
     } catch (err) {
-      console.warn('Fetch products err, fallback to mock:', err);
+      // Handled silently - already rendered from instant local cache
     }
 
     // Fallback to MOCK_PRODUCTS + localStorage custom products
     const customLocalProducts = JSON.parse(localStorage.getItem('amal_custom_products') || '[]');
     setProducts([...customLocalProducts, ...MOCK_PRODUCTS]);
-    setLoadingProducts(false);
   };
 
   const fetchOrders = async () => {
-    setLoadingOrders(true);
     let combined: any[] = [];
     try {
       const q = query(collection(db, 'bookings'), orderBy('createdAt', 'desc'));
-      const snapshot = await getDocs(q);
+      const fetchPromise = getDocs(q);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Timeout')), 1200)
+      );
+      const snapshot = await Promise.race([fetchPromise, timeoutPromise]);
       combined = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
     } catch (err) {
-      console.warn('Fetch orders err:', err);
+      // Fallback
     }
 
     // Merge local storage orders
@@ -131,8 +170,12 @@ export default function AdminDashboard() {
       }
     }
 
-    setOrders(combined);
-    setLoadingOrders(false);
+    if (combined.length > 0) {
+      setOrders(combined);
+      try {
+        localStorage.setItem('amal_cached_orders', JSON.stringify(combined));
+      } catch {}
+    }
   };
 
   // Image file handler for product upload
@@ -183,6 +226,11 @@ export default function AdminDashboard() {
       const docRef = await addDoc(collection(db, 'products'), prodData);
       const createdProd = { id: docRef.id, ...prodData };
       setProducts(prev => [createdProd, ...prev]);
+
+      // Save to localStorage custom products so storefront reflects immediately
+      const customLocal = JSON.parse(localStorage.getItem('amal_custom_products') || '[]');
+      customLocal.unshift(createdProd);
+      localStorage.setItem('amal_custom_products', JSON.stringify(customLocal));
     } catch (err) {
       console.warn('Saved product locally:', err);
       const customLocal = JSON.parse(localStorage.getItem('amal_custom_products') || '[]');
@@ -444,7 +492,9 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
       <div className="flex gap-2 overflow-x-auto pb-2 mb-6">
         {[
           { id: 'orders', label: '📦 Customer Orders', badge: pendingCount ? `${pendingCount} Pending` : `${orders.length}` },
+          { id: 'customers', label: '👥 Registered Customers', badge: 'Logins' },
           { id: 'products', label: '🏷️ Products & Multi-Images', badge: `${products.length}` },
+          { id: 'promoters', label: '🤝 Affiliates & Promoters', badge: '₹100/Sale' },
           { id: 'payments', label: '💳 Payment Gateway Settings', badge: 'Block/Allow' },
         ].map(tab => (
           <button
@@ -544,6 +594,17 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                         <p className="text-[10px] text-gray-400 font-bold uppercase">Amount & Payment Mode</p>
                         <p className="font-extrabold text-blue-700 text-sm">₹{order.price} ({order.paymentMethod || 'UPI'})</p>
                       </div>
+                      {order.referralCode && (
+                        <div className="bg-purple-50 border border-purple-200 p-2.5 rounded-xl col-span-2 flex items-center justify-between">
+                          <div>
+                            <p className="text-[10px] text-purple-700 font-bold uppercase">Affiliate / Promoter Referral</p>
+                            <p className="font-extrabold text-purple-900 text-xs">Code: {order.referralCode}</p>
+                          </div>
+                          <span className="text-xs bg-purple-600 text-white font-black px-2.5 py-1 rounded-lg">
+                            +₹{order.promoterCommission || 100} Commission
+                          </span>
+                        </div>
+                      )}
                     </div>
 
                     {/* Payment Screenshot Section */}
@@ -616,7 +677,107 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
         </div>
       )}
 
-      {/* TAB 2: PRODUCTS & MULTI-IMAGE MANAGEMENT */}
+      {/* TAB 2: REGISTERED CUSTOMERS */}
+      {activeTab === 'customers' && (
+        <div className="space-y-4">
+          <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-200 flex items-center justify-between">
+            <div>
+              <h2 className="font-extrabold text-sm text-gray-900">Registered Customer Logins</h2>
+              <p className="text-xs text-gray-500">List of customers who signed up or logged into Amal Coolguard.</p>
+            </div>
+          </div>
+
+          {(() => {
+            // Collect unique customers from orders + any saved session
+            const ordersList = orders || [];
+            const customerMap = new Map();
+
+            // 1. Read from dedicated registered users dictionary
+            const regUsers = JSON.parse(localStorage.getItem('amal_registered_users') || '{}');
+            Object.values(regUsers).forEach((u: any) => {
+              if (u && u.mobile) {
+                customerMap.set(u.mobile, {
+                  name: u.name || 'Customer',
+                  mobile: u.mobile,
+                  address: u.address || 'Registered Customer Account',
+                  pincode: u.pincode || 'Kerala',
+                  lastOrderDate: u.registeredAt ? new Date(u.registeredAt).toLocaleDateString() : 'Active Member'
+                });
+              }
+            });
+
+            // 2. Read from orders
+            ordersList.forEach((o: any) => {
+              if (o.phoneNumber) {
+                const existing = customerMap.get(o.phoneNumber);
+                customerMap.set(o.phoneNumber, {
+                  name: o.customerName || (existing ? existing.name : 'Customer'),
+                  mobile: o.phoneNumber,
+                  address: o.address || (existing ? existing.address : 'N/A'),
+                  pincode: o.pincode || (existing ? existing.pincode : 'N/A'),
+                  lastOrderDate: o.createdAt || 'Recent Order'
+                });
+              }
+            });
+
+            // 3. Also check session storage
+            const session = JSON.parse(localStorage.getItem('amal_customer_session') || 'null');
+            if (session && session.mobile) {
+              if (!customerMap.has(session.mobile)) {
+                customerMap.set(session.mobile, {
+                  name: session.name,
+                  mobile: session.mobile,
+                  address: session.address || 'Current Logged-in Customer',
+                  pincode: session.pincode || 'Kerala',
+                  lastOrderDate: 'Logged In'
+                });
+              }
+            }
+
+            const customersList = Array.from(customerMap.values());
+
+            if (customersList.length === 0) {
+              return (
+                <div className="p-12 bg-white rounded-2xl text-center text-xs text-gray-500 border border-dashed border-gray-300">
+                  No registered customers found yet.
+                </div>
+              );
+            }
+
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {customersList.map((cust: any, idx: number) => (
+                  <div key={idx} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200 space-y-3">
+                    <div className="flex items-center gap-3 border-b pb-3">
+                      <div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold text-lg">
+                        👤
+                      </div>
+                      <div>
+                        <h3 className="font-extrabold text-sm text-gray-900">{cust.name}</h3>
+                        <p className="text-xs text-blue-600 font-bold">📱 +91 {cust.mobile}</p>
+                      </div>
+                    </div>
+
+                    <div className="text-xs text-gray-600 space-y-1">
+                      <p><span className="font-bold text-gray-900">Address:</span> {cust.address}</p>
+                      <p><span className="font-bold text-gray-900">Pincode:</span> {cust.pincode}</p>
+                    </div>
+
+                    <a 
+                      href={`https://wa.me/91${cust.mobile}`} 
+                      target="_blank" 
+                      rel="noreferrer"
+                      className="block w-full text-center bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-2.5 rounded-xl text-xs shadow transition mt-2"
+                    >
+                      💬 Chat on WhatsApp (+91 {cust.mobile})
+                    </a>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      )}
       {activeTab === 'products' && (
         <div className="space-y-6">
           {/* Add Product Form */}
@@ -1045,6 +1206,184 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
               💾 Save All Settings
             </button>
           </div>
+        </div>
+      )}
+
+      {/* TAB 5: AFFILIATE / PROMOTER COMMISSION & PAYOUT MANAGEMENT */}
+      {activeTab === 'promoters' && (
+        <div className="space-y-5">
+          <div className="bg-white p-5 rounded-3xl shadow-sm border border-gray-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div>
+              <h2 className="font-extrabold text-base text-gray-900 flex items-center gap-2">
+                <span>🤝</span> Affiliate & Promoter Commission Management
+              </h2>
+              <p className="text-xs text-gray-500">
+                Track YouTuber & influencer referral codes, total referred sales, earned commissions (₹100/coat), and settle payouts.
+              </p>
+            </div>
+            <a 
+              href="/promoter" 
+              target="_blank" 
+              rel="noreferrer"
+              className="bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow inline-flex items-center gap-1.5 self-start md:self-auto transition"
+            >
+              <span>🔗</span> Open Promoter Sign Up Portal
+            </a>
+          </div>
+
+          {(() => {
+            const allPromotersDict = JSON.parse(localStorage.getItem('amal_promoters_list') || '{}');
+            const ordersList = orders || [];
+
+            // Compile promoter stats
+            const promoterStatsList = Object.values(allPromotersDict).map((p: any) => {
+              const matchedOrders = ordersList.filter(
+                (o: any) => o.referralCode?.toUpperCase() === p.id?.toUpperCase() ||
+                            o.promoterId?.toUpperCase() === p.id?.toUpperCase()
+              );
+              const confirmedOrders = matchedOrders.filter((o: any) => o.status === 'confirmed');
+              const pendingOrders = matchedOrders.filter((o: any) => !o.status || o.status === 'pending' || o.status === 'pending_verification');
+              const commissionPerSale = p.commissionPerSale || 100;
+              const totalEarned = confirmedOrders.length * commissionPerSale;
+              const paidAmount = p.paidAmount || 0;
+              const balancePayable = Math.max(0, totalEarned - paidAmount);
+
+              return {
+                ...p,
+                totalReferred: matchedOrders.length,
+                confirmedOrders: confirmedOrders.length,
+                pendingOrders: pendingOrders.length,
+                totalEarned,
+                paidAmount,
+                balancePayable,
+                matchedOrders
+              };
+            });
+
+            const totalCommissionPayable = promoterStatsList.reduce((sum, p) => sum + p.balancePayable, 0);
+            const totalCommissionPaid = promoterStatsList.reduce((sum, p) => sum + p.paidAmount, 0);
+
+            const handleMarkPayout = (promoterId: string, amount: number) => {
+              const currentDict = JSON.parse(localStorage.getItem('amal_promoters_list') || '{}');
+              if (currentDict[promoterId]) {
+                const currentPaid = currentDict[promoterId].paidAmount || 0;
+                currentDict[promoterId].paidAmount = currentPaid + amount;
+                localStorage.setItem('amal_promoters_list', JSON.stringify(currentDict));
+                alert(`✓ Payout of ₹${amount} recorded for promoter ${promoterId}!`);
+                window.location.reload();
+              }
+            };
+
+            return (
+              <div className="space-y-5">
+                {/* Promoter Summary Cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-200">
+                    <p className="text-[11px] font-bold text-gray-500">Registered Promoters</p>
+                    <p className="text-xl font-extrabold text-gray-900 mt-1">{promoterStatsList.length}</p>
+                    <span className="text-[10px] text-gray-400">Influencers / YouTubers</span>
+                  </div>
+
+                  <div className="bg-white p-4 rounded-2xl shadow-sm border border-purple-200 bg-purple-50/30">
+                    <p className="text-[11px] font-bold text-purple-700">Commission Rate</p>
+                    <p className="text-xl font-extrabold text-purple-900 mt-1">₹100</p>
+                    <span className="text-[10px] text-purple-600 font-semibold">per verified coat sale</span>
+                  </div>
+
+                  <div className="bg-white p-4 rounded-2xl shadow-sm border border-amber-200 bg-amber-50/40">
+                    <p className="text-[11px] font-bold text-amber-800">Pending Payable Commission</p>
+                    <p className="text-xl font-extrabold text-amber-900 mt-1">₹{totalCommissionPayable}</p>
+                    <span className="text-[10px] text-amber-700 font-semibold">Owed to promoters</span>
+                  </div>
+
+                  <div className="bg-white p-4 rounded-2xl shadow-sm border border-green-200 bg-green-50/40">
+                    <p className="text-[11px] font-bold text-green-800">Total Settled Payouts</p>
+                    <p className="text-xl font-extrabold text-green-900 mt-1">₹{totalCommissionPaid}</p>
+                    <span className="text-[10px] text-green-700 font-semibold">Paid via UPI</span>
+                  </div>
+                </div>
+
+                {promoterStatsList.length === 0 ? (
+                  <div className="p-12 bg-white rounded-3xl text-center text-xs text-gray-500 border border-dashed border-gray-300 space-y-3">
+                    <span className="text-3xl block">🤝</span>
+                    <p className="font-bold text-gray-800 text-sm">No Promoters Registered Yet</p>
+                    <p className="text-gray-500 max-w-md mx-auto">
+                      Promoters can visit the Promoter Portal (<a href="/promoter" className="text-blue-600 font-bold underline">/promoter</a>) to sign up, get unique referral links, and start referring buyers.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {promoterStatsList.map((prom, idx) => (
+                      <div key={prom.id || idx} className="bg-white p-5 rounded-3xl shadow-sm border border-gray-200 space-y-3">
+                        <div className="flex items-start justify-between border-b pb-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-black text-sm text-gray-900">{prom.name}</h3>
+                              <span className="bg-purple-100 text-purple-800 text-[10px] font-black px-2.5 py-0.5 rounded-full border border-purple-200 uppercase font-mono">
+                                CODE: {prom.id}
+                              </span>
+                            </div>
+                            <p className="text-xs text-gray-500 mt-0.5">{prom.channelName || 'Affiliate'} • 📱 +91 {prom.phone}</p>
+                            <p className="text-xs text-emerald-700 font-bold mt-1">UPI for Payout: {prom.upiId}</p>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-[10px] text-gray-400 font-bold block uppercase">Balance Due</span>
+                            <span className="text-lg font-black text-amber-600">₹{prom.balancePayable}</span>
+                          </div>
+                        </div>
+
+                        {/* Performance Details */}
+                        <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                          <div className="bg-gray-50 p-2.5 rounded-xl border border-gray-100">
+                            <span className="text-[10px] text-gray-400 font-bold block uppercase">Total Referred</span>
+                            <span className="font-extrabold text-gray-900 text-sm">{prom.totalReferred}</span>
+                          </div>
+                          <div className="bg-green-50 p-2.5 rounded-xl border border-green-100">
+                            <span className="text-[10px] text-green-700 font-bold block uppercase">Confirmed Sales</span>
+                            <span className="font-extrabold text-green-800 text-sm">{prom.confirmedOrders}</span>
+                          </div>
+                          <div className="bg-purple-50 p-2.5 rounded-xl border border-purple-100">
+                            <span className="text-[10px] text-purple-700 font-bold block uppercase">Total Earned</span>
+                            <span className="font-extrabold text-purple-900 text-sm">₹{prom.totalEarned}</span>
+                          </div>
+                        </div>
+
+                        {/* Payout & Contact Actions */}
+                        <div className="flex gap-2 pt-2 border-t">
+                          <a
+                            href={`https://wa.me/91${prom.phone}?text=Hello%20${encodeURIComponent(prom.name)},%20regarding%20your%20Amal%20Coolguard%20referral%20commission%20for%20code%20${prom.id}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs py-2.5 rounded-xl shadow flex items-center justify-center gap-1 transition"
+                          >
+                            <span>💬</span> WhatsApp Promoter
+                          </a>
+
+                          {prom.balancePayable > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (window.confirm(`Mark payout of ₹${prom.balancePayable} via UPI (${prom.upiId}) as completed for ${prom.name}?`)) {
+                                  handleMarkPayout(prom.id, prom.balancePayable);
+                                }
+                              }}
+                              className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs py-2.5 rounded-xl shadow transition"
+                            >
+                              ✓ Pay ₹{prom.balancePayable} via UPI
+                            </button>
+                          ) : (
+                            <span className="flex-1 bg-gray-100 text-gray-500 font-extrabold text-xs py-2.5 rounded-xl text-center">
+                              ✓ All Payouts Settled
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 

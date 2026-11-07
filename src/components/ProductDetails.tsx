@@ -7,8 +7,25 @@ import { MOCK_PRODUCTS, Product } from '../data/mockProducts';
 export default function ProductDetails() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [product, setProduct] = useState<Product | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Synchronous initial product state lookup for instant rendering
+  const [product, setProduct] = useState<Product | null>(() => {
+    try {
+      if (!id) return MOCK_PRODUCTS[0];
+      const cachedRemote = localStorage.getItem('amal_cached_products');
+      if (cachedRemote) {
+        const parsed = JSON.parse(cachedRemote);
+        const hit = parsed.find((p: any) => p.id === id);
+        if (hit) return hit;
+      }
+      const customLocal = JSON.parse(localStorage.getItem('amal_custom_products') || '[]');
+      const foundCustom = customLocal.find((p: any) => p.id === id);
+      if (foundCustom) return foundCustom;
+      return MOCK_PRODUCTS.find(p => p.id === id) || MOCK_PRODUCTS[0];
+    } catch {
+      return MOCK_PRODUCTS[0];
+    }
+  });
+  const [loading, setLoading] = useState(false);
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
   const [showOrderModal, setShowOrderModal] = useState(false);
   const [submittedOrderId, setSubmittedOrderId] = useState<string | null>(null);
@@ -26,15 +43,32 @@ export default function ProductDetails() {
   const [newRating, setNewRating] = useState(5);
   const [reviewerComment, setReviewerComment] = useState('');
 
-  // Customer order form state
-  const [formData, setFormData] = useState({
-    customerName: '',
-    phoneNumber: '',
-    address: '',
-    pincode: '',
-    paymentMethod: 'UPI', // 'COD' | 'UPI' | 'Card'
-    merchantUpiId: 'amalcoolguard@upi',
-    whatsappNumber: '6238113451'
+  // Customer order form state with auto-fill from logged in session
+  const [formData, setFormData] = useState(() => {
+    try {
+      const session = JSON.parse(localStorage.getItem('amal_customer_session') || 'null');
+      const savedAddress = localStorage.getItem('amal_saved_address') || '';
+      const savedPincode = localStorage.getItem('amal_saved_pincode') || '';
+      return {
+        customerName: session?.name || '',
+        phoneNumber: session?.mobile || '',
+        address: session?.address || savedAddress || '',
+        pincode: session?.pincode || savedPincode || '',
+        paymentMethod: 'UPI',
+        merchantUpiId: 'amalcoolguard@upi',
+        whatsappNumber: '6238113451'
+      };
+    } catch {
+      return {
+        customerName: '',
+        phoneNumber: '',
+        address: '',
+        pincode: '',
+        paymentMethod: 'UPI',
+        merchantUpiId: 'amalcoolguard@upi',
+        whatsappNumber: '6238113451'
+      };
+    }
   });
 
   useEffect(() => {
@@ -52,11 +86,14 @@ export default function ProductDetails() {
     }
 
     const fetchProduct = async () => {
-      setLoading(true);
       try {
         if (id) {
           const docRef = doc(db, 'products', id);
-          const docSnap = await getDoc(docRef);
+          const fetchPromise = getDoc(docRef);
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Timeout')), 1200)
+          );
+          const docSnap = await Promise.race([fetchPromise, timeoutPromise]);
           if (docSnap.exists() && isMounted) {
             const data = docSnap.data();
             setProduct({
@@ -72,12 +109,11 @@ export default function ProductDetails() {
               reviewsCount: data.reviewsCount || 120,
               features: data.features || ['Heat Reflective', 'UV Protection', 'Water Resistant'],
             });
-            setLoading(false);
             return;
           }
         }
       } catch (err) {
-        console.warn('Firestore fetch fallback to mock product:', err);
+        // Fallback silently
       }
 
       if (isMounted) {
@@ -87,7 +123,6 @@ export default function ProductDetails() {
 
         const mockItem = foundCustom || MOCK_PRODUCTS.find(p => p.id === id) || MOCK_PRODUCTS[0];
         setProduct(mockItem);
-        setLoading(false);
       }
     };
 
@@ -190,6 +225,9 @@ export default function ProductDetails() {
 
     const amount = product.discountPrice || product.price;
 
+    // Check active promoter referral code
+    const activeRefCode = localStorage.getItem('amal_active_referral_code') || null;
+
     let createdDocId: string | null = null;
     try {
       const docRef = await addDoc(collection(db, 'bookings'), {
@@ -202,6 +240,9 @@ export default function ProductDetails() {
         address: formData.address,
         pincode: formData.pincode,
         paymentMethod: formData.paymentMethod,
+        referralCode: activeRefCode,
+        promoterId: activeRefCode,
+        promoterCommission: activeRefCode ? 100 : 0,
         status: 'pending_verification',
         paymentScreenshot: screenshotPreview || null,
         createdAt: serverTimestamp(),
@@ -223,11 +264,32 @@ export default function ProductDetails() {
       address: formData.address,
       pincode: formData.pincode,
       paymentMethod: formData.paymentMethod,
+      referralCode: activeRefCode,
+      promoterId: activeRefCode,
+      promoterCommission: activeRefCode ? 100 : 0,
       status: 'pending_verification',
       screenshot: screenshotPreview || null,
       createdAt: new Date().toISOString(),
     });
     localStorage.setItem('amal_orders', JSON.stringify(localOrders));
+
+    // Save default delivery address for future orders
+    if (formData.address) {
+      localStorage.setItem('amal_saved_address', formData.address);
+    }
+    if (formData.pincode) {
+      localStorage.setItem('amal_saved_pincode', formData.pincode);
+    }
+
+    // Also update registered user's saved address in customer dictionary
+    if (formData.phoneNumber) {
+      const regUsers = JSON.parse(localStorage.getItem('amal_registered_users') || '{}');
+      if (regUsers[formData.phoneNumber]) {
+        regUsers[formData.phoneNumber].address = formData.address;
+        regUsers[formData.phoneNumber].pincode = formData.pincode;
+        localStorage.setItem('amal_registered_users', JSON.stringify(regUsers));
+      }
+    }
 
     setSubmitting(false);
     setSubmittedOrderId(orderId);
