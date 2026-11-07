@@ -1341,6 +1341,65 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                           </div>
                         </div>
 
+                        {/* Admin Commission Rate Editor (₹50, ₹100, ₹150, ₹200...) */}
+                        <div className="bg-purple-50/70 border border-purple-200 p-3 rounded-2xl space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-extrabold text-purple-900 flex items-center gap-1">
+                              <span>🏷️</span> Commission Rate / Sale:
+                            </span>
+                            <span className="text-xs font-black text-purple-800 bg-white px-2 py-0.5 rounded-lg border border-purple-200">
+                              ₹{prom.commissionPerSale || 100} / coat
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] text-gray-500 font-bold">Quick Set:</span>
+                            {[50, 100, 150, 200, 250, 300].map(amt => (
+                              <button
+                                key={amt}
+                                type="button"
+                                onClick={() => {
+                                  const dict = JSON.parse(localStorage.getItem('amal_promoters_list') || '{}');
+                                  if (dict[prom.id]) {
+                                    dict[prom.id].commissionPerSale = amt;
+                                    localStorage.setItem('amal_promoters_list', JSON.stringify(dict));
+                                    alert(`✓ Commission for ${prom.name} (${prom.id}) updated to ₹${amt} per sale!`);
+                                    window.location.reload();
+                                  }
+                                }}
+                                className={`text-[10px] font-black px-2.5 py-1 rounded-lg border transition ${
+                                  (prom.commissionPerSale || 100) === amt
+                                    ? 'bg-purple-700 text-white border-purple-800 shadow-xs'
+                                    : 'bg-white text-gray-700 border-gray-200 hover:bg-purple-100'
+                                }`}
+                              >
+                                ₹{amt}
+                              </button>
+                            ))}
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const current = prom.commissionPerSale || 100;
+                                const customInput = window.prompt(`Enter custom commission amount for ${prom.name} in ₹:`, String(current));
+                                if (customInput && !isNaN(Number(customInput))) {
+                                  const customNum = Number(customInput);
+                                  const dict = JSON.parse(localStorage.getItem('amal_promoters_list') || '{}');
+                                  if (dict[prom.id]) {
+                                    dict[prom.id].commissionPerSale = customNum;
+                                    localStorage.setItem('amal_promoters_list', JSON.stringify(dict));
+                                    alert(`✓ Commission for ${prom.name} (${prom.id}) updated to ₹${customNum}!`);
+                                    window.location.reload();
+                                  }
+                                }
+                              }}
+                              className="text-[10px] font-black text-blue-700 bg-blue-50 border border-blue-200 px-2 py-1 rounded-lg hover:bg-blue-100"
+                            >
+                              ✏️ Custom ₹
+                            </button>
+                          </div>
+                        </div>
+
                         {/* Performance Details */}
                         <div className="grid grid-cols-3 gap-2 text-center text-xs">
                           <div className="bg-gray-50 p-2.5 rounded-xl border border-gray-100">

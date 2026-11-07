@@ -225,8 +225,18 @@ export default function ProductDetails() {
 
     const amount = product.discountPrice || product.price;
 
-    // Check active promoter referral code
+    // Check active promoter referral code and configured commission
     const activeRefCode = localStorage.getItem('amal_active_referral_code') || null;
+    let commissionAmt = 100;
+    if (activeRefCode) {
+      try {
+        const promotersList = JSON.parse(localStorage.getItem('amal_promoters_list') || '{}');
+        const foundProm = promotersList[activeRefCode.toUpperCase()];
+        if (foundProm && typeof foundProm.commissionPerSale === 'number') {
+          commissionAmt = foundProm.commissionPerSale;
+        }
+      } catch {}
+    }
 
     let createdDocId: string | null = null;
     try {
@@ -242,7 +252,7 @@ export default function ProductDetails() {
         paymentMethod: formData.paymentMethod,
         referralCode: activeRefCode,
         promoterId: activeRefCode,
-        promoterCommission: activeRefCode ? 100 : 0,
+        promoterCommission: activeRefCode ? commissionAmt : 0,
         status: 'pending_verification',
         paymentScreenshot: screenshotPreview || null,
         createdAt: serverTimestamp(),
@@ -266,7 +276,7 @@ export default function ProductDetails() {
       paymentMethod: formData.paymentMethod,
       referralCode: activeRefCode,
       promoterId: activeRefCode,
-      promoterCommission: activeRefCode ? 100 : 0,
+      promoterCommission: activeRefCode ? commissionAmt : 0,
       status: 'pending_verification',
       screenshot: screenshotPreview || null,
       createdAt: new Date().toISOString(),
