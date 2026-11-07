@@ -1,30 +1,66 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { signInWithEmailAndPassword, auth } from '../firebase';
+import { useNavigate, Link } from 'react-router-dom';
 
 export default function AdminLogin() {
-  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [error, setError] = useState(false);
   const navigate = useNavigate();
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    try {
-      await signInWithEmailAndPassword(auth, email, password); // Note: Need auth import
+    if (password === 'vengakkal') {
+      localStorage.setItem('amal_admin_auth', 'true');
       navigate('/admin/dashboard');
-    } catch (error) {
-      alert('Invalid credentials');
+    } else {
+      setError(true);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100">
-      <form onSubmit={handleLogin} className="bg-white p-6 rounded shadow-md w-80">
-        <h2 className="text-xl font-bold mb-4">Admin Login</h2>
-        <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} className="w-full p-2 mb-2 border rounded" required />
-        <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} className="w-full p-2 mb-4 border rounded" required />
-        <button type="submit" className="w-full bg-blue-600 text-white p-2 rounded">Login</button>
-      </form>
+    <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+      <div className="bg-white rounded-3xl p-8 shadow-xl max-w-sm w-full text-center space-y-6">
+        <div className="w-16 h-16 bg-blue-100 text-blue-600 text-3xl rounded-full flex items-center justify-center mx-auto shadow-inner">
+          🛡️
+        </div>
+
+        <div>
+          <h2 className="text-2xl font-black text-gray-900 tracking-tight">Admin Portal</h2>
+          <p className="text-xs text-gray-500 mt-1">Enter password to access Amal Coolguard control panel.</p>
+        </div>
+
+        <form onSubmit={handleLogin} className="space-y-4 text-left">
+          <div>
+            <label className="block text-xs font-bold text-gray-700 mb-1">Admin Password (പാസ്‌വേഡ്):</label>
+            <input 
+              type="password" 
+              placeholder="Enter password (vengakkal)" 
+              value={password} 
+              onChange={e => { setPassword(e.target.value); setError(false); }} 
+              className="w-full p-3 text-xs border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 font-bold bg-gray-50"
+              required 
+            />
+          </div>
+
+          {error && (
+            <p className="text-xs text-red-600 font-bold text-center bg-red-50 p-2 rounded-lg">
+              ❌ Incorrect Password! Please enter 'vengakkal'.
+            </p>
+          )}
+
+          <button 
+            type="submit" 
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs py-3.5 rounded-xl shadow-lg transition active:scale-98"
+          >
+            🔒 Login to Admin Dashboard
+          </button>
+        </form>
+
+        <div className="pt-2 border-t">
+          <Link to="/" className="text-xs font-bold text-blue-600 hover:underline">
+            ← Back to Storefront
+          </Link>
+        </div>
+      </div>
     </div>
   );
 }
