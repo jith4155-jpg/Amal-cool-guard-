@@ -1,0 +1,6 @@
+{
+  "name": "Amal Coolguard",
+  "description": "Official website for Amal Coolguard, featuring premium cooling vests with booking and admin management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

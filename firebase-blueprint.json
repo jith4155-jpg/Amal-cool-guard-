@@ -1,0 +1,39 @@
+{
+  "entities": {
+    "booking": {
+      "title": "Booking",
+      "description": "A customer booking request.",
+      "type": "object",
+      "properties": {
+        "customerName": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "productId": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "confirmed", "completed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["customerName", "phoneNumber", "productId", "status", "createdAt"]
+    },
+    "product": {
+      "title": "Product",
+      "description": "A product available for booking.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "price": { "type": "number" },
+        "description": { "type": "string" },
+        "imageUrl": { "type": "string" }
+      },
+      "required": ["name", "price", "description", "imageUrl"]
+    }
+  },
+  "firestore": {
+    "/bookings/{bookingId}": {
+      "schema": "booking",
+      "description": "Bookings collection."
+    },
+    "/products/{productId}": {
+      "schema": "product",
+      "description": "Products collection."
+    }
+  }
+}
