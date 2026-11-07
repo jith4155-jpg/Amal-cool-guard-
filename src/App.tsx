@@ -5,7 +5,7 @@ import AdminDashboard from './components/AdminDashboard';
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename="/Amal-cool-guard-/">
       <Routes>
         <Route path="/" element={<AppStorefront />} />
         <Route path="/admin/login" element={<AdminLogin />} />
