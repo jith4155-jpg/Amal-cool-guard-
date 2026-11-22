@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { db } from './firebase';
-import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType } from './firebase';
+import { collection, doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
 import { Product } from './data/mockProducts';
 import { useLanguage, LanguageSelector } from './context/LanguageContext';
@@ -49,6 +49,7 @@ export default function AppStorefront() {
       if (isMounted) {
         setProducts(getCatalogProducts());
         setCustomCategories(getCategories());
+        setBrokenImages({});
       }
     };
     window.addEventListener('amal_store_updated', handleStoreSync);
@@ -58,7 +59,7 @@ export default function AppStorefront() {
       try {
         const snap = await Promise.race([
           getDoc(doc(db, 'settings', 'categories')),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1200)),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000)),
         ]);
         if (snap.exists() && Array.isArray(snap.data().list) && isMounted) {
           const synced = saveCategories(snap.data().list);
@@ -69,15 +70,11 @@ export default function AppStorefront() {
       }
     };
 
-    const fetchProducts = async () => {
-      try {
-        const fetchPromise = getDocs(collection(db, 'products'));
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Network timeout')), 1200)
-        );
-
-        const querySnapshot = await Promise.race([fetchPromise, timeoutPromise]);
-        if (!querySnapshot.empty && isMounted) {
+    const unsubscribeProducts = onSnapshot(
+      collection(db, 'products'),
+      querySnapshot => {
+        if (!isMounted) return;
+        if (!querySnapshot.empty) {
           const fetched: Product[] = querySnapshot.docs.map(docSnap => {
             const data = docSnap.data();
             return {
@@ -99,22 +96,25 @@ export default function AppStorefront() {
             };
           });
           const merged = mergeRemoteCatalogProducts(fetched);
-          if (isMounted) setProducts(merged);
-          return;
+          if (isMounted) {
+            setProducts(merged);
+            setBrokenImages({});
+          }
         }
-      } catch {
-        // fallback cleanly to local catalog
+      },
+      err => {
+        try {
+          handleFirestoreError(err, OperationType.GET, 'products');
+        } catch {
+          // Structured error logged cleanly; local catalog remains active
+        }
       }
-
-      if (isMounted) {
-        setProducts(getCatalogProducts());
-      }
-    };
+    );
 
     fetchCategoriesRemote();
-    fetchProducts();
     return () => {
       isMounted = false;
+      unsubscribeProducts();
       window.removeEventListener('amal_store_updated', handleStoreSync);
       window.removeEventListener('storage', handleStoreSync);
     };

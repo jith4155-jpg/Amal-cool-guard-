@@ -16,6 +16,7 @@
         "pincode": { "type": "string", "maxLength": 20 },
         "productId": { "type": "string", "maxLength": 128 },
         "productName": { "type": "string", "maxLength": 200 },
+        "productImage": { "type": "string", "maxLength": 950000 },
         "productPrice": { "type": "number" },
         "gstPercent": { "type": "number" },
         "gstAmount": { "type": "number" },

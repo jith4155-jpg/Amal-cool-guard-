@@ -1,7 +1,7 @@
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { db, auth, handleFirestoreError, OperationType } from '../firebase';
-import { doc, getDoc, getDocFromServer, collection, addDoc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, getDocFromServer, getDocs, collection, addDoc, updateDoc, setDoc, query, where, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { Product } from '../data/mockProducts';
 import { ThemeSwitcher } from '../context/ThemeContext';
 import { useLanguage, LanguageSelector } from '../context/LanguageContext';
@@ -9,7 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import {
   getCatalogProducts,
   isProductDeleted,
-  compressImageFile,
+  compressProductImageToRange,
   getActiveReferralCode,
   syncReferralFromUrl,
   getLocalOrders,
@@ -152,7 +152,7 @@ export default function ProductDetails() {
       try {
         const snap = await Promise.race([
           getDoc(doc(db, 'settings', 'payment')),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1200)),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000)),
         ]);
         if (snap.exists() && isMounted) {
           const remoteSettings = snap.data() as StorePaymentSettings;
@@ -164,65 +164,51 @@ export default function ProductDetails() {
       }
     };
 
-    const fetchProduct = async () => {
-      if (id && isProductDeleted(id)) {
-        if (isMounted) setProduct(null);
-        return;
-      }
-
-      const localMatch = findProductFromCatalog(id);
-      const isCatalogDirty = localStorage.getItem('amal_catalog_dirty') === 'true';
-      if (localMatch && isCatalogDirty) {
-        if (isMounted) setProduct(localMatch);
-        return;
-      }
-
-      try {
-        if (id) {
-          const docRef = doc(db, 'products', id);
-          const fetchPromise = getDoc(docRef);
-          const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Timeout')), 1200)
-          );
-          const docSnap = await Promise.race([fetchPromise, timeoutPromise]);
-          if (docSnap.exists() && isMounted) {
-            const data = docSnap.data();
-            setProduct({
-              id: docSnap.id,
-              name: data.name || 'Amal Coolguard Vest',
-              price: Number(data.price) || 2499,
-              discountPrice: Number(data.discountPrice || data.price) || 1999,
-              description: data.description || 'Premium heat protection cooling vest for bike riders.',
-              imageUrl: data.imageUrl || 'https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=600',
-              galleryImages:
-                Array.isArray(data.galleryImages) && data.galleryImages.length > 0
-                  ? data.galleryImages
-                  : data.imageUrl
-                  ? [data.imageUrl]
-                  : [],
-              category: data.category || 'Coats',
-              rating: Number(data.rating) || 4.8,
-              reviewsCount: Number(data.reviewsCount) || 120,
-              features: Array.isArray(data.features) ? data.features : ['Heat Reflective', 'UV Protection', 'Lightweight & Breathable'],
-              stock: typeof data.stock === 'number' ? data.stock : undefined,
-              gstPercent: typeof data.gstPercent === 'number' ? data.gstPercent : 0,
-              deliveryCharge: typeof data.deliveryCharge === 'number' ? data.deliveryCharge : 0,
-              estimatedDeliveryDays: typeof data.estimatedDeliveryDays === 'string' ? data.estimatedDeliveryDays : '',
-            });
-            return;
+    let unsubscribeProduct: (() => void) | undefined;
+    if (id) {
+      if (isProductDeleted(id)) {
+        setProduct(null);
+      } else {
+        unsubscribeProduct = onSnapshot(
+          doc(db, 'products', id),
+          docSnap => {
+            if (!isMounted) return;
+            if (docSnap.exists()) {
+              const data = docSnap.data();
+              setProduct({
+                id: docSnap.id,
+                name: data.name || 'Amal Coolguard Vest',
+                price: Number(data.price) || 2499,
+                discountPrice: Number(data.discountPrice || data.price) || 1999,
+                description: data.description || 'Premium heat protection cooling vest for bike riders.',
+                imageUrl: data.imageUrl || '',
+                galleryImages:
+                  Array.isArray(data.galleryImages) && data.galleryImages.length > 0
+                    ? data.galleryImages
+                    : data.imageUrl
+                    ? [data.imageUrl]
+                    : [],
+                category: data.category || 'Coats',
+                rating: Number(data.rating) || 4.8,
+                reviewsCount: Number(data.reviewsCount) || 120,
+                features: Array.isArray(data.features) ? data.features : ['Heat Reflective', 'UV Protection', 'Lightweight & Breathable'],
+                stock: typeof data.stock === 'number' ? data.stock : undefined,
+                gstPercent: typeof data.gstPercent === 'number' ? data.gstPercent : 0,
+                deliveryCharge: typeof data.deliveryCharge === 'number' ? data.deliveryCharge : 0,
+                estimatedDeliveryDays: typeof data.estimatedDeliveryDays === 'string' ? data.estimatedDeliveryDays : '',
+              });
+            } else {
+              setProduct(findProductFromCatalog(id));
+            }
+          },
+          () => {
+            if (isMounted) setProduct(findProductFromCatalog(id));
           }
-        }
-      } catch {
-        // Fallback silently to local catalog
+        );
       }
-
-      if (isMounted) {
-        setProduct(findProductFromCatalog(id));
-      }
-    };
+    }
 
     fetchRemoteSettings();
-    fetchProduct();
 
     const localRev = safeJsonParse<any[]>(localStorage.getItem(`amal_reviews_${id}`), []);
     if (localRev.length > 0) {
@@ -231,6 +217,7 @@ export default function ProductDetails() {
 
     return () => {
       isMounted = false;
+      if (unsubscribeProduct) unsubscribeProduct();
       window.removeEventListener('amal_store_updated', handleSync);
       window.removeEventListener('storage', handleSync);
     };
@@ -272,22 +259,38 @@ export default function ProductDetails() {
     if (!file) return;
     setUploadingScreenshot(true);
     try {
-      const result = await compressImageFile(file, 900, 0.72);
+      const { dataUrl: result } = await compressProductImageToRange(file, 20, 180);
       setScreenshotPreview(result);
 
       if (submittedOrderId) {
         const currentOrders = getLocalOrders();
         const updated = currentOrders.map((o: any) =>
-          o.orderId === submittedOrderId ? { ...o, screenshot: result, status: 'pending_verification' } : o
+          o.orderId === submittedOrderId
+            ? { ...o, screenshot: result, paymentScreenshot: result, status: 'pending_verification' }
+            : o
         );
         saveAllOrders(updated);
       }
 
-      if (submittedDocId) {
-        updateDoc(doc(db, 'bookings', submittedDocId), {
-          paymentScreenshot: result,
+      let targetDocId = submittedDocId;
+      if (!targetDocId && submittedOrderId && (auth.currentUser || user)) {
+        const uid = (auth.currentUser || user)!.uid;
+        try {
+          const snap = await getDocs(
+            query(collection(db, 'bookings'), where('userId', '==', uid), where('orderId', '==', submittedOrderId))
+          );
+          if (!snap.empty) targetDocId = snap.docs[0].id;
+        } catch {
+          // ignore
+        }
+      }
+
+      if (targetDocId) {
+        await updateDoc(doc(db, 'bookings', targetDocId), {
+          paymentScreenshot: result.slice(0, 950000),
           status: 'pending_verification',
-        }).catch(err => console.warn('Firestore update screenshot err:', err));
+        });
+        await refreshMyOrders();
       }
     } catch (err) {
       console.warn('Screenshot compression err:', err);
@@ -370,6 +373,8 @@ export default function ProductDetails() {
     const cleanPincode = (formData.pincode || '').trim().slice(0, 20);
     const safeScreenshot =
       screenshotPreview && screenshotPreview.length <= 950000 ? screenshotPreview : null;
+    const rawProductImg = product.imageUrl || (product.galleryImages && product.galleryImages[0]) || '';
+    const safeProductImage = rawProductImg && rawProductImg.length <= 950000 ? rawProductImg : '';
 
     let createdDocId: string | null = null;
     try {
@@ -381,6 +386,7 @@ export default function ProductDetails() {
         userPhoto: (currentUser.photoURL || '').slice(0, 1000),
         productId: String(product.id).slice(0, 128),
         productName: (product.name || '').slice(0, 200),
+        productImage: safeProductImage,
         productPrice: totals.basePrice,
         gstPercent: totals.gstPercent,
         gstAmount: totals.gstAmount,
@@ -443,7 +449,8 @@ export default function ProductDetails() {
       userPhoto: currentUser.photoURL || '',
       productId: product.id,
       productName: product.name,
-      imageUrl: product.imageUrl,
+      productImage: rawProductImg,
+      imageUrl: rawProductImg,
       productPrice: totals.basePrice,
       gstPercent: totals.gstPercent,
       gstAmount: totals.gstAmount,
@@ -463,6 +470,7 @@ export default function ProductDetails() {
       promoterCommission: activeRefCode ? commissionAmt : 0,
       status: 'pending_verification',
       screenshot: screenshotPreview || null,
+      paymentScreenshot: screenshotPreview || null,
       createdAt: new Date().toISOString(),
     };
 

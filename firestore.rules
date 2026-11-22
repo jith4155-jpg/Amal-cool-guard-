@@ -82,11 +82,12 @@ service cloud.firestore {
       return data.keys().hasAll(['orderId', 'userId', 'customerName', 'phoneNumber', 'productId', 'status']) &&
         data.keys().hasOnly([
           'orderId', 'userId', 'userEmail', 'userName', 'userPhoto', 'customerName',
-          'phoneNumber', 'address', 'pincode', 'productId', 'productName', 'productPrice',
-          'gstPercent', 'gstAmount', 'gstNumber', 'deliveryCharge', 'estimatedDeliveryDays',
-          'price', 'paymentMethod', 'paymentScreenshot', 'referralCode', 'promoterId',
-          'promoterUserId', 'promoterEmail', 'promoterCommission', 'trackingId',
-          'trackingUrl', 'courierName', 'status', 'createdAt'
+          'phoneNumber', 'address', 'pincode', 'productId', 'productName', 'productImage',
+          'productPrice', 'gstPercent', 'gstAmount', 'gstNumber', 'deliveryCharge',
+          'estimatedDeliveryDays', 'price', 'paymentMethod', 'paymentScreenshot',
+          'referralCode', 'promoterId', 'promoterUserId', 'promoterEmail',
+          'promoterCommission', 'trackingId', 'trackingUrl', 'courierName', 'status',
+          'createdAt'
         ]) &&
         data.orderId is string && data.orderId.size() >= 1 && data.orderId.size() <= 64 &&
         data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
@@ -100,6 +101,7 @@ service cloud.firestore {
         isOptString(data, 'address', 500) &&
         isOptString(data, 'pincode', 20) &&
         isOptString(data, 'productName', 200) &&
+        isOptString(data, 'productImage', 950000) &&
         isOptNumber(data, 'productPrice') &&
         isOptNumber(data, 'gstPercent') &&
         isOptNumber(data, 'gstAmount') &&

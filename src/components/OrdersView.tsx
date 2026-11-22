@@ -3,7 +3,15 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ThemeSwitcher } from '../context/ThemeContext';
 import { useLanguage, LanguageSelector } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
-import { safeJsonParse } from '../utils/storeSync';
+import { db } from '../firebase';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { Product } from '../data/mockProducts';
+import {
+  getCatalogProducts,
+  mergeRemoteCatalogProducts,
+  resolveOrderProductImage,
+  safeJsonParse,
+} from '../utils/storeSync';
 
 export default function OrdersView() {
   const navigate = useNavigate();
@@ -26,6 +34,38 @@ export default function OrdersView() {
   const [confirmDeleteModal, setConfirmDeleteModal] = useState<any | null>(null);
   const [copiedTrackingId, setCopiedTrackingId] = useState<string | null>(null);
   const [loginError, setLoginError] = useState('');
+  const [catalogProducts, setCatalogProducts] = useState<Product[]>(() => getCatalogProducts());
+  const [brokenOrderThumbs, setBrokenOrderThumbs] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    const syncCatalog = () => setCatalogProducts(getCatalogProducts());
+    window.addEventListener('amal_store_updated', syncCatalog);
+    window.addEventListener('storage', syncCatalog);
+
+    const unsubscribeProducts = onSnapshot(
+      collection(db, 'products'),
+      snapshot => {
+        if (!snapshot.empty) {
+          const fetched: Product[] = snapshot.docs.map(docSnap => ({
+            id: docSnap.id,
+            ...(docSnap.data() as Omit<Product, 'id'>),
+          }));
+          const merged = mergeRemoteCatalogProducts(fetched);
+          setCatalogProducts(merged);
+          setBrokenOrderThumbs({});
+        }
+      },
+      () => {
+        // Keep local catalog silently if offline
+      }
+    );
+
+    return () => {
+      unsubscribeProducts();
+      window.removeEventListener('amal_store_updated', syncCatalog);
+      window.removeEventListener('storage', syncCatalog);
+    };
+  }, []);
 
   useEffect(() => {
     if (authReady && user) {
@@ -228,12 +268,21 @@ export default function OrdersView() {
 
                 {/* Product details */}
                 <div className="flex items-center gap-3 relative">
-                  <div className="w-16 h-16 bg-gray-100 rounded-xl overflow-hidden flex-shrink-0 relative">
-                    <img
-                      src={order.imageUrl || 'https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=200'}
-                      alt="product"
-                      className="w-full h-full object-cover"
-                    />
+                  <div className="w-16 h-16 bg-gray-100 rounded-xl overflow-hidden flex-shrink-0 relative flex items-center justify-center border border-gray-200">
+                    {(() => {
+                      const productThumb = resolveOrderProductImage(order, catalogProducts);
+                      if (productThumb && !brokenOrderThumbs[targetId]) {
+                        return (
+                          <img
+                            src={productThumb}
+                            alt={order.productName || 'product'}
+                            onError={() => setBrokenOrderThumbs(prev => ({ ...prev, [targetId]: true }))}
+                            className="w-full h-full object-cover"
+                          />
+                        );
+                      }
+                      return <span className="text-xl text-gray-400">📦</span>;
+                    })()}
                   </div>
 
                   <div className="flex-1 min-w-0 pr-2">

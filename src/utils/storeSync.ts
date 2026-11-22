@@ -384,32 +384,63 @@ export function deleteCatalogProduct(productId: string): Product[] {
   return next;
 }
 
+export function clearCatalogDirty() {
+  try {
+    localStorage.removeItem(STORAGE_KEYS.CATALOG_DIRTY);
+  } catch {
+    // ignore
+  }
+}
+
 export function mergeRemoteCatalogProducts(remoteProducts: Product[]): Product[] {
   const deletedSet = new Set(getDeletedProductIds());
+  const filteredRemote = remoteProducts.filter(p => p && p.id && !deletedSet.has(p.id));
   const localCatalog = getCatalogProducts();
   const isDirty = localStorage.getItem(STORAGE_KEYS.CATALOG_DIRTY) === 'true';
 
-  if (!isDirty) {
-    // Remote is fresh & nothing pending locally: filter deleted IDs cleanly
-    const filteredRemote = remoteProducts.filter(p => !deletedSet.has(p.id));
-    if (filteredRemote.length > 0) {
-      saveCatalogProducts(filteredRemote, false);
-      return filteredRemote;
-    }
+  if (filteredRemote.length === 0) {
     return localCatalog;
   }
 
-  // Admin has local edits/adds that may not have written to Firestore due to auth rules:
-  // Keep local items intact and append any unseen non-deleted remote items.
-  const localMap = new Map(localCatalog.map(p => [p.id, p]));
-  const combined = [...localCatalog];
-  for (const r of remoteProducts) {
-    if (!deletedSet.has(r.id) && !localMap.has(r.id)) {
-      combined.push(r);
+  if (!isDirty) {
+    saveCatalogProducts(filteredRemote, false);
+    return filteredRemote;
+  }
+
+  // Merge: authoritative Firestore product docs overwrite stale/mock images for matching IDs,
+  // while preserving any unsynced local-only products (`prod_*`) created before Cloud sync.
+  const remoteMap = new Map(filteredRemote.map(r => [r.id, r]));
+  const combined: Product[] = [...filteredRemote];
+  for (const loc of localCatalog) {
+    if (!deletedSet.has(loc.id) && !remoteMap.has(loc.id) && loc.id.startsWith('prod_')) {
+      combined.unshift(loc);
     }
   }
-  saveCatalogProducts(combined, true);
+  saveCatalogProducts(combined, false);
   return combined;
+}
+
+export function resolveOrderProductImage(order: any, catalog?: Product[]): string {
+  if (!order) return '';
+  const direct = String(order.productImage || order.imageUrl || '').trim();
+  if (direct) return direct;
+
+  const list = catalog && catalog.length > 0 ? catalog : getCatalogProducts();
+  const pid = String(order.productId || '').trim();
+  if (pid) {
+    const byId = list.find(p => p.id === pid);
+    if (byId?.imageUrl) return byId.imageUrl;
+    if (byId?.galleryImages?.[0]) return byId.galleryImages[0];
+  }
+
+  const pname = String(order.productName || '').trim().toLowerCase();
+  if (pname) {
+    const byName = list.find(p => p.name?.trim().toLowerCase() === pname);
+    if (byName?.imageUrl) return byName.imageUrl;
+    if (byName?.galleryImages?.[0]) return byName.galleryImages[0];
+  }
+
+  return '';
 }
 
 export function restoreDefaultCatalogProducts(): Product[] {

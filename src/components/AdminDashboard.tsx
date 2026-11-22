@@ -25,6 +25,8 @@ import {
   updateCatalogProduct,
   deleteCatalogProduct,
   mergeRemoteCatalogProducts,
+  clearCatalogDirty,
+  resolveOrderProductImage,
   restoreDefaultCatalogProducts,
   getLocalOrders,
   saveAllOrders,
@@ -79,6 +81,7 @@ export default function AdminDashboard() {
     run: () => Promise<void>;
   } | null>(null);
   const [updatingOrderKey, setUpdatingOrderKey] = useState<string | null>(null);
+  const [brokenAdminOrderThumbs, setBrokenAdminOrderThumbs] = useState<Record<string, boolean>>({});
 
   // In-app Confirm Modal (replaces blocked window.confirm)
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
@@ -164,6 +167,23 @@ export default function AdminDashboard() {
     fetchPaymentSettings();
     fetchPromoters();
     fetchCategories();
+
+    const unsubscribeProducts = onSnapshot(
+      collection(db, 'products'),
+      snapshot => {
+        if (!snapshot.empty) {
+          const fetched = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as Product));
+          const merged = mergeRemoteCatalogProducts(fetched);
+          setProducts(merged);
+          setLoadingProducts(false);
+        }
+      },
+      () => {
+        // Offline or network transient handled gracefully
+      }
+    );
+
+    return () => unsubscribeProducts();
   }, []);
 
   useEffect(() => {
@@ -419,134 +439,178 @@ export default function AdminDashboard() {
   const handleAddProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newProduct.name.trim() || !newProduct.price) return;
-    setSavingProduct(true);
 
     const extraTypedGallery = newGalleryInput.trim() ? [newGalleryInput.trim()] : [];
     const combinedGallery = [...newProduct.galleryImages, ...extraTypedGallery].filter(Boolean);
-    const finalMainImage =
-      newProduct.imageUrl.trim() ||
-      combinedGallery[0] ||
-      'https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=600';
-    const finalGallery = combinedGallery.length > 0 ? combinedGallery : [finalMainImage];
+    const finalMainImage = (newProduct.imageUrl.trim() || combinedGallery[0] || '').slice(0, 950000);
+    if (!finalMainImage) {
+      showToast('Please upload or paste at least one product photo before publishing.', 'error');
+      return;
+    }
 
+    const finalGallery = (combinedGallery.length > 0 ? combinedGallery : [finalMainImage]).slice(0, 15);
     const prodData: Omit<Product, 'id'> = {
-      name: newProduct.name.trim(),
+      name: newProduct.name.trim().slice(0, 200),
       price: Number(newProduct.price),
       discountPrice: Number(newProduct.discountPrice || newProduct.price),
       deliveryCharge: Math.max(0, Number(newProduct.deliveryCharge || 0)),
-      estimatedDeliveryDays: newProduct.estimatedDeliveryDays.trim(),
-      description: newProduct.description.trim() || 'Premium heat protection cooling coat by Amal Coolguard.',
+      estimatedDeliveryDays: newProduct.estimatedDeliveryDays.trim().slice(0, 100),
+      description: (newProduct.description.trim() || 'Premium heat protection cooling coat by Amal Coolguard.').slice(0, 2000),
       imageUrl: finalMainImage,
       galleryImages: finalGallery,
       stock: Number(newProduct.stock || 20),
-      category: newProduct.category || categories[0] || 'Coats',
+      category: (newProduct.category || categories[0] || 'Coats').slice(0, 100),
       gstPercent: Math.max(0, Number(newProduct.gstPercent || 0)),
       rating: 4.9,
       reviewsCount: 1,
-      features: newProduct.features,
+      features: (newProduct.features || []).slice(0, 20),
     };
 
-    if (prodData.category && !categories.some(c => c.toLowerCase() === prodData.category!.toLowerCase())) {
-      const nextCats = addCategory(prodData.category);
-      setCategories(nextCats);
-      setDoc(doc(db, 'settings', 'categories'), { list: nextCats }, { merge: true }).catch(() => {});
-    }
+    const publishToCloud = async () => {
+      setSavingProduct(true);
+      try {
+        if (prodData.category && !categories.some(c => c.toLowerCase() === prodData.category!.toLowerCase())) {
+          const nextCats = addCategory(prodData.category);
+          setCategories(nextCats);
+          await setDoc(doc(db, 'settings', 'categories'), { list: nextCats }, { merge: true }).catch(() => {});
+        }
 
-    const localId = 'prod_' + Date.now();
-    const localProd: Product = { id: localId, ...prodData };
-
-    // Immediately save to unified catalog & update UI
-    const nextList = addCatalogProduct(localProd);
-    setProducts(nextList);
-
-    // Sync to Firestore in background
-    try {
-      const docRef = await addDoc(collection(db, 'products'), prodData);
-      if (docRef.id && docRef.id !== localId) {
-        deleteCatalogProduct(localId);
+        const docRef = await addDoc(collection(db, 'products'), prodData);
         const syncedProd: Product = { id: docRef.id, ...prodData };
-        setProducts(addCatalogProduct(syncedProd));
+        const nextList = addCatalogProduct(syncedProd);
+        clearCatalogDirty();
+        setProducts(nextList);
+
+        setNewProduct({
+          name: '',
+          price: 2499,
+          discountPrice: 1999,
+          deliveryCharge: 0,
+          estimatedDeliveryDays: '',
+          description: '',
+          imageUrl: '',
+          galleryImages: [],
+          stock: 25,
+          category: categories[0] || 'Coats',
+          gstPercent: 0,
+          features: ['Heat Reflective Fabric', 'UV Sun Protection', 'Lightweight & Breathable'],
+        });
+        setNewGalleryInput('');
+        showToast('✓ New Product & photo published live to Storefront & Orders!');
+      } catch (err) {
+        try {
+          handleFirestoreError(err, OperationType.CREATE, 'products');
+        } catch {}
+        const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+        if (msg.includes('permission') || msg.includes('insufficient')) {
+          setPendingCloudAction({
+            label: `Publish Product "${prodData.name}"`,
+            run: publishToCloud,
+          });
+          showToast(`❌ Connect Admin Gmail (${ADMIN_EMAIL}) to publish product photo live!`, 'error');
+        } else {
+          showToast('❌ Could not publish product to Cloud Firestore. Check image size (max ~12 photos) & try again.', 'error');
+        }
+      } finally {
+        setSavingProduct(false);
       }
-    } catch (err) {
-      console.warn('Product stored locally (Firestore sync skipped):', err);
+    };
+
+    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+    if (currentEmail !== ADMIN_EMAIL) {
+      setPendingCloudAction({
+        label: `Publish Product "${prodData.name}"`,
+        run: publishToCloud,
+      });
+      return;
     }
 
-    setNewProduct({
-      name: '',
-      price: 2499,
-      discountPrice: 1999,
-      deliveryCharge: 0,
-      estimatedDeliveryDays: '',
-      description: '',
-      imageUrl: '',
-      galleryImages: [],
-      stock: 25,
-      category: categories[0] || 'Coats',
-      gstPercent: 0,
-      features: ['Heat Reflective Fabric', 'UV Sun Protection', 'Lightweight & Breathable'],
-    });
-    setNewGalleryInput('');
-    setSavingProduct(false);
-    showToast('✓ New Product published to storefront!');
+    await publishToCloud();
   };
 
   const handleSaveEditedProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingProduct) return;
-    setSavingProduct(true);
 
     const extraGallery = editGalleryInput.trim() ? [editGalleryInput.trim()] : [];
     const currentGallery = [...(editingProduct.galleryImages || []), ...extraGallery].filter(Boolean);
-    const resolvedMainImage =
-      editingProduct.imageUrl?.trim() ||
-      currentGallery[0] ||
-      'https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=600';
-    const resolvedGallery = currentGallery.length > 0 ? currentGallery : [resolvedMainImage];
+    const resolvedMainImage = (editingProduct.imageUrl?.trim() || currentGallery[0] || '').slice(0, 950000);
+    if (!resolvedMainImage) {
+      showToast('Please upload or paste a product photo before saving changes.', 'error');
+      return;
+    }
+    const resolvedGallery = (currentGallery.length > 0 ? currentGallery : [resolvedMainImage]).slice(0, 15);
 
     const updated: Product = {
       ...editingProduct,
-      name: editingProduct.name.trim(),
+      name: editingProduct.name.trim().slice(0, 200),
       price: Number(editingProduct.price),
       discountPrice: Number(editingProduct.discountPrice || editingProduct.price),
       deliveryCharge: Math.max(0, Number(editingProduct.deliveryCharge || 0)),
-      estimatedDeliveryDays: (editingProduct.estimatedDeliveryDays || '').trim(),
+      estimatedDeliveryDays: (editingProduct.estimatedDeliveryDays || '').trim().slice(0, 100),
+      description: (editingProduct.description || 'Premium heat protection cooling coat by Amal Coolguard.').slice(0, 2000),
       stock: Number(editingProduct.stock || 0),
       gstPercent: Math.max(0, Number(editingProduct.gstPercent || 0)),
       imageUrl: resolvedMainImage,
       galleryImages: resolvedGallery,
     };
 
-    // Update unified catalog & UI instantaneously
-    const nextList = updateCatalogProduct(updated);
-    setProducts(nextList);
+    const saveToCloud = async () => {
+      setSavingProduct(true);
+      try {
+        await setDoc(
+          doc(db, 'products', updated.id),
+          {
+            name: updated.name,
+            price: updated.price,
+            discountPrice: updated.discountPrice,
+            deliveryCharge: updated.deliveryCharge || 0,
+            estimatedDeliveryDays: updated.estimatedDeliveryDays || '',
+            description: updated.description,
+            imageUrl: updated.imageUrl,
+            galleryImages: updated.galleryImages,
+            stock: updated.stock,
+            category: (updated.category || categories[0] || 'Coats').slice(0, 100),
+            gstPercent: updated.gstPercent,
+          },
+          { merge: true }
+        );
 
-    // Sync to Firestore using setDoc merge so even default product IDs 1..4 save cleanly
-    try {
-      await setDoc(
-        doc(db, 'products', updated.id),
-        {
-          name: updated.name,
-          price: updated.price,
-          discountPrice: updated.discountPrice,
-          deliveryCharge: updated.deliveryCharge || 0,
-          estimatedDeliveryDays: updated.estimatedDeliveryDays || '',
-          description: updated.description,
-          imageUrl: updated.imageUrl,
-          galleryImages: updated.galleryImages,
-          stock: updated.stock,
-          category: updated.category,
-          gstPercent: updated.gstPercent,
-        },
-        { merge: true }
-      );
-    } catch (err) {
-      console.warn('Firestore edit product sync skipped:', err);
+        const nextList = updateCatalogProduct(updated);
+        clearCatalogDirty();
+        setProducts(nextList);
+        setEditGalleryInput('');
+        setEditingProduct(null);
+        showToast('✓ Product photo & details saved live on Storefront!');
+      } catch (err) {
+        try {
+          handleFirestoreError(err, OperationType.UPDATE, `products/${updated.id}`);
+        } catch {}
+        const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+        if (msg.includes('permission') || msg.includes('insufficient')) {
+          setPendingCloudAction({
+            label: `Save Changes to "${updated.name}"`,
+            run: saveToCloud,
+          });
+          showToast(`❌ Connect Admin Gmail (${ADMIN_EMAIL}) to sync product changes live!`, 'error');
+        } else {
+          showToast('❌ Failed to sync edited product to Cloud Firestore. Please try again.', 'error');
+        }
+      } finally {
+        setSavingProduct(false);
+      }
+    };
+
+    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+    if (currentEmail !== ADMIN_EMAIL) {
+      setPendingCloudAction({
+        label: `Save Changes to "${updated.name}"`,
+        run: saveToCloud,
+      });
+      return;
     }
 
-    setEditGalleryInput('');
-    setEditingProduct(null);
-    setSavingProduct(false);
-    showToast('✓ Product changes saved & updated on storefront!');
+    await saveToCloud();
   };
 
   const requestDeleteProduct = (prod: Product) => {
@@ -556,15 +620,31 @@ export default function AdminDashboard() {
       confirmLabel: '🗑️ Delete Product',
       danger: true,
       onConfirm: async () => {
-        const nextList = deleteCatalogProduct(prod.id);
-        setProducts(nextList);
-        setConfirmDialog(null);
-        showToast(`✓ "${prod.name}" deleted from storefront!`);
-        try {
-          await deleteDoc(doc(db, 'products', prod.id));
-        } catch (err) {
-          console.warn('Firestore delete product err:', err);
+        const deleteFromCloud = async () => {
+          try {
+            await deleteDoc(doc(db, 'products', prod.id));
+            const nextList = deleteCatalogProduct(prod.id);
+            clearCatalogDirty();
+            setProducts(nextList);
+            setConfirmDialog(null);
+            showToast(`✓ "${prod.name}" deleted from Cloud & Storefront!`);
+          } catch (err) {
+            setConfirmDialog(null);
+            showToast(`❌ Could not delete from Cloud: connect Admin Gmail (${ADMIN_EMAIL}).`, 'error');
+          }
+        };
+
+        const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+        if (currentEmail !== ADMIN_EMAIL) {
+          setConfirmDialog(null);
+          setPendingCloudAction({
+            label: `Delete Product "${prod.name}"`,
+            run: deleteFromCloud,
+          });
+          return;
         }
+
+        await deleteFromCloud();
       },
     });
   };
@@ -1240,9 +1320,31 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                           {order.address}, Pincode: {order.pincode}
                         </p>
                       </div>
-                      <div className="bg-gray-50 p-2.5 rounded-xl">
-                        <p className="text-[10px] text-gray-400 font-bold uppercase">Product Booked</p>
-                        <p className="font-bold text-gray-900">{order.productName || 'Amal Coolguard Vest'}</p>
+                      <div className="bg-gray-50 p-2.5 rounded-xl flex items-center gap-2.5">
+                        {(() => {
+                          const oKey = String(order.orderId || order.id);
+                          const thumb = resolveOrderProductImage(order, products);
+                          return (
+                            <div className="w-12 h-12 rounded-lg bg-white border border-gray-200 overflow-hidden shrink-0 flex items-center justify-center">
+                              {thumb && !brokenAdminOrderThumbs[oKey] ? (
+                                <img
+                                  src={thumb}
+                                  alt={order.productName || 'Product'}
+                                  onError={() =>
+                                    setBrokenAdminOrderThumbs(prev => ({ ...prev, [oKey]: true }))
+                                  }
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <span className="text-base text-gray-400">📦</span>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        <div className="min-w-0">
+                          <p className="text-[10px] text-gray-400 font-bold uppercase">Product Booked</p>
+                          <p className="font-bold text-gray-900 truncate">{order.productName || 'Amal Coolguard Vest'}</p>
+                        </div>
                       </div>
                       <div className="bg-gray-50 p-2.5 rounded-xl">
                         <p className="text-[10px] text-gray-400 font-bold uppercase">Amount & Payment Mode</p>
