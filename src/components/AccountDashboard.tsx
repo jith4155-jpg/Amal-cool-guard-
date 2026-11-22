@@ -36,8 +36,8 @@ export default function AccountDashboard() {
   const [copiedPromLink, setCopiedPromLink] = useState(false);
 
   const wishlistKey = user ? `amal_wishlist_${user.uid}` : '';
-  const cleanStoreBase = getCleanStoreBaseUrl();
-  const promoterPortalDisplayUrl = `${cleanStoreBase.replace(/^https?:\/\//, '')}/promoter`;
+  const cleanStoreBase = 'https://amalcoolguard.in';
+  const promoterPortalDisplayUrl = `amalcoolguard.in/promoter`;
 
   const loadWishlistData = useCallback(() => {
     if (!wishlistKey) {
