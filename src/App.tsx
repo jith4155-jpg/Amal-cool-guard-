@@ -10,30 +10,33 @@ import PromoterPortal from './components/PromoterPortal';
 import Layout from './components/Layout';
 import { LanguageProvider } from './context/LanguageContext';
 import { ThemeProvider } from './context/ThemeContext';
+import { AuthProvider } from './context/AuthContext';
 
 export default function App() {
   return (
     <ThemeProvider>
       <LanguageProvider>
-        <BrowserRouter>
-          <Routes>
-            {/* Standalone Admin routes without Customer Layout */}
-            <Route path="/admin" element={<AdminLogin />} />
-            <Route path="/admin/dashboard" element={<AdminDashboard />} />
+        <AuthProvider>
+          <BrowserRouter>
+            <Routes>
+              {/* Standalone Admin routes without Customer Layout */}
+              <Route path="/admin" element={<AdminLogin />} />
+              <Route path="/admin/dashboard" element={<AdminDashboard />} />
 
-            {/* Standalone Promoter / Affiliate Portal */}
-            <Route path="/promoter" element={<PromoterPortal />} />
+              {/* Standalone Promoter / Affiliate Portal */}
+              <Route path="/promoter" element={<PromoterPortal />} />
 
-            {/* Customer Storefront routes with Layout */}
-            <Route element={<Layout />}>
-              <Route path="/" element={<AppStorefront />} />
-              <Route path="/account" element={<AccountDashboard />} />
-              <Route path="/orders" element={<OrdersView />} />
-              <Route path="/product/:id" element={<ProductDetails />} />
-              <Route path="/login" element={<CustomerLogin />} />
-            </Route>
-          </Routes>
-        </BrowserRouter>
+              {/* Customer Storefront routes with Layout */}
+              <Route element={<Layout />}>
+                <Route path="/" element={<AppStorefront />} />
+                <Route path="/account" element={<AccountDashboard />} />
+                <Route path="/orders" element={<OrdersView />} />
+                <Route path="/product/:id" element={<ProductDetails />} />
+                <Route path="/login" element={<CustomerLogin />} />
+              </Route>
+            </Routes>
+          </BrowserRouter>
+        </AuthProvider>
       </LanguageProvider>
     </ThemeProvider>
   );

@@ -1,88 +1,111 @@
 import { useState, useEffect } from 'react';
-import { db } from '../firebase';
-import { collection, getDocs, query, orderBy, doc, updateDoc } from 'firebase/firestore';
-import { Link } from 'react-router-dom';
-import { getLocalOrders, saveAllOrders, getDeletedOrderIds } from '../utils/storeSync';
+import { Link, useNavigate } from 'react-router-dom';
 import { ThemeSwitcher } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { safeJsonParse } from '../utils/storeSync';
 
 export default function OrdersView() {
-  const [orders, setOrders] = useState<any[]>(() => getLocalOrders());
-  const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
+  const {
+    user,
+    authReady,
+    myOrders,
+    loadingOrders,
+    signingIn,
+    signInWithGoogle,
+    refreshMyOrders,
+    cancelMyOrder,
+    deleteMyOrder,
+  } = useAuth();
+
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmCancelModal, setConfirmCancelModal] = useState<any | null>(null);
+  const [confirmDeleteModal, setConfirmDeleteModal] = useState<any | null>(null);
   const [copiedTrackingId, setCopiedTrackingId] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState('');
 
   useEffect(() => {
-    fetchOrders();
-    const onSync = () => setOrders(getLocalOrders());
-    window.addEventListener('amal_store_updated', onSync);
-    window.addEventListener('storage', onSync);
-    return () => {
-      window.removeEventListener('amal_store_updated', onSync);
-      window.removeEventListener('storage', onSync);
-    };
-  }, []);
-
-  const fetchOrders = async () => {
-    const deletedSet = new Set(getDeletedOrderIds());
-    let combined: any[] = [];
-    try {
-      const q = query(collection(db, 'bookings'), orderBy('createdAt', 'desc'));
-      const fetchPromise = getDocs(q);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout')), 1200)
-      );
-      const snapshot = await Promise.race([fetchPromise, timeoutPromise]);
-      const remote = snapshot.docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .filter((o: any) => !deletedSet.has(String(o.orderId || '')) && !deletedSet.has(String(o.id || '')));
-      combined = [...remote];
-    } catch {
-      // Fallback
+    if (authReady && user) {
+      refreshMyOrders();
     }
+  }, [authReady, user, refreshMyOrders]);
 
-    const localOrders = getLocalOrders();
-    const seenIds = new Set(combined.map(o => o.orderId || o.id));
-    for (const loc of localOrders) {
-      if (!seenIds.has(loc.orderId || loc.id)) {
-        combined.push(loc);
-      }
-    }
-
-    setOrders(combined);
-    saveAllOrders(combined);
-    setLoading(false);
-  };
-
-  const handleCancelOrder = async (order: any) => {
-    const targetOrderId = order.orderId || order.id;
+  const handleConfirmCancel = async (order: any) => {
+    const targetOrderId = String(order.orderId || order.id);
     setCancellingId(targetOrderId);
-
-    const nextOrders = orders.map(o =>
-      o.orderId === targetOrderId || o.id === targetOrderId ? { ...o, status: 'cancelled' } : o
-    );
-    setOrders(nextOrders);
-    saveAllOrders(nextOrders);
-
-    const docId = order.id || order.docId;
-    if (docId) {
-      try {
-        await updateDoc(doc(db, 'bookings', docId), { status: 'cancelled' });
-      } catch (err) {
-        console.warn('Firestore cancel order err:', err);
-      }
-    }
-
+    await cancelMyOrder(order);
     setCancellingId(null);
     setConfirmCancelModal(null);
   };
 
-  if (loading) {
+  const handleConfirmDelete = async (order: any) => {
+    const targetOrderId = String(order.orderId || order.id);
+    setDeletingId(targetOrderId);
+    await deleteMyOrder(order);
+    setDeletingId(null);
+    setConfirmDeleteModal(null);
+  };
+
+  if (!authReady) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-6">
         <div className="text-center">
           <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
-          <p className="text-gray-600 text-sm">Loading your orders...</p>
+          <p className="text-xs font-bold text-gray-600">Checking account session...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // STRICT ISOLATION: Orders cannot be viewed without logging into your Gmail account
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-gray-100 pb-20">
+        <div className="bg-white p-4 shadow-sm sticky top-0 z-40 flex items-center justify-between gap-2">
+          <h1 className="text-xl font-bold text-gray-900">My Orders</h1>
+          <ThemeSwitcher compact />
+        </div>
+
+        <div className="p-4">
+          <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-200 max-w-md mx-auto mt-6 text-center space-y-4">
+            <div className="w-16 h-16 bg-blue-100 text-blue-600 text-3xl rounded-full flex items-center justify-center mx-auto">
+              🔐
+            </div>
+            <div>
+              <h2 className="text-lg font-black text-gray-900">Login Required (ലോഗിൻ ചെയ്യുക)</h2>
+              <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">
+                നിങ്ങളുടെ ഓർഡറുകളും എത്ര ഓർഡർ ചെയ്തു എന്ന വിവരവും കാണാൻ <b>Gmail അക്കൗണ്ട്</b> വഴി ലോഗിൻ ചെയ്യുക.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={async () => {
+                setLoginError('');
+                const res = await signInWithGoogle();
+                if (res.error) setLoginError(res.error);
+              }}
+              disabled={signingIn}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-3.5 px-4 rounded-2xl shadow-lg transition text-xs disabled:opacity-60"
+            >
+              {signingIn ? 'Signing in...' : '✉️ Sign In with Google / Gmail (ലോഗിൻ ചെയ്യുക)'}
+            </button>
+
+            {loginError && (
+              <p className="text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 p-2.5 rounded-xl">
+                {loginError}
+              </p>
+            )}
+
+            <button
+              type="button"
+              onClick={() => navigate('/login?redirect=/orders')}
+              className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 rounded-xl text-xs transition"
+            >
+              Open Login Page →
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -105,39 +128,70 @@ export default function OrdersView() {
     }
   };
 
+  const approvedCount = myOrders.filter(o => o.status?.toLowerCase() === 'confirmed').length;
+  const pendingCount = myOrders.filter(
+    o => !o.status || o.status === 'pending' || o.status === 'pending_verification'
+  ).length;
+
   return (
     <div className="min-h-screen bg-gray-100 pb-20">
       {/* Header */}
       <div className="bg-white p-4 shadow-sm sticky top-0 z-40 flex items-center justify-between gap-2">
-        <h1 className="text-xl font-bold text-gray-900">My Orders</h1>
-        <div className="flex items-center gap-2">
+        <div className="min-w-0">
+          <h1 className="text-xl font-bold text-gray-900">My Orders</h1>
+          <p className="text-[11px] font-bold text-blue-700 truncate">✉️ {user.email}</p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
           <ThemeSwitcher compact />
-          <span className="text-xs bg-blue-50 text-blue-700 px-3 py-1 rounded-full font-bold">
-            {orders.length} Orders
+          <span className="text-xs bg-blue-50 text-blue-700 px-3 py-1 rounded-full font-extrabold border border-blue-200">
+            {myOrders.length} {myOrders.length === 1 ? 'Order' : 'Orders'}
           </span>
         </div>
       </div>
 
       <div className="p-4 space-y-4">
-        {orders.length === 0 ? (
-          <div className="bg-white p-8 rounded-2xl text-center shadow-sm my-6">
+        {/* Exact Gmail Order Count Summary Banner */}
+        <div className="bg-white p-3.5 rounded-2xl shadow-xs border border-gray-200 grid grid-cols-3 gap-2 text-center">
+          <div className="bg-blue-50 p-2 rounded-xl">
+            <p className="text-[10px] font-bold text-blue-700 uppercase">Total Orders</p>
+            <p className="text-base font-black text-blue-900">{myOrders.length}</p>
+          </div>
+          <div className="bg-amber-50 p-2 rounded-xl">
+            <p className="text-[10px] font-bold text-amber-700 uppercase">Pending</p>
+            <p className="text-base font-black text-amber-900">{pendingCount}</p>
+          </div>
+          <div className="bg-emerald-50 p-2 rounded-xl">
+            <p className="text-[10px] font-bold text-emerald-700 uppercase">Approved</p>
+            <p className="text-base font-black text-emerald-900">{approvedCount}</p>
+          </div>
+        </div>
+
+        {loadingOrders && myOrders.length === 0 ? (
+          <div className="bg-white p-8 rounded-2xl text-center shadow-sm">
+            <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+            <p className="text-xs font-bold text-gray-500">Loading orders for {user.email}...</p>
+          </div>
+        ) : myOrders.length === 0 ? (
+          <div className="bg-white p-8 rounded-2xl text-center shadow-sm my-4">
             <p className="text-4xl mb-3">📦</p>
             <h3 className="font-bold text-lg text-gray-800 mb-1">No Orders Placed Yet</h3>
-            <p className="text-xs text-gray-500 mb-4">You haven't ordered any cooling vests yet.</p>
+            <p className="text-xs text-gray-500 mb-4">
+              You have 0 orders on {user.email}. Explore products to place your first booking.
+            </p>
             <Link to="/" className="inline-block bg-blue-600 text-white font-bold text-xs px-6 py-3 rounded-full shadow">
               Explore Products
             </Link>
           </div>
         ) : (
-          orders.map((order, idx) => {
+          myOrders.map((order, idx) => {
             const isCancelled = order.status?.toLowerCase() === 'cancelled';
-            const targetId = order.orderId || order.id || `AC-${idx}`;
+            const targetId = String(order.orderId || order.id || `AC-${idx}`);
 
             return (
-              <div 
-                key={targetId} 
+              <div
+                key={targetId}
                 className={`bg-white p-4 rounded-2xl shadow-sm border transition relative ${
-                  isCancelled ? 'border-red-200 bg-gray-50/50 opacity-90' : 'border-gray-100'
+                  isCancelled ? 'border-red-200 bg-gray-50/50 opacity-95' : 'border-gray-100'
                 }`}
               >
                 {/* Header info */}
@@ -145,21 +199,23 @@ export default function OrdersView() {
                   <div>
                     <p className="text-xs font-bold text-gray-500">ORDER #{targetId}</p>
                     <p className="text-[11px] text-gray-400">
-                      {order.createdAt?.seconds 
-                        ? new Date(order.createdAt.seconds * 1000).toLocaleDateString() 
-                        : (order.createdAt ? new Date(order.createdAt).toLocaleDateString() : 'Recently')}
+                      {order.createdAt?.seconds
+                        ? new Date(order.createdAt.seconds * 1000).toLocaleDateString()
+                        : order.createdAt
+                        ? new Date(order.createdAt).toLocaleDateString()
+                        : 'Recently'}
                     </p>
                   </div>
                   {getStatusBadge(order.status)}
                 </div>
 
-                {/* Product details & Cancel button */}
+                {/* Product details */}
                 <div className="flex items-center gap-3 relative">
                   <div className="w-16 h-16 bg-gray-100 rounded-xl overflow-hidden flex-shrink-0 relative">
-                    <img 
-                      src={order.imageUrl || 'https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=200'} 
-                      alt="product" 
-                      className="w-full h-full object-cover" 
+                    <img
+                      src={order.imageUrl || 'https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=200'}
+                      alt="product"
+                      className="w-full h-full object-cover"
                     />
                   </div>
 
@@ -180,17 +236,6 @@ export default function OrdersView() {
                       )}
                     </p>
                   </div>
-
-                  {/* Cancel Order Action Button */}
-                  {!isCancelled && (
-                    <button
-                      onClick={() => setConfirmCancelModal(order)}
-                      disabled={cancellingId === targetId}
-                      className="bg-red-50 text-red-600 hover:bg-red-600 hover:text-white border border-red-200 font-extrabold text-[11px] px-3 py-2 rounded-xl transition shadow-xs flex-shrink-0"
-                    >
-                      {cancellingId === targetId ? 'Cancelling...' : '🚫 Cancel Order'}
-                    </button>
-                  )}
                 </div>
 
                 {/* Estimated Delivery Time Banner (Set by Admin) */}
@@ -281,10 +326,10 @@ export default function OrdersView() {
                       <span>📷</span> Payment Screenshot Uploaded:
                     </p>
                     <div className="w-full h-36 bg-gray-900 rounded-lg overflow-hidden">
-                      <img 
-                        src={order.screenshot || order.paymentScreenshot} 
-                        alt="Payment screenshot" 
-                        className="w-full h-full object-contain" 
+                      <img
+                        src={order.screenshot || order.paymentScreenshot}
+                        alt="Payment screenshot"
+                        className="w-full h-full object-contain"
                       />
                     </div>
                   </div>
@@ -297,18 +342,43 @@ export default function OrdersView() {
                   </div>
                 )}
 
+                {/* Customer Cancel & Delete Actions */}
+                <div className="flex gap-2 mt-3">
+                  {!isCancelled && (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmCancelModal(order)}
+                      disabled={cancellingId === targetId}
+                      className="flex-1 bg-amber-50 text-amber-700 hover:bg-amber-600 hover:text-white border border-amber-200 font-extrabold text-xs py-2.5 rounded-xl transition shadow-xs"
+                    >
+                      {cancellingId === targetId ? 'Cancelling...' : '🚫 Cancel Order'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteModal(order)}
+                    disabled={deletingId === targetId}
+                    className="flex-1 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white border border-red-200 font-extrabold text-xs py-2.5 rounded-xl transition shadow-xs"
+                  >
+                    {deletingId === targetId ? 'Deleting...' : '🗑️ Delete Order (ഡിലീറ്റ്)'}
+                  </button>
+                </div>
+
                 {/* Direct WhatsApp Contact Button for this order */}
                 {(() => {
-                  const savedSettings = JSON.parse(localStorage.getItem('amal_payment_settings') || '{}');
+                  const savedSettings = safeJsonParse<Record<string, any>>(
+                    localStorage.getItem('amal_payment_settings'),
+                    {}
+                  );
                   const whatsappNum = savedSettings.whatsappNumber || '6238113451';
                   return (
-                    <a 
+                    <a
                       href={`https://wa.me/91${whatsappNum}?text=${encodeURIComponent(
                         `Hello Amal Coolguard Customer Support,\nI have a question about my booking:\n\nOrder ID: #${targetId}\nProduct: ${order.productName || 'Cooling Coat'}\nAmount: ₹${order.price || 2499}\nCustomer: ${order.customerName}\nPhone: ${order.phoneNumber}`
                       )}`}
                       target="_blank"
                       rel="noreferrer"
-                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm transition mt-3"
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm transition mt-2.5"
                     >
                       <span className="text-base">💬</span>
                       <span>Send Order details to Customer Care WhatsApp ({whatsappNum})</span>
@@ -331,20 +401,22 @@ export default function OrdersView() {
       {confirmCancelModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-[200] p-4">
           <div className="bg-white rounded-3xl p-6 shadow-2xl max-w-sm w-full space-y-4 animate-in zoom-in-95 duration-150 text-center">
-            <div className="w-14 h-14 bg-red-100 text-red-600 text-2xl rounded-full flex items-center justify-center mx-auto">
+            <div className="w-14 h-14 bg-amber-100 text-amber-600 text-2xl rounded-full flex items-center justify-center mx-auto">
               🚫
             </div>
             <div>
               <h3 className="text-xl font-extrabold text-gray-900">Cancel Order?</h3>
               <p className="text-xs text-gray-600 mt-1">
-                Are you sure you want to cancel order <span className="font-bold">#{confirmCancelModal.orderId || confirmCancelModal.id}</span> for <span className="font-bold">{confirmCancelModal.productName || 'Cooling Vest'}</span>?
+                Are you sure you want to cancel order{' '}
+                <span className="font-bold">#{confirmCancelModal.orderId || confirmCancelModal.id}</span> for{' '}
+                <span className="font-bold">{confirmCancelModal.productName || 'Cooling Vest'}</span>?
               </p>
             </div>
 
             <div className="flex gap-3 pt-2">
               <button
-                onClick={() => handleCancelOrder(confirmCancelModal)}
-                className="flex-1 bg-red-600 text-white font-extrabold py-3 rounded-xl text-xs shadow hover:bg-red-700"
+                onClick={() => handleConfirmCancel(confirmCancelModal)}
+                className="flex-1 bg-amber-600 text-white font-extrabold py-3 rounded-xl text-xs shadow hover:bg-amber-700"
               >
                 Yes, Cancel Order
               </button>
@@ -353,6 +425,38 @@ export default function OrdersView() {
                 className="flex-1 bg-gray-100 text-gray-800 font-bold py-3 rounded-xl text-xs hover:bg-gray-200"
               >
                 Keep Order
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal for Permanently Deleting Customer Order */}
+      {confirmDeleteModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-[200] p-4">
+          <div className="bg-white rounded-3xl p-6 shadow-2xl max-w-sm w-full space-y-4 animate-in zoom-in-95 duration-150 text-center">
+            <div className="w-14 h-14 bg-red-100 text-red-600 text-2xl rounded-full flex items-center justify-center mx-auto">
+              🗑️
+            </div>
+            <div>
+              <h3 className="text-xl font-extrabold text-gray-900">Delete Order? (ഓർഡർ ഡിലീറ്റ് ചെയ്യുക)</h3>
+              <p className="text-xs text-gray-600 mt-1">
+                നിങ്ങളുടെ ഓർഡർ <span className="font-bold">#{confirmDeleteModal.orderId || confirmDeleteModal.id}</span> ({confirmDeleteModal.productName || 'Product'}) സ്ഥിരമായി ഡിലീറ്റ് ചെയ്യണോ?
+              </p>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => handleConfirmDelete(confirmDeleteModal)}
+                className="flex-1 bg-red-600 text-white font-extrabold py-3 rounded-xl text-xs shadow hover:bg-red-700"
+              >
+                Yes, Delete Permanently
+              </button>
+              <button
+                onClick={() => setConfirmDeleteModal(null)}
+                className="flex-1 bg-gray-100 text-gray-800 font-bold py-3 rounded-xl text-xs hover:bg-gray-200"
+              >
+                Cancel
               </button>
             </div>
           </div>

@@ -1,28 +1,210 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Helper for admin
+    // 2. Global Helpers & Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
     function isAdmin() {
-      return request.auth != null && request.auth.token.email == 'libinvincent310@gmail.com';
+      return isVerifiedUser() && (
+        request.auth.token.email == 'libinvincent310@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOptString(data, field, maxLen) {
+      return !(field in data) || data[field] == null || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isOptNumber(data, field) {
+      return !(field in data) || data[field] == null || (data[field] is number);
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'name']) &&
+        data.keys().hasOnly(['uid', 'email', 'name', 'photoURL', 'mobile', 'address', 'pincode', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid.size() <= 128 &&
+        data.email is string && data.email.size() <= 200 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        isOptString(data, 'photoURL', 1000) &&
+        isOptString(data, 'mobile', 30) &&
+        isOptString(data, 'address', 500) &&
+        isOptString(data, 'pincode', 20);
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['name', 'price']) &&
+        data.keys().hasOnly([
+          'name', 'price', 'discountPrice', 'description', 'imageUrl', 'galleryImages',
+          'category', 'rating', 'reviewsCount', 'features', 'stock', 'gstPercent',
+          'deliveryCharge', 'estimatedDeliveryDays', 'createdAt', 'updatedAt'
+        ]) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.price is number && data.price >= 0 &&
+        isOptNumber(data, 'discountPrice') &&
+        isOptString(data, 'description', 2000) &&
+        isOptString(data, 'imageUrl', 950000) &&
+        isOptString(data, 'category', 100) &&
+        isOptNumber(data, 'rating') &&
+        isOptNumber(data, 'reviewsCount') &&
+        isOptNumber(data, 'stock') &&
+        isOptNumber(data, 'gstPercent') &&
+        isOptNumber(data, 'deliveryCharge') &&
+        isOptString(data, 'estimatedDeliveryDays', 100) &&
+        (!('galleryImages' in data) || (data.galleryImages is list && data.galleryImages.size() <= 15)) &&
+        (!('features' in data) || (data.features is list && data.features.size() <= 20));
+    }
+
+    function isValidBooking(data) {
+      return data.keys().hasAll(['orderId', 'userId', 'customerName', 'phoneNumber', 'productId', 'status']) &&
+        data.keys().hasOnly([
+          'orderId', 'userId', 'userEmail', 'userName', 'userPhoto', 'customerName',
+          'phoneNumber', 'address', 'pincode', 'productId', 'productName', 'productPrice',
+          'gstPercent', 'gstAmount', 'gstNumber', 'deliveryCharge', 'estimatedDeliveryDays',
+          'price', 'paymentMethod', 'paymentScreenshot', 'referralCode', 'promoterId',
+          'promoterCommission', 'trackingId', 'trackingUrl', 'courierName', 'status', 'createdAt'
+        ]) &&
+        data.orderId is string && data.orderId.size() >= 1 && data.orderId.size() <= 64 &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+        data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120 &&
+        data.phoneNumber is string && data.phoneNumber.size() >= 1 && data.phoneNumber.size() <= 30 &&
+        data.productId is string && data.productId.size() >= 1 && data.productId.size() <= 128 &&
+        data.status in ['pending', 'pending_verification', 'confirmed', 'rejected', 'cancelled', 'completed'] &&
+        isOptString(data, 'userEmail', 200) &&
+        isOptString(data, 'userName', 120) &&
+        isOptString(data, 'userPhoto', 1000) &&
+        isOptString(data, 'address', 500) &&
+        isOptString(data, 'pincode', 20) &&
+        isOptString(data, 'productName', 200) &&
+        isOptNumber(data, 'productPrice') &&
+        isOptNumber(data, 'gstPercent') &&
+        isOptNumber(data, 'gstAmount') &&
+        isOptString(data, 'gstNumber', 64) &&
+        isOptNumber(data, 'deliveryCharge') &&
+        isOptString(data, 'estimatedDeliveryDays', 100) &&
+        isOptNumber(data, 'price') &&
+        isOptString(data, 'paymentMethod', 50) &&
+        isOptString(data, 'paymentScreenshot', 950000) &&
+        isOptString(data, 'referralCode', 64) &&
+        isOptString(data, 'promoterId', 64) &&
+        isOptNumber(data, 'promoterCommission') &&
+        isOptString(data, 'trackingId', 120) &&
+        isOptString(data, 'trackingUrl', 500) &&
+        isOptString(data, 'courierName', 100);
+    }
+
+    function isValidPromoter(data) {
+      return data.keys().hasAll(['id', 'name', 'phone']) &&
+        data.keys().hasOnly([
+          'id', 'name', 'phone', 'channelName', 'paymentType', 'upiId', 'bankName',
+          'accountNumber', 'ifscCode', 'accountHolderName', 'password', 'createdAt',
+          'commissionPerSale', 'paidAmount', 'userId'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 64 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.phone is string && data.phone.size() >= 1 && data.phone.size() <= 30 &&
+        isOptString(data, 'channelName', 120) &&
+        isOptString(data, 'paymentType', 20) &&
+        isOptString(data, 'upiId', 120) &&
+        isOptString(data, 'bankName', 120) &&
+        isOptString(data, 'accountNumber', 64) &&
+        isOptString(data, 'ifscCode', 32) &&
+        isOptString(data, 'accountHolderName', 120) &&
+        isOptString(data, 'password', 120) &&
+        isOptNumber(data, 'commissionPerSale') &&
+        isOptNumber(data, 'paidAmount') &&
+        isOptString(data, 'userId', 128);
+    }
+
+    // 4. Collection Rules
+    match /test/connection {
+      allow get: if true;
     }
 
     match /products/{productId} {
-      allow read: if true;
-      allow write: if isAdmin();
+      allow get: if isValidId(productId);
+      allow list: if true;
+      allow create, update: if isAdmin() && isValidId(productId) && isValidProduct(incoming());
+      allow delete: if isAdmin() && isValidId(productId);
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isAdmin() || (isVerifiedUser() && request.auth.uid == userId));
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && isVerifiedUser() && request.auth.uid == userId &&
+        isValidUserProfile(incoming()) && incoming().uid == request.auth.uid;
+      allow update: if isValidId(userId) && isVerifiedUser() && request.auth.uid == userId &&
+        isValidUserProfile(incoming()) && incoming().uid == existing().uid;
+      allow delete: if isValidId(userId) && (isAdmin() || (isVerifiedUser() && request.auth.uid == userId));
     }
 
     match /bookings/{bookingId} {
-      allow read: if isAdmin() || (request.auth != null && resource.data.userId == request.auth.uid);
-      allow create: if request.auth != null
-                   && request.resource.data.customerName is string 
-                   && request.resource.data.phoneNumber is string
-                   && request.resource.data.productId is string
-                   && request.resource.data.status == 'pending';
-      allow update, delete: if isAdmin();
+      allow get: if isValidId(bookingId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
+      allow create: if isValidId(bookingId) && isVerifiedUser() &&
+        isValidBooking(incoming()) &&
+        incoming().userId == request.auth.uid &&
+        incoming().status in ['pending', 'pending_verification'] &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(bookingId) && isValidBooking(incoming()) && (
+        isAdmin() ||
+        (
+          isVerifiedUser() &&
+          existing().userId == request.auth.uid &&
+          incoming().userId == existing().userId &&
+          incoming().orderId == existing().orderId &&
+          (
+            (incoming().diff(existing()).affectedKeys().hasOnly(['status']) && incoming().status == 'cancelled') ||
+            (incoming().diff(existing()).affectedKeys().hasOnly(['paymentScreenshot', 'status']) && incoming().status == 'pending_verification')
+          )
+        )
+      );
+      allow delete: if isValidId(bookingId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
+    }
+
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId) && (settingId in ['payment', 'categories'] || isVerifiedUser() || isAdmin());
+      allow create, update: if isValidId(settingId) && (
+        isAdmin() ||
+        (
+          settingId == 'order_counter' &&
+          isVerifiedUser() &&
+          incoming().keys().hasOnly(['nextVal']) &&
+          incoming().nextVal is number &&
+          incoming().nextVal >= 1
+        )
+      );
+      allow delete: if isValidId(settingId) && isAdmin();
+    }
+
+    match /promoters/{promoterId} {
+      allow get: if isValidId(promoterId);
+      allow list: if isAdmin();
+      allow create, update: if isValidId(promoterId) && isValidPromoter(incoming()) && (isAdmin() || isVerifiedUser());
+      allow delete: if isValidId(promoterId) && isAdmin();
     }
   }
 }

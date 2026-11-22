@@ -2,38 +2,145 @@
   "entities": {
     "booking": {
       "title": "Booking",
-      "description": "A customer booking request.",
+      "description": "A customer booking request tied to a verified user account.",
       "type": "object",
       "properties": {
-        "customerName": { "type": "string" },
-        "phoneNumber": { "type": "string" },
-        "productId": { "type": "string" },
-        "status": { "type": "string", "enum": ["pending", "confirmed", "completed"] },
+        "orderId": { "type": "string", "maxLength": 64 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "userEmail": { "type": "string", "maxLength": 200 },
+        "userName": { "type": "string", "maxLength": 120 },
+        "userPhoto": { "type": "string", "maxLength": 1000 },
+        "customerName": { "type": "string", "maxLength": 120 },
+        "phoneNumber": { "type": "string", "maxLength": 30 },
+        "address": { "type": "string", "maxLength": 500 },
+        "pincode": { "type": "string", "maxLength": 20 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "productName": { "type": "string", "maxLength": 200 },
+        "productPrice": { "type": "number" },
+        "gstPercent": { "type": "number" },
+        "gstAmount": { "type": "number" },
+        "gstNumber": { "type": "string", "maxLength": 64 },
+        "deliveryCharge": { "type": "number" },
+        "estimatedDeliveryDays": { "type": "string", "maxLength": 100 },
+        "price": { "type": "number" },
+        "paymentMethod": { "type": "string", "maxLength": 50 },
+        "paymentScreenshot": { "type": "string", "maxLength": 950000 },
+        "referralCode": { "type": "string", "maxLength": 64 },
+        "promoterId": { "type": "string", "maxLength": 64 },
+        "promoterCommission": { "type": "number" },
+        "trackingId": { "type": "string", "maxLength": 120 },
+        "trackingUrl": { "type": "string", "maxLength": 500 },
+        "courierName": { "type": "string", "maxLength": 100 },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "pending_verification", "confirmed", "rejected", "cancelled", "completed"]
+        },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["customerName", "phoneNumber", "productId", "status", "createdAt"]
+      "required": ["orderId", "userId", "customerName", "phoneNumber", "productId", "status", "createdAt"]
+    },
+    "userProfile": {
+      "title": "UserProfile",
+      "description": "Private authenticated customer profile keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 200 },
+        "name": { "type": "string", "maxLength": 120 },
+        "photoURL": { "type": "string", "maxLength": 1000 },
+        "mobile": { "type": "string", "maxLength": 30 },
+        "address": { "type": "string", "maxLength": 500 },
+        "pincode": { "type": "string", "maxLength": 20 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "name"]
     },
     "product": {
       "title": "Product",
-      "description": "A product available for booking.",
+      "description": "A product available for booking in the storefront.",
       "type": "object",
       "properties": {
-        "name": { "type": "string" },
+        "name": { "type": "string", "maxLength": 200 },
         "price": { "type": "number" },
-        "description": { "type": "string" },
-        "imageUrl": { "type": "string" }
+        "discountPrice": { "type": "number" },
+        "description": { "type": "string", "maxLength": 2000 },
+        "imageUrl": { "type": "string", "maxLength": 950000 },
+        "galleryImages": { "type": "array" },
+        "category": { "type": "string", "maxLength": 100 },
+        "rating": { "type": "number" },
+        "reviewsCount": { "type": "number" },
+        "features": { "type": "array" },
+        "stock": { "type": "number" },
+        "gstPercent": { "type": "number" },
+        "deliveryCharge": { "type": "number" },
+        "estimatedDeliveryDays": { "type": "string", "maxLength": 100 }
       },
-      "required": ["name", "price", "description", "imageUrl"]
+      "required": ["name", "price"]
+    },
+    "promoter": {
+      "title": "Promoter",
+      "description": "Affiliate / Promoter profile for commission tracking.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "name": { "type": "string", "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "channelName": { "type": "string", "maxLength": 120 },
+        "paymentType": { "type": "string", "enum": ["upi", "bank"] },
+        "upiId": { "type": "string", "maxLength": 120 },
+        "bankName": { "type": "string", "maxLength": 120 },
+        "accountNumber": { "type": "string", "maxLength": 64 },
+        "ifscCode": { "type": "string", "maxLength": 32 },
+        "accountHolderName": { "type": "string", "maxLength": 120 },
+        "commissionPerSale": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "phone"]
+    },
+    "setting": {
+      "title": "StoreSetting",
+      "description": "Storefront configuration documents (payment, categories, order_counter).",
+      "type": "object",
+      "properties": {
+        "nextVal": { "type": "number" },
+        "list": { "type": "array" },
+        "enableCOD": { "type": "boolean" },
+        "enableUPI": { "type": "boolean" },
+        "enableCard": { "type": "boolean" },
+        "merchantUpiId": { "type": "string", "maxLength": 120 },
+        "whatsappNumber": { "type": "string", "maxLength": 30 },
+        "storeBaseUrl": { "type": "string", "maxLength": 300 },
+        "gstNumber": { "type": "string", "maxLength": 64 },
+        "pickupName": { "type": "string", "maxLength": 120 },
+        "pickupPhone": { "type": "string", "maxLength": 30 },
+        "pickupAddress": { "type": "string", "maxLength": 500 },
+        "pickupPincode": { "type": "string", "maxLength": 20 },
+        "defaultDeliveryDays": { "type": "string", "maxLength": 100 }
+      }
     }
   },
   "firestore": {
     "/bookings/{bookingId}": {
       "schema": "booking",
-      "description": "Bookings collection."
+      "description": "Customer bookings collection with strict owner-based read/delete and admin management."
+    },
+    "/users/{userId}": {
+      "schema": "userProfile",
+      "description": "Private customer profiles keyed by Firebase Auth UID."
     },
     "/products/{productId}": {
       "schema": "product",
-      "description": "Products collection."
+      "description": "Storefront product catalog."
+    },
+    "/promoters/{promoterId}": {
+      "schema": "promoter",
+      "description": "Promoter & affiliate profiles."
+    },
+    "/settings/{settingId}": {
+      "schema": "setting",
+      "description": "Store configuration docs: payment, categories, order_counter."
     }
   }
 }

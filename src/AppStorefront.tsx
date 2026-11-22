@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom';
 import { Product } from './data/mockProducts';
 import { useLanguage, LanguageSelector } from './context/LanguageContext';
 import { ThemeSwitcher } from './context/ThemeContext';
+import { useAuth } from './context/AuthContext';
 import {
   getCatalogProducts,
   mergeRemoteCatalogProducts,
@@ -17,21 +18,26 @@ import {
 
 export default function AppStorefront() {
   const { t } = useLanguage();
+  const { user, profile } = useAuth();
 
   // Instant initialization from unified Admin-synced catalog
   const [products, setProducts] = useState<Product[]>(() => getCatalogProducts());
   const [customCategories, setCustomCategories] = useState<string[]>(() => getCategories());
 
-  const [wishlist, setWishlist] = useState<Record<string, boolean>>(() => {
+  const wishlistKey = user ? `amal_wishlist_${user.uid}` : 'amal_wishlist_guest';
+
+  const [wishlist, setWishlist] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
     try {
-      const savedWishlistIds: string[] = safeJsonParse<string[]>(localStorage.getItem('amal_wishlist'), []);
+      const savedWishlistIds: string[] = safeJsonParse<string[]>(localStorage.getItem(wishlistKey), []);
       const wishMap: Record<string, boolean> = {};
       savedWishlistIds.forEach(id => { wishMap[id] = true; });
-      return wishMap;
+      setWishlist(wishMap);
     } catch {
-      return {};
+      setWishlist({});
     }
-  });
+  }, [wishlistKey]);
 
   useEffect(() => {
     let isMounted = true;
@@ -123,7 +129,7 @@ export default function AppStorefront() {
     setWishlist(newWishlist);
 
     const activeIds = Object.keys(newWishlist).filter(id => newWishlist[id]);
-    localStorage.setItem('amal_wishlist', JSON.stringify(activeIds));
+    localStorage.setItem(wishlistKey, JSON.stringify(activeIds));
   };
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -150,7 +156,6 @@ export default function AppStorefront() {
     return matchesCategory && matchesSearch;
   });
 
-  const session = safeJsonParse<any>(localStorage.getItem('amal_customer_session'), null);
   const savedSettings = safeJsonParse<Record<string, any>>(localStorage.getItem('amal_payment_settings'), {});
   const whatsappNum = savedSettings.whatsappNumber || '6238113451';
 
@@ -181,13 +186,15 @@ export default function AppStorefront() {
           {/* Prominent Language Switcher at the top */}
           <LanguageSelector />
 
-          {session ? (
+          {user ? (
             <Link
               to="/account"
               className="flex items-center gap-1 bg-blue-50 border border-blue-200 text-blue-700 text-[10px] font-extrabold px-2 py-1.5 rounded-xl"
             >
               <span>👤</span>
-              <span className="max-w-[55px] truncate">{session.name?.split(' ')[0] || 'User'}</span>
+              <span className="max-w-[55px] truncate">
+                {(profile?.name || user.displayName || user.email || 'User').split(' ')[0]}
+              </span>
             </Link>
           ) : (
             <Link

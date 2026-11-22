@@ -14,6 +14,7 @@ import {
 } from 'firebase/firestore';
 import { Product } from '../data/mockProducts';
 import { ThemeSwitcher } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 import {
   compressImageFile,
   getCatalogProducts,
@@ -56,6 +57,7 @@ interface ConfirmDialogState {
 }
 
 export default function AdminDashboard() {
+  const { user: authUser, signInWithGoogle } = useAuth();
   const [activeTab, setActiveTab] = useState<'orders' | 'customers' | 'products' | 'payments' | 'promoters'>('orders');
 
   // Toast feedback state (replaces blocked window.alert)
@@ -759,6 +761,28 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <ThemeSwitcher />
+          {authUser?.email !== 'libinvincent310@gmail.com' ? (
+            <button
+              type="button"
+              onClick={async () => {
+                const res = await signInWithGoogle();
+                if (res.user?.email === 'libinvincent310@gmail.com') {
+                  showToast('✓ Admin Gmail synced for Cloud Firestore!');
+                  fetchOrders();
+                  fetchProducts();
+                } else if (res.user) {
+                  showToast(`Signed in as ${res.user.email}. Admin email is libinvincent310@gmail.com.`, 'error');
+                }
+              }}
+              className="bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold px-3 py-2 rounded-xl shadow"
+            >
+              🔐 Connect Admin Gmail
+            </button>
+          ) : (
+            <span className="bg-emerald-900/60 border border-emerald-500/40 text-emerald-300 text-[11px] font-bold px-2.5 py-1.5 rounded-xl">
+              ✓ {authUser.email}
+            </span>
+          )}
           <button
             onClick={() => {
               fetchProducts();
@@ -913,6 +937,9 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                       <div className="bg-gray-50 p-2.5 rounded-xl">
                         <p className="text-[10px] text-gray-400 font-bold uppercase">Customer Name</p>
                         <p className="font-extrabold text-gray-900">{order.customerName || 'N/A'}</p>
+                        {order.userEmail && (
+                          <p className="text-[10px] font-bold text-blue-700 truncate">✉️ {order.userEmail}</p>
+                        )}
                       </div>
                       <div className="bg-gray-50 p-2.5 rounded-xl">
                         <p className="text-[10px] text-gray-400 font-bold uppercase">WhatsApp Phone</p>
@@ -1189,29 +1216,34 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
 
             ordersList.forEach((o: any) => {
               const mob = String(o.phoneNumber || '').trim();
-              if (mob && !deletedMobiles.has(mob)) {
-                const existing = customerMap.get(mob);
-                customerMap.set(mob, {
+              const email = String(o.userEmail || o.email || '').trim();
+              const key = mob || email;
+              if (key && !deletedMobiles.has(mob)) {
+                const existing = customerMap.get(key);
+                customerMap.set(key, {
                   name: o.customerName || (existing ? existing.name : 'Customer'),
-                  mobile: mob,
-                  email: o.email || existing?.email || '',
+                  mobile: mob || existing?.mobile || '',
+                  email: email || existing?.email || '',
                   address: o.address || (existing ? existing.address : 'N/A'),
                   pincode: o.pincode || (existing ? existing.pincode : 'N/A'),
+                  ordersCount: (existing?.ordersCount || 0) + 1,
                   lastOrderDate: o.createdAt || 'Recent Order',
                 });
               }
             });
 
             const session = safeJsonParse<any>(localStorage.getItem('amal_customer_session'), null);
-            if (session && session.mobile && !deletedMobiles.has(String(session.mobile).trim())) {
-              const mob = String(session.mobile).trim();
-              if (!customerMap.has(mob)) {
-                customerMap.set(mob, {
+            if (session && (session.mobile || session.email) && !deletedMobiles.has(String(session.mobile || '').trim())) {
+              const mob = String(session.mobile || '').trim();
+              const key = mob || String(session.email || '').trim();
+              if (key && !customerMap.has(key)) {
+                customerMap.set(key, {
                   name: session.name,
                   mobile: mob,
                   email: session.email || '',
                   address: session.address || 'Current Logged-in Customer',
                   pincode: session.pincode || 'Kerala',
+                  ordersCount: 0,
                   lastOrderDate: 'Logged In',
                 });
               }
@@ -1230,7 +1262,7 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
             return (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {customersList.map((cust: any) => (
-                  <div key={cust.mobile} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200 space-y-3">
+                  <div key={cust.mobile || cust.email} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200 space-y-3">
                     <div className="flex items-start justify-between border-b pb-3">
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="w-11 h-11 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold text-lg shrink-0">
@@ -1238,8 +1270,11 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                         </div>
                         <div className="min-w-0">
                           <h3 className="font-extrabold text-sm text-gray-900 truncate">{cust.name}</h3>
-                          <p className="text-xs text-blue-600 font-bold">📱 +91 {cust.mobile}</p>
-                          {cust.email && <p className="text-[11px] text-gray-500 truncate">✉️ {cust.email}</p>}
+                          {cust.mobile && <p className="text-xs text-blue-600 font-bold">📱 +91 {cust.mobile}</p>}
+                          {cust.email && <p className="text-[11px] text-gray-600 font-bold truncate">✉️ {cust.email}</p>}
+                          <span className="inline-block mt-0.5 text-[10px] font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
+                            📦 {cust.ordersCount || 0} {(cust.ordersCount || 0) === 1 ? 'Order' : 'Orders'}
+                          </span>
                         </div>
                       </div>
                       <button

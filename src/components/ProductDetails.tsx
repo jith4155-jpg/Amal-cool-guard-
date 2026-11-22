@@ -1,9 +1,10 @@
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import { doc, getDoc, collection, addDoc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Product } from '../data/mockProducts';
 import { ThemeSwitcher } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 import {
   getCatalogProducts,
   isProductDeleted,
@@ -23,6 +24,8 @@ import {
 export default function ProductDetails() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { user, authReady, profile, updateUserProfile, recordLocalOrder, refreshMyOrders } = useAuth();
 
   const findProductFromCatalog = (targetId?: string): Product | null => {
     const catalog = getCatalogProducts();
@@ -59,18 +62,16 @@ export default function ProductDetails() {
     return '';
   };
 
-  // Customer order form state with auto-fill from logged in session
+  // Customer order form state with auto-fill from logged in user profile
   const [formData, setFormData] = useState(() => {
     try {
       const initSettings = getPaymentSettings();
       const session = safeJsonParse<any>(localStorage.getItem('amal_customer_session'), null);
-      const savedAddress = localStorage.getItem('amal_saved_address') || '';
-      const savedPincode = localStorage.getItem('amal_saved_pincode') || '';
       return {
-        customerName: session?.name || '',
-        phoneNumber: session?.mobile || '',
-        address: session?.address || savedAddress || '',
-        pincode: session?.pincode || savedPincode || '',
+        customerName: profile?.name || user?.displayName || session?.name || '',
+        phoneNumber: profile?.mobile || session?.mobile || '',
+        address: profile?.address || session?.address || '',
+        pincode: profile?.pincode || session?.pincode || '',
         paymentMethod: resolveDefaultPaymentMethod(initSettings),
         merchantUpiId: initSettings.merchantUpiId || 'amalcoolguard@upi',
         whatsappNumber: initSettings.whatsappNumber || '6238113451',
@@ -87,6 +88,28 @@ export default function ProductDetails() {
       };
     }
   });
+
+  // Sync customer form fields when authenticated user profile loads
+  useEffect(() => {
+    if (!user) return;
+    setFormData(prev => ({
+      ...prev,
+      customerName: prev.customerName || profile?.name || user.displayName || '',
+      phoneNumber: prev.phoneNumber || profile?.mobile || '',
+      address: prev.address || profile?.address || '',
+      pincode: prev.pincode || profile?.pincode || '',
+    }));
+  }, [user, profile]);
+
+  // If user just returned from /login?redirect=...openOrder=1, open the booking modal automatically
+  useEffect(() => {
+    if (authReady && user && searchParams.get('openOrder') === '1' && product) {
+      setShowOrderModal(true);
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('openOrder');
+      setSearchParams(nextParams, { replace: true });
+    }
+  }, [authReady, user, product, searchParams, setSearchParams]);
 
   useEffect(() => {
     let isMounted = true;
@@ -272,6 +295,14 @@ export default function ProductDetails() {
   const handleOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!product) return;
+
+    const currentUser = auth.currentUser || user;
+    if (!currentUser) {
+      setShowOrderModal(false);
+      navigate(`/login?redirect=${encodeURIComponent(`/product/${product.id}?openOrder=1`)}`);
+      return;
+    }
+
     setSubmitting(true);
 
     // Generate sequential Order ID starting with 'A' + 6 digit counter (A000001, A000002...)
@@ -317,6 +348,10 @@ export default function ProductDetails() {
     try {
       const docRef = await addDoc(collection(db, 'bookings'), {
         orderId,
+        userId: currentUser.uid,
+        userEmail: currentUser.email || '',
+        userName: currentUser.displayName || formData.customerName,
+        userPhoto: currentUser.photoURL || '',
         productId: product.id,
         productName: product.name,
         productPrice: totals.basePrice,
@@ -346,6 +381,11 @@ export default function ProductDetails() {
     const newOrderRecord = {
       orderId,
       docId: createdDocId,
+      id: createdDocId || orderId,
+      userId: currentUser.uid,
+      userEmail: currentUser.email || '',
+      userName: currentUser.displayName || formData.customerName,
+      userPhoto: currentUser.photoURL || '',
       productId: product.id,
       productName: product.name,
       imageUrl: product.imageUrl,
@@ -369,25 +409,20 @@ export default function ProductDetails() {
       createdAt: new Date().toISOString(),
     };
 
-    const existingOrders = getLocalOrders();
-    saveAllOrders([newOrderRecord, ...existingOrders]);
-
-    if (formData.address) {
-      localStorage.setItem('amal_saved_address', formData.address);
-    }
-    if (formData.pincode) {
-      localStorage.setItem('amal_saved_pincode', formData.pincode);
-    }
+    recordLocalOrder(newOrderRecord);
 
     if (formData.phoneNumber) {
       restoreDeletedCustomerMobile(formData.phoneNumber);
-      const regUsers = safeJsonParse<Record<string, any>>(localStorage.getItem('amal_registered_users'), {});
-      if (regUsers[formData.phoneNumber]) {
-        regUsers[formData.phoneNumber].address = formData.address;
-        regUsers[formData.phoneNumber].pincode = formData.pincode;
-        localStorage.setItem('amal_registered_users', JSON.stringify(regUsers));
-      }
     }
+
+    await updateUserProfile({
+      name: formData.customerName,
+      mobile: formData.phoneNumber,
+      address: formData.address,
+      pincode: formData.pincode,
+    });
+
+    await refreshMyOrders();
 
     setSubmitting(false);
     setSubmittedOrderId(orderId);
@@ -637,13 +672,29 @@ export default function ProductDetails() {
       </div>
 
       {/* Bottom Sticky Action Bar */}
-      <div className="fixed bottom-14 left-0 right-0 bg-white border-t p-3 flex gap-3 shadow-2xl z-40">
+      <div className="fixed bottom-14 left-0 right-0 bg-white border-t p-3 flex flex-col gap-1.5 shadow-2xl z-40">
+        {!user && (
+          <p className="text-[10px] font-bold text-amber-700 text-center">
+            🔒 ഓർഡർ ബുക്ക് ചെയ്യാൻ ആദ്യം Gmail ലോഗിൻ ചെയ്യേണ്ടതാണ് (Login with Gmail required to book)
+          </p>
+        )}
         <button 
-          onClick={() => setShowOrderModal(true)}
-          className="flex-1 bg-gradient-to-r from-orange-500 to-amber-600 text-white font-extrabold text-base py-3.5 px-4 rounded-xl shadow-lg hover:brightness-110 active:scale-98 transition flex items-center justify-center gap-2"
+          onClick={() => {
+            if (!user) {
+              const redirectTarget = `/product/${product.id}?openOrder=1`;
+              navigate(`/login?redirect=${encodeURIComponent(redirectTarget)}`);
+              return;
+            }
+            setShowOrderModal(true);
+          }}
+          className="w-full bg-gradient-to-r from-orange-500 to-amber-600 text-white font-extrabold text-base py-3.5 px-4 rounded-xl shadow-lg hover:brightness-110 active:scale-98 transition flex items-center justify-center gap-2"
         >
-          <span>🛒</span>
-          <span>ORDER NOW - ₹{finalTotalPayable}</span>
+          <span>{user ? '🛒' : '🔒'}</span>
+          <span>
+            {user
+              ? `ORDER NOW - ₹${finalTotalPayable}`
+              : `LOGIN WITH GMAIL TO ORDER - ₹${finalTotalPayable}`}
+          </span>
         </button>
       </div>
 
@@ -772,7 +823,12 @@ export default function ProductDetails() {
             ) : (
               <form onSubmit={handleOrderSubmit} className="space-y-3.5">
                 <div className="flex justify-between items-center border-b pb-2.5">
-                  <h3 className="text-base font-bold text-gray-900">Book / Order Details</h3>
+                  <div>
+                    <h3 className="text-base font-bold text-gray-900">Book / Order Details</h3>
+                    {user?.email && (
+                      <p className="text-[10px] font-bold text-blue-600">✉️ Ordering via {user.email}</p>
+                    )}
+                  </div>
                   <button 
                     type="button" 
                     onClick={() => setShowOrderModal(false)}
