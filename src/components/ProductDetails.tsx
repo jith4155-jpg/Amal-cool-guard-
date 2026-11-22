@@ -4,6 +4,7 @@ import { db, auth } from '../firebase';
 import { doc, getDoc, collection, addDoc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Product } from '../data/mockProducts';
 import { ThemeSwitcher } from '../context/ThemeContext';
+import { useLanguage, LanguageSelector } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import {
   getCatalogProducts,
@@ -25,6 +26,7 @@ export default function ProductDetails() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const { t } = useLanguage();
   const { user, authReady, profile, updateUserProfile, recordLocalOrder, refreshMyOrders } = useAuth();
 
   const findProductFromCatalog = (targetId?: string): Product | null => {
@@ -37,8 +39,10 @@ export default function ProductDetails() {
   // Synchronous initial product state lookup from Admin-synced catalog
   const [product, setProduct] = useState<Product | null>(() => findProductFromCatalog(id));
   const [paymentSettings, setPaymentSettings] = useState<StorePaymentSettings>(() => getPaymentSettings());
-  const [loading, setLoading] = useState(false);
+  const [loading] = useState(false);
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
+  const [isZoomOpen, setIsZoomOpen] = useState(false);
+  const [zoomScale, setZoomScale] = useState<1 | 2 | 3>(1);
   const [showOrderModal, setShowOrderModal] = useState(false);
   const [submittedOrderId, setSubmittedOrderId] = useState<string | null>(null);
   const [submittedDocId, setSubmittedDocId] = useState<string | null>(null);
@@ -520,205 +524,304 @@ export default function ProductDetails() {
     : 0;
 
   return (
-    <div className="min-h-screen bg-gray-100 pb-28">
-      {/* Header */}
-      <div className="bg-white px-4 py-3 shadow-sm flex items-center justify-between gap-2 sticky top-0 z-40">
-        <button onClick={() => navigate(-1)} className="text-gray-700 font-bold text-lg flex items-center gap-1 shrink-0">
-          ← Back
-        </button>
-        <h1 className="font-bold text-gray-800 text-base truncate flex-1 text-center">{product.name}</h1>
-        <div className="flex items-center gap-2 shrink-0">
-          <ThemeSwitcher compact />
-          <Link to="/" className="text-xl">🏠</Link>
-        </div>
-      </div>
-
-      {/* Main Image Gallery */}
-      <div className="bg-white p-4">
-        <div className="relative w-full h-80 bg-gray-50 rounded-2xl overflow-hidden mb-3">
-          <img
-            src={imagesList[safeImgIndex]}
-            alt={product.name}
-            className="w-full h-full object-cover transition-all duration-300"
-          />
-          {discountPercent > 0 && (
-            <span className="absolute top-3 left-3 bg-red-600 text-white text-xs font-extrabold px-3 py-1 rounded-full shadow">
-              {discountPercent}% OFF
-            </span>
-          )}
-        </div>
-
-        {/* Thumbnails */}
-        <div className="flex gap-3 overflow-x-auto pb-2">
-          {imagesList.map((img, idx) => (
-            <button 
-              key={idx}
-              onClick={() => setSelectedImageIndex(idx)}
-              className={`w-16 h-16 rounded-lg overflow-hidden border-2 flex-shrink-0 ${
-                safeImgIndex === idx ? 'border-blue-600 ring-2 ring-blue-300' : 'border-gray-200 opacity-70'
-              }`}
-            >
-              <img src={img} alt="thumb" className="w-full h-full object-cover" />
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Product Information */}
-      <div className="bg-white mt-2 p-5 shadow-sm">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-bold text-blue-700 bg-blue-50 px-3 py-1 rounded-full uppercase">
-            {product.category}
-          </span>
-          <div className="flex items-center gap-1 bg-green-600 text-white text-xs font-bold px-2 py-1 rounded-md">
-            ★ {product.rating || 4.8} ({reviewsList.length} reviews)
-          </div>
-        </div>
-
-        <h2 className="text-xl font-bold text-gray-900 leading-tight mb-3">{product.name}</h2>
-
-        <div className="bg-gray-50 p-3.5 rounded-2xl border border-gray-100 mb-4 space-y-1.5">
-          <div className="flex items-baseline gap-3 flex-wrap">
-            <span className="text-3xl font-extrabold text-gray-900">₹{finalTotalPayable}</span>
-            {totals.originalTotal > finalTotalPayable && (
-              <span className="text-base text-gray-400 line-through">₹{totals.originalTotal}</span>
-            )}
-            <span className="text-xs font-bold text-green-600 bg-green-50 px-2 py-1 rounded">
-              {totals.gstPercent > 0 ? `+ ${totals.gstPercent}% GST Included` : 'Inclusive of all taxes'}
-            </span>
-          </div>
-
-          <div className="text-xs font-bold space-y-0.5 pt-0.5">
-            <p className="text-gray-700">
-              🏷️ Item ₹{itemBasePrice}
-              {totals.gstPercent > 0 && ` + ${totals.gstPercent}% GST (₹${totals.gstAmount})`}
-              {deliveryFee > 0 ? ` + Delivery ₹${deliveryFee}` : ' • Free Delivery'}
-              {` = ₹${finalTotalPayable}`}
-            </p>
-            {paymentSettings.gstNumber && (
-              <p className="text-[11px] text-amber-700 font-mono">
-                GSTIN: {paymentSettings.gstNumber}
-              </p>
-            )}
-            {estDeliveryText && (
-              <p className="text-xs font-extrabold text-emerald-700">
-                ⏱️ Estimated Delivery: {estDeliveryText}
-              </p>
-            )}
-          </div>
-        </div>
-
-        <p className="text-sm text-gray-600 leading-relaxed mb-6 bg-gray-50 p-4 rounded-xl border border-gray-100">
-          {product.description}
-        </p>
-
-        {/* Key Features */}
-        <div className="mb-6">
-          <h3 className="font-bold text-sm text-gray-800 mb-3 uppercase tracking-wider">Product Highlights</h3>
-          <div className="grid grid-cols-2 gap-2">
-            {(product.features || ['Heat Reflective Fabric', 'UV Sun Shield', 'Lightweight & Breathable', 'All-Day Comfort']).map((feature, idx) => (
-              <div key={idx} className="flex items-center gap-2 bg-blue-50/60 p-3 rounded-xl border border-blue-100/60 text-xs font-medium text-blue-900">
-                <span className="text-blue-600">✓</span>
-                <span>{feature}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Customer Guarantee */}
-        <div className="border-t pt-4 grid grid-cols-3 gap-2 text-center text-xs text-gray-600">
-          <div className="p-2 bg-gray-50 rounded-lg">
-            <p className="text-base mb-1">🚚</p>
-            <p className="font-semibold">Fast Delivery</p>
-          </div>
-          <div className="p-2 bg-gray-50 rounded-lg">
-            <p className="text-base mb-1">📱</p>
-            <p className="font-semibold">Auto UPI Launch</p>
-          </div>
-          <div className="p-2 bg-gray-50 rounded-lg">
-            <p className="text-base mb-1">🛡️</p>
-            <p className="font-semibold">Admin Verification</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Customer Reviews & Rating Submission Section */}
-      <div className="bg-white mt-2 p-5 shadow-sm">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-bold text-base text-gray-900">Customer Reviews & Ratings</h3>
-          <button 
-            onClick={() => setShowReviewForm(!showReviewForm)}
-            className="bg-blue-50 text-blue-700 text-xs font-extrabold px-3 py-1.5 rounded-xl border border-blue-200"
+    <div className="min-h-screen bg-gray-100 pb-32 lg:pb-20">
+      {/* Clean Responsive Top Bar */}
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-40 shadow-xs">
+        <div className="max-w-6xl mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => navigate(-1)}
+            className="h-9 inline-flex items-center gap-1.5 text-gray-700 hover:text-gray-900 font-bold text-xs sm:text-sm px-2.5 rounded-lg hover:bg-gray-100 transition shrink-0 whitespace-nowrap"
           >
-            {showReviewForm ? '✕ Close' : '★ Write a Review'}
+            <span>←</span>
+            <span>Back</span>
           </button>
-        </div>
 
-        {/* Interactive Review Form */}
-        {showReviewForm && (
-          <form onSubmit={handleReviewSubmit} className="bg-blue-50/70 p-4 rounded-2xl border border-blue-200 mb-4 space-y-3">
-            <p className="text-xs font-bold text-blue-900">Add Rating & Details (റേറ്റിംഗ് സമർപ്പിക്കുക):</p>
-            
-            {/* Star Rating selector */}
-            <div>
-              <label className="block text-[11px] font-bold text-gray-700 mb-1">Select Rating Stars:</label>
-              <div className="flex gap-2">
-                {[1, 2, 3, 4, 5].map(star => (
+          <h1 className="font-bold text-gray-900 text-sm sm:text-base truncate flex-1 text-center">
+            {product.name}
+          </h1>
+
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <ThemeSwitcher compact />
+            <LanguageSelector />
+            <Link
+              to="/"
+              title="Storefront"
+              className="w-9 h-9 bg-gray-50 border border-gray-200 rounded-lg flex items-center justify-center text-gray-700 hover:bg-gray-100 transition shrink-0"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1">
+                <path d="M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1V9.5Z" />
+              </svg>
+            </Link>
+          </div>
+        </div>
+      </header>
+
+      {/* Responsive Flipkart-Grade Product Detail Container */}
+      <div className="max-w-6xl mx-auto sm:px-6 lg:px-8 pt-0 sm:pt-5">
+        <div className="lg:grid lg:grid-cols-12 lg:gap-6 lg:items-start">
+          {/* Left Column: Image Gallery + Tap to Zoom */}
+          <div className="lg:col-span-5 lg:sticky lg:top-20 bg-white sm:rounded-xl border-b sm:border border-gray-200 p-4 space-y-3">
+            <div
+              onClick={() => {
+                setZoomScale(2);
+                setIsZoomOpen(true);
+              }}
+              className="relative w-full aspect-square sm:aspect-[4/3] lg:aspect-square bg-gray-50 rounded-xl overflow-hidden cursor-zoom-in border border-gray-100 group"
+            >
+              <img
+                src={imagesList[safeImgIndex]}
+                alt={product.name}
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-contain sm:object-cover group-hover:scale-105 transition duration-300"
+              />
+              {discountPercent > 0 && (
+                <span className="absolute top-3 left-3 bg-emerald-600 text-white text-[11px] font-bold px-2.5 py-1 rounded-md shadow-xs tabular-nums">
+                  {discountPercent}% OFF
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={e => {
+                  e.stopPropagation();
+                  setZoomScale(2);
+                  setIsZoomOpen(true);
+                }}
+                className="absolute bottom-3 right-3 h-8 px-3 rounded-lg bg-white/95 border border-gray-200 text-gray-800 text-[11px] font-bold shadow-sm flex items-center gap-1.5 hover:bg-white transition"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                  <circle cx="11" cy="11" r="8" />
+                  <path d="m21 21-4.3-4.3" />
+                  <path d="M11 8v6M8 11h6" />
+                </svg>
+                <span>{t('tapToZoom')}</span>
+              </button>
+            </div>
+
+            {/* Thumbnails Strip */}
+            <div className="flex gap-2.5 overflow-x-auto no-scrollbar pb-1">
+              {imagesList.map((img, idx) => (
+                <button
+                  type="button"
+                  key={idx}
+                  onClick={() => setSelectedImageIndex(idx)}
+                  className={`w-16 h-16 rounded-lg overflow-hidden border-2 flex-shrink-0 transition ${
+                    safeImgIndex === idx
+                      ? 'border-blue-600 ring-2 ring-blue-200'
+                      : 'border-gray-200 opacity-75 hover:opacity-100'
+                  }`}
+                >
+                  <img src={img} alt="thumb" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                </button>
+              ))}
+            </div>
+
+            {/* Desktop Primary Purchase CTA right under gallery */}
+            <div className="hidden lg:block pt-2">
+              {!user && (
+                <p className="text-[11px] font-semibold text-amber-700 mb-2 text-center">
+                  {t('loginRequiredBook')}
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  if (!user) {
+                    const redirectTarget = `/product/${product.id}?openOrder=1`;
+                    navigate(`/login?redirect=${encodeURIComponent(redirectTarget)}`);
+                    return;
+                  }
+                  setShowOrderModal(true);
+                }}
+                className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-sm rounded-xl shadow-sm active:scale-[0.99] transition flex items-center justify-center gap-2 whitespace-nowrap"
+              >
+                <span>
+                  {user ? `${t('orderNow')} — ₹${finalTotalPayable}` : `Sign in with Gmail to Order — ₹${finalTotalPayable}`}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {/* Right Column: Contiguous Product Information & Reviews */}
+          <div className="lg:col-span-7 space-y-3 mt-2 sm:mt-4 lg:mt-0">
+            <div className="bg-white sm:rounded-xl border-y sm:border border-gray-200 p-4 sm:p-6 space-y-4">
+              {/* Unboxed Category + Rating Header */}
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-xs font-bold uppercase tracking-wider text-blue-700">
+                  {product.category}
+                </span>
+                <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-gray-600">
+                  <span className="bg-emerald-600 text-white text-[11px] font-bold px-2 py-0.5 rounded tabular-nums">
+                    {product.rating || 4.8} ★
+                  </span>
+                  <span className="tabular-nums">({reviewsList.length} reviews)</span>
+                </div>
+              </div>
+
+              <h2 className="text-xl sm:text-2xl font-extrabold text-gray-900 leading-snug">
+                {product.name}
+              </h2>
+
+              {/* Price & Tax Breakdown Box */}
+              <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 space-y-1.5">
+                <div className="flex items-baseline gap-3 flex-wrap tabular-nums">
+                  <span className="text-2xl sm:text-3xl font-extrabold text-gray-900">
+                    ₹{finalTotalPayable}
+                  </span>
+                  {totals.originalTotal > finalTotalPayable && (
+                    <span className="text-sm sm:text-base text-gray-400 line-through">
+                      ₹{totals.originalTotal}
+                    </span>
+                  )}
+                  {discountPercent > 0 && (
+                    <span className="text-xs font-bold text-emerald-700">
+                      {discountPercent}% {t('specialDiscount')}
+                    </span>
+                  )}
+                </div>
+
+                <div className="text-xs font-semibold space-y-1 pt-0.5 tabular-nums">
+                  <p className="text-gray-700">
+                    Item ₹{itemBasePrice}
+                    {totals.gstPercent > 0 && ` + ${totals.gstPercent}% GST (₹${totals.gstAmount})`}
+                    {deliveryFee > 0 ? ` + Delivery ₹${deliveryFee}` : ` · ${t('freeDelivery')}`}
+                    {` = ₹${finalTotalPayable}`}
+                  </p>
+                  {paymentSettings.gstNumber && (
+                    <p className="text-[11px] text-amber-700 font-mono">
+                      GSTIN: {paymentSettings.gstNumber}
+                    </p>
+                  )}
+                  {estDeliveryText && (
+                    <p className="text-xs font-bold text-emerald-700">
+                      Estimated Delivery: {estDeliveryText}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <p className="text-xs sm:text-sm text-gray-600 leading-relaxed">
+                {product.description}
+              </p>
+
+              {/* Key Features */}
+              <div>
+                <h3 className="font-bold text-xs uppercase tracking-wider text-gray-500 mb-2.5">
+                  Product Highlights
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {(product.features || ['Heat Reflective Fabric', 'UV Sun Shield', 'Lightweight & Breathable', 'All-Day Comfort']).map((feature, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center gap-2 bg-blue-50/70 px-3 py-2.5 rounded-lg border border-blue-100 text-xs font-semibold text-blue-900"
+                    >
+                      <span className="text-blue-600 font-bold">✓</span>
+                      <span>{feature}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Customer Assurance */}
+              <div className="border-t border-gray-200 pt-4 grid grid-cols-3 gap-2 text-center text-xs text-gray-600">
+                <div className="p-2.5 bg-gray-50 rounded-lg border border-gray-100">
+                  <p className="font-bold text-gray-800">Fast Delivery</p>
+                </div>
+                <div className="p-2.5 bg-gray-50 rounded-lg border border-gray-100">
+                  <p className="font-bold text-gray-800">UPI & COD</p>
+                </div>
+                <div className="p-2.5 bg-gray-50 rounded-lg border border-gray-100">
+                  <p className="font-bold text-gray-800">Verified Store</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Customer Reviews & Rating Submission Section */}
+            <div className="bg-white sm:rounded-xl border-y sm:border border-gray-200 p-4 sm:p-6 space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-bold text-sm sm:text-base text-gray-900">Customer Reviews & Ratings</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowReviewForm(!showReviewForm)}
+                  className="h-8 bg-blue-50 text-blue-700 text-xs font-bold px-3 rounded-lg border border-blue-200 hover:bg-blue-100 transition whitespace-nowrap"
+                >
+                  {showReviewForm ? 'Close' : '★ Write a Review'}
+                </button>
+              </div>
+
+              {showReviewForm && (
+                <form onSubmit={handleReviewSubmit} className="bg-blue-50/70 p-4 rounded-xl border border-blue-200 space-y-3">
+                  <p className="text-xs font-bold text-blue-900">Add Rating & Review:</p>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-gray-700 mb-1">Select Rating Stars:</label>
+                    <div className="flex gap-2">
+                      {[1, 2, 3, 4, 5].map(star => (
+                        <button
+                          type="button"
+                          key={star}
+                          onClick={() => setNewRating(star)}
+                          className={`text-2xl transition hover:scale-110 ${
+                            star <= newRating ? 'text-amber-500 scale-110' : 'text-gray-300'
+                          }`}
+                        >
+                          ★
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <textarea
+                    placeholder="Share your experience with this product..."
+                    required
+                    rows={3}
+                    value={reviewerComment}
+                    onChange={e => setReviewerComment(e.target.value)}
+                    className="w-full p-3 text-xs bg-white border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+
                   <button
-                    type="button"
-                    key={star}
-                    onClick={() => setNewRating(star)}
-                    className={`text-2xl transition hover:scale-110 ${star <= newRating ? 'text-amber-500 scale-110' : 'text-gray-300'}`}
+                    type="submit"
+                    className="w-full h-10 bg-blue-600 text-white font-bold rounded-lg text-xs shadow-xs hover:bg-blue-700 transition"
                   >
-                    ★
+                    Submit Review
                   </button>
+                </form>
+              )}
+
+              <div className="space-y-2.5">
+                {reviewsList.map((rev, idx) => (
+                  <div key={idx} className="p-3.5 bg-gray-50 rounded-xl text-xs border border-gray-100 space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-gray-900">
+                        {rev.name} ({rev.location})
+                      </span>
+                      <span className="text-amber-500 font-bold tabular-nums">
+                        {'★'.repeat(rev.rating)}
+                        {'☆'.repeat(5 - rev.rating)}
+                      </span>
+                    </div>
+                    <p className="text-gray-700 leading-relaxed">{rev.comment}</p>
+                    <p className="text-[10px] text-gray-400 text-right">{rev.date}</p>
+                  </div>
                 ))}
               </div>
             </div>
-
-            <textarea 
-              placeholder="പ്രോഡക്റ്റിനെ കുറിച്ച് പറയാനുള്ള ഡീറ്റെയിൽസ് ഇവിടെ ടൈപ്പ് ചെയ്യുക... (Type your product review/details here)"
-              required
-              rows={3}
-              value={reviewerComment}
-              onChange={e => setReviewerComment(e.target.value)}
-              className="w-full p-3 text-xs bg-white border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"
-            />
-
-            <button
-              type="submit"
-              className="w-full bg-blue-600 text-white font-bold py-2.5 rounded-xl text-xs shadow hover:bg-blue-700 active:scale-98 transition"
-            >
-              💾 Save Rating & Review (സേവ് ചെയ്യുക)
-            </button>
-          </form>
-        )}
-
-        {/* Reviews List */}
-        <div className="space-y-3">
-          {reviewsList.map((rev, idx) => (
-            <div key={idx} className="p-3 bg-gray-50 rounded-xl text-xs border border-gray-100 space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-gray-900">{rev.name} ({rev.location})</span>
-                <span className="text-amber-500 font-bold">
-                  {'★'.repeat(rev.rating)}{'☆'.repeat(5 - rev.rating)}
-                </span>
-              </div>
-              <p className="text-gray-700 leading-relaxed">{rev.comment}</p>
-              <p className="text-[10px] text-gray-400 text-right">{rev.date}</p>
-            </div>
-          ))}
+          </div>
         </div>
       </div>
 
-      {/* Bottom Sticky Action Bar */}
-      <div className="fixed bottom-14 left-0 right-0 bg-white border-t p-3 flex flex-col gap-1.5 shadow-2xl z-40">
-        {!user && (
-          <p className="text-[10px] font-bold text-amber-700 text-center">
-            🔒 ഓർഡർ ബുക്ക് ചെയ്യാൻ ആദ്യം Gmail ലോഗിൻ ചെയ്യേണ്ടതാണ് (Login with Gmail required to book)
+      {/* Mobile / Tablet Sticky Bottom Purchase CTA */}
+      <div className="lg:hidden fixed bottom-14 left-0 right-0 bg-white border-t border-gray-200 px-3 py-2 flex items-center justify-between gap-3 shadow-lg z-40">
+        <div className="min-w-0 tabular-nums">
+          <p className="text-[10px] font-semibold text-gray-500 truncate">
+            {user ? 'Total Payable' : t('loginRequiredBook')}
           </p>
-        )}
-        <button 
+          <p className="text-base font-extrabold text-gray-900 leading-tight">₹{finalTotalPayable}</p>
+        </div>
+
+        <button
+          type="button"
           onClick={() => {
             if (!user) {
               const redirectTarget = `/product/${product.id}?openOrder=1`;
@@ -727,16 +830,84 @@ export default function ProductDetails() {
             }
             setShowOrderModal(true);
           }}
-          className="w-full bg-gradient-to-r from-orange-500 to-amber-600 text-white font-extrabold text-base py-3.5 px-4 rounded-xl shadow-lg hover:brightness-110 active:scale-98 transition flex items-center justify-center gap-2"
+          className="h-10 px-5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs sm:text-sm rounded-lg shadow-xs active:scale-[0.98] transition flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
         >
-          <span>{user ? '🛒' : '🔒'}</span>
-          <span>
-            {user
-              ? `ORDER NOW - ₹${finalTotalPayable}`
-              : `LOGIN WITH GMAIL TO ORDER - ₹${finalTotalPayable}`}
-          </span>
+          <span>{user ? t('orderNow') : 'Sign in to Order'}</span>
         </button>
       </div>
+
+      {/* Interactive Product Image Zoom Modal */}
+      {isZoomOpen && (
+        <div className="fixed inset-0 bg-black/95 z-[300] flex flex-col">
+          {/* Zoom Modal Top Toolbar */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-white/15 text-white shrink-0">
+            <span className="text-xs font-bold truncate max-w-[45%]">{product.name}</span>
+
+            <div className="flex items-center gap-1.5">
+              {([1, 2, 3] as const).map(level => (
+                <button
+                  key={level}
+                  type="button"
+                  onClick={() => setZoomScale(level)}
+                  className={`h-8 px-2.5 rounded-lg text-xs font-bold transition ${
+                    zoomScale === level
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white/10 text-gray-200 hover:bg-white/20'
+                  }`}
+                >
+                  {level}x
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setIsZoomOpen(false)}
+                aria-label="Close zoom viewer"
+                className="h-8 w-8 ml-1 rounded-lg bg-white/15 hover:bg-white/25 text-white font-bold text-sm flex items-center justify-center"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          {/* Scrollable / Pannable Zoom Stage */}
+          <div
+            onClick={() => setZoomScale(prev => (prev === 1 ? 2 : prev === 2 ? 3 : 1))}
+            className="flex-1 overflow-auto flex items-center justify-center p-4 cursor-zoom-in relative"
+          >
+            <img
+              src={imagesList[safeImgIndex]}
+              alt={product.name}
+              referrerPolicy="no-referrer"
+              style={{
+                transform: `scale(${zoomScale})`,
+                transformOrigin: 'center center',
+              }}
+              className="max-h-[75vh] max-w-full object-contain rounded-lg transition-transform duration-200 select-none"
+            />
+          </div>
+
+          {/* Thumbnail switcher inside zoom modal */}
+          {imagesList.length > 1 && (
+            <div className="flex items-center justify-center gap-2 px-4 py-3 border-t border-white/15 overflow-x-auto shrink-0">
+              {imagesList.map((img, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => {
+                    setSelectedImageIndex(idx);
+                    setZoomScale(2);
+                  }}
+                  className={`w-12 h-12 rounded-lg overflow-hidden border-2 shrink-0 ${
+                    safeImgIndex === idx ? 'border-blue-500' : 'border-white/20 opacity-60'
+                  }`}
+                >
+                  <img src={img} alt="zoom thumb" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Order Booking Modal */}
       {showOrderModal && (

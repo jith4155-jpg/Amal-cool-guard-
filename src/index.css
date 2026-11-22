@@ -1,5 +1,26 @@
 @import "tailwindcss";
 
+@layer base {
+  html {
+    font-family: 'Plus Jakarta Sans', 'Noto Sans Malayalam', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    overflow-x: hidden;
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 /* ==========================================================================
    AMAL COOLGUARD 5-THEME ENGINE (Dark Night default, White, Midnight, Forest, Warm Night)
    ========================================================================== */

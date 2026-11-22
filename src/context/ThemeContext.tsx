@@ -162,27 +162,26 @@ export const ThemeSwitcher: React.FC<{ compact?: boolean; className?: string }> 
   }, []);
 
   return (
-    <div ref={containerRef} className={`relative inline-block ${className}`}>
+    <div ref={containerRef} className={`relative inline-block shrink-0 ${className}`}>
       <button
         type="button"
         onClick={() => setOpen(prev => !prev)}
-        title="Change Color Theme"
+        title={`Theme: ${currentThemeOption.name}`}
         aria-label="Change Color Theme"
-        className="flex items-center gap-1.5 bg-white border border-gray-200 text-gray-800 text-[11px] font-extrabold px-2 py-1.5 rounded-xl shadow-xs hover:border-blue-400 transition cursor-pointer"
+        className="h-9 flex items-center gap-1.5 bg-white border border-gray-200 text-gray-800 text-xs font-bold px-2.5 rounded-lg shadow-xs hover:border-blue-400 transition cursor-pointer whitespace-nowrap"
       >
         <span
           className="w-3.5 h-3.5 rounded-full border border-gray-400/50 shrink-0"
           style={{ backgroundColor: currentThemeOption.swatch }}
         />
-        <span>{currentThemeOption.icon}</span>
         {!compact && <span>{currentThemeOption.shortName}</span>}
-        <span className="text-[9px] opacity-70">▼</span>
+        <span className="text-[9px] opacity-60">▼</span>
       </button>
 
       {open && (
-        <div className="theme-popover absolute right-0 mt-2 w-48 rounded-2xl shadow-2xl border border-gray-200 bg-white p-2 z-[300] space-y-1">
-          <p className="text-[10px] font-extrabold text-gray-500 uppercase px-2 py-1">
-            Color Theme (കളർ മാറ്റാം)
+        <div className="theme-popover absolute right-0 mt-2 w-44 rounded-xl shadow-2xl border border-gray-200 bg-white p-1.5 z-[300] space-y-0.5">
+          <p className="text-[10px] font-bold text-gray-500 uppercase px-2.5 py-1 tracking-wide">
+            Color Theme
           </p>
           {THEME_OPTIONS.map(opt => {
             const active = opt.id === theme;
@@ -194,18 +193,17 @@ export const ThemeSwitcher: React.FC<{ compact?: boolean; className?: string }> 
                   setTheme(opt.id);
                   setOpen(false);
                 }}
-                className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl text-xs font-bold transition ${
+                className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-xs font-semibold transition ${
                   active
-                    ? 'bg-blue-600 text-white shadow'
+                    ? 'bg-blue-600 text-white shadow-xs'
                     : 'text-gray-800 hover:bg-gray-100'
                 }`}
               >
                 <span className="flex items-center gap-2">
                   <span
-                    className="w-4 h-4 rounded-full border border-white/40 shrink-0 shadow-xs"
+                    className="w-3.5 h-3.5 rounded-full border border-white/40 shrink-0 shadow-xs"
                     style={{ backgroundColor: opt.swatch }}
                   />
-                  <span>{opt.icon}</span>
                   <span>{opt.name}</span>
                 </span>
                 {active && <span className="text-[11px]">✓</span>}

@@ -122,8 +122,105 @@ export function safeSetStorage(key: string, value: string): boolean {
   }
 }
 
+export function estimateDataUrlKB(dataUrl: string): number {
+  if (!dataUrl.startsWith('data:')) return 0;
+  const commaIdx = dataUrl.indexOf(',');
+  if (commaIdx === -1) return 0;
+  const base64Len = dataUrl.length - commaIdx - 1;
+  return Math.max(1, Math.round(((base64Len * 0.75) / 1024) * 10) / 10);
+}
+
 /**
- * Compresses an uploaded image File into a compact JPEG Data URL (~40-100KB)
+ * Automatically resizes and optimizes uploaded product photos into the 10 KB – 50 KB target band
+ * (sweet spot ~25–45 KB) for instant storefront loading and lightweight Firestore storage.
+ */
+export async function compressProductImageToRange(
+  file: File,
+  minKB = 10,
+  maxKB = 50
+): Promise<{ dataUrl: string; sizeKB: number }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.onload = () => {
+      const originalDataUrl = reader.result as string;
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const naturalW = img.naturalWidth || img.width || 720;
+          const naturalH = img.naturalHeight || img.height || 720;
+
+          const renderCandidate = (maxDim: number, quality: number) => {
+            let w = naturalW;
+            let h = naturalH;
+            if (w > maxDim || h > maxDim) {
+              if (w >= h) {
+                h = Math.max(1, Math.round((h * maxDim) / w));
+                w = maxDim;
+              } else {
+                w = Math.max(1, Math.round((w * maxDim) / h));
+                h = maxDim;
+              }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, w);
+            canvas.height = Math.max(1, h);
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return { url: originalDataUrl, kb: estimateDataUrlKB(originalDataUrl) };
+
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            const url = canvas.toDataURL('image/jpeg', quality);
+            return { url, kb: estimateDataUrlKB(url) };
+          };
+
+          // Try balanced resolution & quality steps to land squarely in 10 KB – 50 KB
+          const dimSteps = [720, 600, 500, 420, 340, 260];
+          const qualitySteps = [0.76, 0.64, 0.54, 0.44, 0.36, 0.28];
+
+          let best = renderCandidate(720, 0.76);
+
+          // If smaller than minKB at initial pass, bump quality to maximize crispness up to maxKB
+          if (best.kb < minKB) {
+            const hi = renderCandidate(900, 0.92);
+            if (hi.kb <= maxKB) best = hi;
+            resolve({ dataUrl: best.url, sizeKB: best.kb });
+            return;
+          }
+
+          // Search for highest-quality candidate that stays <= maxKB (ideally 25–46 KB)
+          outer: for (const dim of dimSteps) {
+            for (const q of qualitySteps) {
+              const cand = renderCandidate(dim, q);
+              best = cand;
+              if (cand.kb <= maxKB) {
+                // If it dipped too close to minKB on a harsh drop, step quality up once to look sharper
+                if (cand.kb < 24 && q < 0.85) {
+                  const sharper = renderCandidate(dim, Math.min(0.88, q + 0.14));
+                  if (sharper.kb <= maxKB && sharper.kb >= cand.kb) {
+                    best = sharper;
+                  }
+                }
+                break outer;
+              }
+            }
+          }
+
+          resolve({ dataUrl: best.url, sizeKB: best.kb });
+        } catch {
+          resolve({ dataUrl: originalDataUrl, sizeKB: estimateDataUrlKB(originalDataUrl) });
+        }
+      };
+      img.onerror = () => reject(new Error('Invalid or unsupported image file'));
+      img.src = originalDataUrl;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Compresses an uploaded image File into a compact JPEG Data URL (~40-80KB)
  * so multiple product gallery images & screenshots fit comfortably in localStorage & Firestore (<1MB).
  */
 export async function compressImageFile(

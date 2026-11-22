@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { ThemeSwitcher } from '../context/ThemeContext';
+import { LanguageSelector } from '../context/LanguageContext';
 
 export default function CustomerLogin() {
   const { user, authReady, profile, myOrdersCount, signingIn, signInWithGoogle, logout } = useAuth();
@@ -30,8 +31,8 @@ export default function CustomerLogin() {
     if (result.user) {
       setSuccessMsg(
         isOrderRedirect
-          ? `✓ Welcome ${result.user.displayName || result.user.email}! Opening booking form...`
-          : `✓ Signed in as ${result.user.email}! Redirecting...`
+          ? `Welcome ${result.user.displayName || result.user.email}! Opening booking form...`
+          : `Signed in as ${result.user.email}! Redirecting...`
       );
       setTimeout(() => {
         navigate(safeRedirect, { replace: true });
@@ -42,35 +43,36 @@ export default function CustomerLogin() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-100 p-4">
-      <div className="w-full max-w-sm flex justify-end mb-3">
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-100 p-4 pb-24">
+      <div className="w-full max-w-sm flex items-center justify-end gap-2 mb-3">
         <ThemeSwitcher compact />
+        <LanguageSelector />
       </div>
 
-      <div className="bg-white p-6 md:p-8 rounded-3xl shadow-xl w-full max-w-sm space-y-5 border border-gray-200">
+      <div className="bg-white p-6 md:p-8 rounded-2xl shadow-lg w-full max-w-sm space-y-5 border border-gray-200">
         <div className="text-center">
-          <div className="w-16 h-16 bg-blue-100 text-blue-600 text-3xl rounded-full flex items-center justify-center mx-auto mb-3 shadow-inner">
+          <div className="w-14 h-14 bg-blue-100 text-blue-600 text-2xl rounded-full flex items-center justify-center mx-auto mb-3 shadow-inner">
             🔐
           </div>
-          <h2 className="text-xl font-black text-gray-900">
-            {user ? 'Signed In (ലോഗിൻ ചെയ്തിരിക്കുന്നു)' : 'Gmail Account Login (ലോഗിൻ)'}
+          <h2 className="text-xl font-extrabold text-gray-900">
+            {user ? 'Signed In' : 'Sign In with Gmail'}
           </h2>
           <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
             {isOrderRedirect
-              ? 'ഓർഡർ ബുക്ക് ചെയ്യാൻ ആദ്യം നിങ്ങളുടെ Gmail അക്കൗണ്ട് വഴി ലോഗിൻ ചെയ്യുക. (Please sign in with your Gmail account to place an order)'
-              : 'നിങ്ങളുടെ പ്രൊഫൈലും ഓർഡറുകളും കാണാൻ Gmail അക്കൗണ്ട് വഴി ലോഗിൻ ചെയ്യുക. (Sign in with Gmail to view your profile & orders)'}
+              ? 'Please sign in with your Gmail account to place an order.'
+              : 'Sign in with Gmail to view your profile, saved address, and orders.'}
           </p>
         </div>
 
         {isOrderRedirect && !user && (
-          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 text-center text-[11px] font-bold text-amber-900">
-            🔒 ലോഗിൻ ചെയ്തതിന് ശേഷം മാത്രമേ ഓർഡർ കൺഫോം ചെയ്യാൻ സാധിക്കുകയുള്ളൂ.
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center text-[11px] font-bold text-amber-900">
+            Gmail sign-in is required to complete your booking.
           </div>
         )}
 
         {user ? (
-          <div className="space-y-4">
-            <div className="bg-blue-50 border border-blue-200 p-4 rounded-2xl flex items-center gap-3">
+          <div className="space-y-3">
+            <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl flex items-center gap-3">
               {user.photoURL ? (
                 <img
                   src={user.photoURL}
@@ -86,9 +88,9 @@ export default function CustomerLogin() {
                 <p className="font-extrabold text-sm text-gray-900 truncate">
                   {profile?.name || user.displayName || 'Customer'}
                 </p>
-                <p className="text-[11px] font-bold text-blue-700 truncate">✉️ {user.email}</p>
-                <span className="inline-block mt-1 text-[10px] font-extrabold bg-white text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
-                  📦 {myOrdersCount} {myOrdersCount === 1 ? 'Order' : 'Orders'} Placed
+                <p className="text-[11px] font-bold text-blue-700 truncate">{user.email}</p>
+                <span className="inline-block mt-1 text-[10px] font-bold bg-white text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-md">
+                  {myOrdersCount} {myOrdersCount === 1 ? 'Order' : 'Orders'} Placed
                 </span>
               </div>
             </div>
@@ -102,26 +104,26 @@ export default function CustomerLogin() {
             <button
               type="button"
               onClick={() => navigate(safeRedirect, { replace: true })}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-3.5 rounded-xl shadow-lg transition text-xs"
+              className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm transition text-xs sm:text-sm"
             >
-              {isOrderRedirect ? '🛒 Continue to Booking Form →' : '👤 Open My Profile →'}
+              {isOrderRedirect ? 'Continue to Booking Form →' : 'Open My Profile →'}
             </button>
 
             <button
               type="button"
               onClick={handleGoogleSignIn}
               disabled={signingIn}
-              className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 rounded-xl text-xs transition"
+              className="w-full h-10 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-xl text-xs transition"
             >
-              🔄 Switch Gmail Account (വേറെ Gmail മാറ്റുക)
+              Switch Gmail Account
             </button>
 
             <button
               type="button"
               onClick={() => logout()}
-              className="w-full bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 font-bold py-2.5 rounded-xl text-xs transition"
+              className="w-full h-10 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 font-bold rounded-xl text-xs transition"
             >
-              🚪 Sign Out (ലോഗ് ഔട്ട്)
+              Sign Out
             </button>
           </div>
         ) : (
@@ -130,7 +132,7 @@ export default function CustomerLogin() {
               type="button"
               onClick={handleGoogleSignIn}
               disabled={signingIn}
-              className="w-full bg-white hover:bg-gray-50 text-gray-900 border-2 border-gray-300 font-extrabold py-3.5 px-4 rounded-2xl shadow-md hover:shadow-lg transition active:scale-98 flex items-center justify-center gap-3 text-xs disabled:opacity-60"
+              className="w-full h-12 bg-white hover:bg-gray-50 text-gray-900 border border-gray-300 font-bold px-4 rounded-xl shadow-sm hover:shadow transition active:scale-[0.99] flex items-center justify-center gap-3 text-xs sm:text-sm disabled:opacity-60"
             >
               <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
                 <path
@@ -151,9 +153,7 @@ export default function CustomerLogin() {
                 />
               </svg>
               <span>
-                {signingIn
-                  ? 'Signing in with Google...'
-                  : 'Continue with Google / Gmail (ലോഗിൻ ചെയ്യുക)'}
+                {signingIn ? 'Signing in with Google...' : 'Continue with Google / Gmail'}
               </span>
             </button>
 
@@ -170,9 +170,8 @@ export default function CustomerLogin() {
             )}
 
             <div className="bg-gray-50 p-3 rounded-xl border border-gray-200 text-[11px] text-gray-600 space-y-1">
-              <p className="font-bold text-gray-800">✓ Why Gmail Login?</p>
-              <p>• ഓരോരുത്തർക്കും സ്വന്തം Profile-ഉം Order History-യും മാത്രമേ കാണാൻ കഴിയൂ.</p>
-              <p>• നിങ്ങളുടെ Gmail-ൽ ചെയ്ത ആകെ ഓർഡറുകളുടെ എണ്ണവും ഡെലിവറി വിവരങ്ങളും സുരക്ഷിതമായി ലഭിക്കും.</p>
+              <p className="font-bold text-gray-800">Secure Account Access</p>
+              <p>Your profile, saved delivery address, and order history stay strictly private to your Gmail account.</p>
             </div>
           </div>
         )}

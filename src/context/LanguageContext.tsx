@@ -1,6 +1,6 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState } from 'react';
 
-export type Language = 'ml' | 'en' | 'hi' | 'ta';
+export type Language = 'en' | 'ml' | 'hi' | 'ta';
 
 interface LanguageContextType {
   lang: Language;
@@ -9,58 +9,23 @@ interface LanguageContextType {
 }
 
 const translations: Record<Language, Record<string, string>> = {
-  ml: {
-    // Brand & Header
-    brandName: 'Amal Coolguard',
-    brandSubtitle: 'അമൽ കൂൾഗാർഡ്',
-    tagline: 'ഹീറ്റ് പ്രൊട്ടക്ഷൻ ഗിയർ • കേരളം',
-    searchPlaceholder: 'കൂളിംഗ് കോട്ടുകൾ, വെസ്റ്റുകൾ തിരയുക...',
-    allProducts: '🌟 എല്ലാ ഉൽപ്പന്നങ്ങളും',
-    featuredTitle: 'ഹീറ്റ് പ്രൊട്ടക്ഷൻ കോട്ടുകളും വെസ്റ്റുകളും',
-    productsCount: 'ഉൽപ്പന്നങ്ങൾ',
-    orderNow: 'ഓർഡർ ചെയ്യുക',
-    specialDiscount: 'പ്രത്യേക കിഴിവ്',
-    heroBadge: 'ഔദ്യോഗിക സൺ പ്രൊട്ടക്ഷൻ ഗിയർ',
-    heroTitle: 'അമൽ കൂൾഗാർഡ് വെസ്റ്റുകൾ',
-    heroDesc: 'കേരളത്തിലെ കടുത്ത വെയിലിനെ പ്രതിരോധിക്കാം • ബൈക്ക് യാത്രികർക്കും തൊഴിലാളികൾക്കും അനുയോജ്യം',
-    heatBlock: '✓ 90% ചൂട് തടയുന്നു',
-    waterproof: '✓ വാട്ടർപ്രൂഫ്',
-    login: 'ലോഗിൻ',
-    logout: 'ലോഗൗട്ട്',
-    account: 'അക്കൗണ്ട്',
-    orders: 'ഓർഡറുകൾ',
-    home: 'ഹോം',
-    wishlist: 'വിഷ്‌ലിസ്റ്റ്',
-    helpCenter: 'സഹായ കേന്ദ്രം',
-    coupons: 'കൂപ്പണുകൾ',
-    deliveryAddress: 'ഡെലിവറി വിലാസം',
-    edit: 'എഡിറ്റ്',
-    save: 'സേവ് ചെയ്യുക',
-    close: 'അടയ്ക്കുക',
-    price: 'വില',
-    shippingLabel: 'ഷിപ്പിംഗ് ലേബൽ',
-    customerName: 'പേര്',
-    mobileNumber: 'മൊബൈൽ നമ്പർ',
-    pincode: 'പിൻകോഡ്',
-    paymentMethod: 'പേയ്‌മെന്റ് രീതി',
-    payWithUPI: 'UPI വഴി പണം നൽകുക',
-    cashOnDelivery: 'ക്യാഷ് ഓൺ ഡെലിവറി',
-  },
   en: {
     brandName: 'Amal Coolguard',
     brandSubtitle: 'Sun Protection',
     tagline: 'Heat Protection Gear • Kerala',
     searchPlaceholder: 'Search cooling vests, coats, sun gear...',
-    allProducts: '🌟 All Products',
+    allProducts: 'All Products',
     featuredTitle: 'Featured Cooling Vests & Coats',
-    productsCount: 'Products',
+    productsCount: 'Items',
     orderNow: 'Order Now',
-    specialDiscount: 'SPECIAL DISCOUNT',
+    viewDetails: 'View Details',
+    freeDelivery: 'Free Delivery',
+    specialDiscount: 'off',
     heroBadge: 'Official Sun Protection Gear',
-    heroTitle: 'AMAL COOLGUARD VESTS',
-    heroDesc: 'Beats Kerala Sun Heat • Heat Reflective Coat for Bike Riders & Outdoor Workers',
-    heatBlock: '✓ 90% Heat Block',
-    waterproof: '✓ Waterproof',
+    heroTitle: 'Amal Coolguard',
+    heroDesc: 'Sun Protection Cooling Gear • Engineered for Harsh Indian Sunlight',
+    heatBlock: '90% Heat Block',
+    waterproof: 'Waterproof',
     login: 'Login',
     logout: 'Logout',
     account: 'Account',
@@ -81,22 +46,76 @@ const translations: Record<Language, Record<string, string>> = {
     paymentMethod: 'Payment Method',
     payWithUPI: 'Pay with UPI (GPay / PhonePe / Paytm)',
     cashOnDelivery: 'Cash on Delivery (COD)',
+    myAccount: 'My Account',
+    myOrders: 'My Orders',
+    profileLocked: 'Sign In to View Profile',
+    profileLockedDesc: 'Sign in with your Gmail account to securely view your profile, saved address, and orders.',
+    ordersLockedDesc: 'Sign in with your Gmail account to view your orders and live delivery tracking.',
+    loginRequiredBook: 'Sign in with Gmail to place an order',
+    tapToZoom: 'Tap to Zoom',
+  },
+  ml: {
+    brandName: 'Amal Coolguard',
+    brandSubtitle: 'അമൽ കൂൾഗാർഡ്',
+    tagline: 'ഹീറ്റ് പ്രൊട്ടക്ഷൻ ഗിയർ • കേരളം',
+    searchPlaceholder: 'കൂളിംഗ് കോട്ടുകൾ, വെസ്റ്റുകൾ തിരയുക...',
+    allProducts: 'എല്ലാ ഉൽപ്പന്നങ്ങളും',
+    featuredTitle: 'ഹീറ്റ് പ്രൊട്ടക്ഷൻ കോട്ടുകളും വെസ്റ്റുകളും',
+    productsCount: 'ഉൽപ്പന്നങ്ങൾ',
+    orderNow: 'ഓർഡർ ചെയ്യുക',
+    viewDetails: 'വിശദാംശങ്ങൾ',
+    freeDelivery: 'സൗജന്യ ഡെലിവറി',
+    specialDiscount: 'കിഴിവ്',
+    heroBadge: 'ഔദ്യോഗിക സൺ പ്രൊട്ടക്ഷൻ ഗിയർ',
+    heroTitle: 'Amal Coolguard',
+    heroDesc: 'കടുത്ത വെയിലിനെ പ്രതിരോധിക്കുന്ന കൂളിംഗ് കോട്ടുകളും വെസ്റ്റുകളും',
+    heatBlock: '90% ചൂട് തടയുന്നു',
+    waterproof: 'വാട്ടർപ്രൂഫ്',
+    login: 'ലോഗിൻ',
+    logout: 'ലോഗൗട്ട്',
+    account: 'അക്കൗണ്ട്',
+    orders: 'ഓർഡറുകൾ',
+    home: 'ഹോം',
+    wishlist: 'വിഷ്‌ലിസ്റ്റ്',
+    helpCenter: 'സഹായ കേന്ദ്രം',
+    coupons: 'കൂപ്പണുകൾ',
+    deliveryAddress: 'ഡെലിവറി വിലാസം',
+    edit: 'എഡിറ്റ്',
+    save: 'സേവ് ചെയ്യുക',
+    close: 'അടയ്ക്കുക',
+    price: 'വില',
+    shippingLabel: 'ഷിപ്പിംഗ് ലേബൽ',
+    customerName: 'പേര്',
+    mobileNumber: 'മൊബൈൽ നമ്പർ',
+    pincode: 'പിൻകോഡ്',
+    paymentMethod: 'പേയ്‌മെന്റ് രീതി',
+    payWithUPI: 'UPI വഴി പണം നൽകുക',
+    cashOnDelivery: 'ക്യാഷ് ഓൺ ഡെലിവറി',
+    myAccount: 'എന്റെ അക്കൗണ്ട്',
+    myOrders: 'എന്റെ ഓർഡറുകൾ',
+    profileLocked: 'പ്രൊഫൈൽ കാണാൻ ലോഗിൻ ചെയ്യുക',
+    profileLockedDesc: 'നിങ്ങളുടെ സ്വന്തം പ്രൊഫൈലും ഓർഡറുകളും സുരക്ഷിതമായി കാണാൻ Gmail അക്കൗണ്ട് ഉപയോഗിച്ച് ലോഗിൻ ചെയ്യുക.',
+    ordersLockedDesc: 'നിങ്ങളുടെ ഓർഡറുകളും ട്രാക്കിംഗ് വിവരങ്ങളും കാണാൻ Gmail അക്കൗണ്ട് വഴി ലോഗിൻ ചെയ്യുക.',
+    loginRequiredBook: 'ഓർഡർ ബുക്ക് ചെയ്യാൻ Gmail ലോഗിൻ ചെയ്യുക',
+    tapToZoom: 'സൂം ചെയ്തു കാണാം',
   },
   hi: {
     brandName: 'Amal Coolguard',
     brandSubtitle: 'अमल कूलगार्ड',
     tagline: 'हीट प्रोटेक्शन गियर • केरल',
     searchPlaceholder: 'कूलिंग वेस्ट और कोट खोजें...',
-    allProducts: '🌟 सभी उत्पाद',
+    allProducts: 'सभी उत्पाद',
     featuredTitle: 'विशेष कूलिंग वेस्ट और कोट',
     productsCount: 'उत्पाद',
     orderNow: 'अभी ऑर्डर करें',
-    specialDiscount: 'विशेष छूट',
+    viewDetails: 'विवरण देखें',
+    freeDelivery: 'फ्री डिलीवरी',
+    specialDiscount: 'छूट',
     heroBadge: 'आधिकारिक धूप सुरक्षा गियर',
-    heroTitle: 'अमल कूलगार्ड वेस्ट्स',
-    heroDesc: 'केरल की तेज धूप से राहत • बाइक राइडर्स और कामगारों के लिए हीट रिफ्लेक्टिव कोट',
-    heatBlock: '✓ 90% गर्मी से बचाव',
-    waterproof: '✓ वाटरप्रूफ',
+    heroTitle: 'Amal Coolguard',
+    heroDesc: 'तेज धूप से सुरक्षा • बाइक राइडर्स और कामगारों के लिए हीट रिफ्लेक्टिव कोट',
+    heatBlock: '90% गर्मी से बचाव',
+    waterproof: 'वाटरप्रूफ',
     login: 'लॉग इन',
     logout: 'लॉग आउट',
     account: 'खाता',
@@ -117,22 +136,31 @@ const translations: Record<Language, Record<string, string>> = {
     paymentMethod: 'भुगतान विधि',
     payWithUPI: 'UPI से भुगतान करें',
     cashOnDelivery: 'कैश ऑन डिलीवरी',
+    myAccount: 'मेरा खाता',
+    myOrders: 'मेरे ऑर्डर',
+    profileLocked: 'प्रोफ़ाइल देखने के लिए लॉगिन करें',
+    profileLockedDesc: 'अपनी प्रोफ़ाइल और ऑर्डर देखने के लिए अपने Gmail खाते से साइन इन करें।',
+    ordersLockedDesc: 'अपने ऑर्डर और ट्रैकिंग देखने के लिए अपने Gmail खाते से साइन इन करें।',
+    loginRequiredBook: 'ऑर्डर करने के लिए Gmail से लॉगिन करें',
+    tapToZoom: 'ज़ूम करने के लिए टैप करें',
   },
   ta: {
     brandName: 'Amal Coolguard',
     brandSubtitle: 'அமல் கூல்கார்ட்',
     tagline: 'வெப்ப பாதுகாப்பு கியர் • கேரளா',
     searchPlaceholder: 'கூலிங் கோட்கள் மற்றும் ஆடைகளைத் தேடுங்கள்...',
-    allProducts: '🌟 அனைத்து பொருட்கள்',
+    allProducts: 'அனைத்து பொருட்கள்',
     featuredTitle: 'சிறப்பு கூலிங் கோட்கள் & வெஸ்ட்கள்',
     productsCount: 'பொருட்கள்',
     orderNow: 'இப்போதே ஆர்டர் செய்',
-    specialDiscount: 'சிறப்பு தள்ளுபடி',
+    viewDetails: 'விவரங்களைப் பார்',
+    freeDelivery: 'இலவச டெலிவரி',
+    specialDiscount: 'தள்ளுபடி',
     heroBadge: 'அதிகாரப்பூர்வ சூரிய பாதுகாப்பு கியர்',
-    heroTitle: 'அமல் கூல்கார்ட் வெஸ்ட்கள்',
-    heroDesc: 'கடுமையான வெயிலை வெல்லுங்கள் • பைக் ஓட்டுநர்கள் மற்றும் தொழிலாளர்களுக்கான சிறப்பு கோட்',
-    heatBlock: '✓ 90% வெப்பத் தடுப்பு',
-    waterproof: '✓ நீர்ப்புகா',
+    heroTitle: 'Amal Coolguard',
+    heroDesc: 'கடுமையான வெயிலை வெல்லுங்கள் • பைக் ஓட்டுநர்களுக்கான சிறப்பு கோட்',
+    heatBlock: '90% வெப்பத் தடுப்பு',
+    waterproof: 'நீர்ப்புகா',
     login: 'உள்நுழைவு',
     logout: 'வெளியேறு',
     account: 'கணக்கு',
@@ -153,31 +181,30 @@ const translations: Record<Language, Record<string, string>> = {
     paymentMethod: 'பணம் செலுத்தும் முறை',
     payWithUPI: 'UPI மூலம் பணம் செலுத்துங்கள்',
     cashOnDelivery: 'கேஷ் ஆன் டெலிவரி',
-  }
+    myAccount: 'என் கணக்கு',
+    myOrders: 'என் ஆர்டர்கள்',
+    profileLocked: 'சுயவிவரத்தைக் காண உள்நுழையவும்',
+    profileLockedDesc: 'உங்கள் சுயவிவரம் மற்றும் ஆர்டர்களைக் காண உங்கள் Gmail கணக்கில் உள்நுழையவும்.',
+    ordersLockedDesc: 'உங்கள் ஆர்டர்கள் மற்றும் டிராக்கிங்கைக் காண Gmail கணக்கில் உள்நுழையவும்.',
+    loginRequiredBook: 'ஆர்டர் செய்ய Gmail மூலம் உள்நுழையவும்',
+    tapToZoom: 'பெரிதாக்க தட்டவும்',
+  },
 };
 
 const LanguageContext = createContext<LanguageContextType>({
-  lang: 'ml',
+  lang: 'en',
   setLang: () => {},
   t: (key: string) => key,
 });
 
 export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [lang, setLangState] = useState<Language>(() => {
-    try {
-      const saved = localStorage.getItem('amal_app_language') as Language;
-      if (saved && ['ml', 'en', 'hi', 'ta'].includes(saved)) {
-        return saved;
-      }
-    } catch {}
-    return 'ml'; // Default Malayalam as requested
-  });
+  // Always open in English on every fresh visit; switches only when changed by the user in-session
+  const [lang, setLangState] = useState<Language>('en');
 
   const setLang = (newLang: Language) => {
-    setLangState(newLang);
-    try {
-      localStorage.setItem('amal_app_language', newLang);
-    } catch {}
+    if (['en', 'ml', 'hi', 'ta'].includes(newLang)) {
+      setLangState(newLang);
+    }
   };
 
   const t = (key: string): string => {
@@ -196,28 +223,28 @@ export const useLanguage = () => useContext(LanguageContext);
 export const LanguageSelector: React.FC<{ className?: string }> = ({ className = '' }) => {
   const { lang, setLang } = useLanguage();
 
-  const languageOptions = [
-    { code: 'ml', name: 'മലയാളം', flag: '🌴' },
-    { code: 'en', name: 'English', flag: '🌐' },
-    { code: 'hi', name: 'हिन्दी', flag: '🇮🇳' },
-    { code: 'ta', name: 'தமிழ்', flag: '🪷' },
+  const languageOptions: { code: Language; short: string; name: string }[] = [
+    { code: 'en', short: 'EN', name: 'English' },
+    { code: 'ml', short: 'ML', name: 'മലയാളം' },
+    { code: 'hi', short: 'HI', name: 'हिन्दी' },
+    { code: 'ta', short: 'TA', name: 'தமிழ்' },
   ];
 
   return (
-    <div className={`relative inline-flex items-center ${className}`}>
+    <div className={`relative inline-flex items-center shrink-0 ${className}`}>
       <select
         value={lang}
-        onChange={(e) => setLang(e.target.value as Language)}
+        onChange={e => setLang(e.target.value as Language)}
         aria-label="Select Language"
-        className="bg-white border border-gray-200 text-gray-800 text-[11px] font-extrabold rounded-xl py-1.5 pl-2.5 pr-7 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-xs appearance-none cursor-pointer hover:border-blue-300 transition"
+        className="h-9 bg-white border border-gray-200 text-gray-800 text-xs font-bold rounded-lg pl-2.5 pr-6 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-xs appearance-none cursor-pointer hover:border-blue-400 transition whitespace-nowrap"
       >
-        {languageOptions.map((opt) => (
+        {languageOptions.map(opt => (
           <option key={opt.code} value={opt.code}>
-            {opt.flag} {opt.name}
+            {opt.name}
           </option>
         ))}
       </select>
-      <span className="pointer-events-none absolute right-2 text-gray-400 text-[10px]">
+      <span className="pointer-events-none absolute right-2 text-gray-400 text-[9px]">
         ▼
       </span>
     </div>

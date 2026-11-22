@@ -8,10 +8,12 @@ import {
   safeJsonParse,
 } from '../utils/storeSync';
 import { ThemeSwitcher } from '../context/ThemeContext';
+import { useLanguage, LanguageSelector } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 
 export default function AccountDashboard() {
   const navigate = useNavigate();
+  const { t } = useLanguage();
   const {
     user,
     authReady,
@@ -95,70 +97,72 @@ export default function AccountDashboard() {
   // STRICT ISOLATION: Profile is hidden until user signs in with their own Gmail ID
   if (!user) {
     return (
-      <div className="min-h-screen bg-gray-100 pb-20 pt-6 px-4">
-        <div className="mb-5 flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-extrabold text-gray-900">My Account</h1>
-            <p className="text-xs text-gray-500">Login required to view your personal profile & orders</p>
-          </div>
-          <ThemeSwitcher compact />
-        </div>
-
-        <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-200 max-w-md mx-auto text-center space-y-4">
-          <div className="w-16 h-16 bg-blue-100 text-blue-600 text-3xl rounded-full flex items-center justify-center mx-auto">
-            🔒
-          </div>
-          <div>
-            <h2 className="text-lg font-black text-gray-900">Profile Locked (ലോഗിൻ ചെയ്യുക)</h2>
-            <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">
-              ഓരോരുത്തരുടെയും സ്വന്തം പ്രൊഫൈലും ഓർഡറുകളും സുരക്ഷിതമായി കാണാൻ നിങ്ങളുടെ <b>Gmail അക്കൗണ്ട്</b> ഉപയോഗിച്ച് ലോഗിൻ ചെയ്യുക.
-            </p>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleQuickLogin}
-            disabled={signingIn}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-3.5 px-4 rounded-2xl shadow-lg transition flex items-center justify-center gap-2 text-xs disabled:opacity-60"
-          >
-            <span>✉️</span>
-            <span>
-              {signingIn
-                ? 'Signing in with Google...'
-                : 'Sign In with Google / Gmail (ലോഗിൻ ചെയ്യുക)'}
-            </span>
-          </button>
-
-          {loginError && (
-            <p className="text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 p-2.5 rounded-xl">
-              {loginError}
-            </p>
-          )}
-
-          <button
-            type="button"
-            onClick={() => navigate('/login?redirect=/account')}
-            className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 rounded-xl text-xs transition"
-          >
-            Open Full Login Screen →
-          </button>
-        </div>
-
-        {/* Clean Promoter Page Link ONLY */}
-        <div className="max-w-md mx-auto mt-4">
-          <Link
-            to="/promoter"
-            className="flex items-center justify-between p-4 bg-purple-50 rounded-2xl border border-purple-200 transition hover:bg-purple-100"
-          >
-            <div className="flex items-center gap-3 min-w-0">
-              <span className="text-xl shrink-0">🤝</span>
-              <div className="min-w-0">
-                <p className="font-extrabold text-xs text-purple-900">Promoter Link</p>
-                <p className="text-[11px] font-mono text-purple-700 truncate">{promoterPortalDisplayUrl}</p>
-              </div>
+      <div className="min-h-screen bg-gray-100 pb-24 pt-5 px-4">
+        <div className="max-w-xl mx-auto">
+          <div className="mb-5 flex items-center justify-between gap-2">
+            <div>
+              <h1 className="text-xl font-extrabold text-gray-900">{t('myAccount')}</h1>
+              <p className="text-xs text-gray-500">Sign in to view your personal profile & orders</p>
             </div>
-            <span className="text-purple-700 font-bold shrink-0">›</span>
-          </Link>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <ThemeSwitcher compact />
+              <LanguageSelector />
+            </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200 text-center space-y-4">
+            <div className="w-14 h-14 bg-blue-100 text-blue-600 text-2xl rounded-full flex items-center justify-center mx-auto">
+              🔒
+            </div>
+            <div>
+              <h2 className="text-lg font-extrabold text-gray-900">{t('profileLocked')}</h2>
+              <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">
+                {t('profileLockedDesc')}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleQuickLogin}
+              disabled={signingIn}
+              className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 rounded-xl shadow-sm transition flex items-center justify-center gap-2 text-xs sm:text-sm disabled:opacity-60"
+            >
+              <span>
+                {signingIn ? 'Signing in with Google...' : 'Sign In with Google / Gmail'}
+              </span>
+            </button>
+
+            {loginError && (
+              <p className="text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 p-2.5 rounded-xl">
+                {loginError}
+              </p>
+            )}
+
+            <button
+              type="button"
+              onClick={() => navigate('/login?redirect=/account')}
+              className="w-full h-10 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-xl text-xs transition"
+            >
+              Open Login Page
+            </button>
+          </div>
+
+          {/* Clean Promoter Page Link ONLY */}
+          <div className="mt-4">
+            <Link
+              to="/promoter"
+              className="flex items-center justify-between p-4 bg-purple-50 rounded-xl border border-purple-200 transition hover:bg-purple-100"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="text-xl shrink-0">🤝</span>
+                <div className="min-w-0">
+                  <p className="font-extrabold text-xs text-purple-900">Promoter Link</p>
+                  <p className="text-[11px] font-mono text-purple-700 truncate">{promoterPortalDisplayUrl}</p>
+                </div>
+              </div>
+              <span className="text-purple-700 font-bold shrink-0">›</span>
+            </Link>
+          </div>
         </div>
       </div>
     );
@@ -194,23 +198,25 @@ export default function AccountDashboard() {
   const activeShortcuts = allShortcuts.filter(item => !item.blocked);
 
   return (
-    <div className="min-h-screen bg-gray-100 pb-20 pt-6">
+    <div className="min-h-screen bg-gray-100 pb-24 pt-5">
+      <div className="max-w-3xl mx-auto">
       {/* Header */}
       <div className="px-4 mb-4 flex items-center justify-between gap-2">
-        <div>
-          <h1 className="text-xl font-extrabold text-gray-900 mb-0.5">My Account</h1>
-          <p className="text-xs text-gray-500 truncate max-w-[200px]">
-            ✉️ {user.email}
+        <div className="min-w-0">
+          <h1 className="text-xl font-extrabold text-gray-900 mb-0.5">{t('myAccount')}</h1>
+          <p className="text-xs text-gray-500 truncate max-w-[200px] sm:max-w-xs">
+            {user.email}
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <ThemeSwitcher compact />
+          <LanguageSelector />
           <button
             onClick={() => logout()}
-            className="bg-red-50 text-red-600 border border-red-200 text-xs font-extrabold px-3.5 py-2 rounded-xl shadow-xs hover:bg-red-100 transition"
+            className="h-9 bg-red-50 text-red-600 border border-red-200 text-xs font-bold px-3 rounded-lg shadow-xs hover:bg-red-100 transition whitespace-nowrap"
           >
-            Logout 🚪
+            {t('logout')}
           </button>
         </div>
       </div>
@@ -578,9 +584,9 @@ export default function AccountDashboard() {
                   </div>
                   <button
                     type="submit"
-                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-3 rounded-xl shadow transition"
+                    className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-xs transition"
                   >
-                    Save Profile & Address (സേവ് ചെയ്യുക)
+                    Save Profile & Address
                   </button>
                 </form>
               </div>
@@ -597,20 +603,21 @@ export default function AccountDashboard() {
                   rel="noreferrer"
                   className="block w-full bg-green-600 text-white font-extrabold py-3 rounded-xl text-xs shadow"
                 >
-                  💬 Open WhatsApp Helpline
+                  Open WhatsApp Helpline
                 </a>
               </>
             )}
 
             <button
               onClick={() => setActiveModal(null)}
-              className="w-full bg-gray-200 text-gray-800 font-bold py-2.5 rounded-xl text-xs mt-2"
+              className="w-full h-10 bg-gray-200 text-gray-800 font-bold rounded-xl text-xs mt-2"
             >
               Close
             </button>
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

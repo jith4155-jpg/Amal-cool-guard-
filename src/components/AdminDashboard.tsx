@@ -16,7 +16,8 @@ import { Product } from '../data/mockProducts';
 import { ThemeSwitcher } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import {
-  compressImageFile,
+  compressProductImageToRange,
+  estimateDataUrlKB,
   getCatalogProducts,
   addCatalogProduct,
   updateCatalogProduct,
@@ -307,7 +308,7 @@ export default function AdminDashboard() {
     }
   };
 
-  // Compressed image file handler supporting single & multi-file photo upload
+  // Auto-filtered 10–50 KB image compressor supporting single & multi-file photo upload
   const handleImageFileUpload = async (
     e: React.ChangeEvent<HTMLInputElement>,
     target: 'newMain' | 'newGallery' | 'editMain' | 'editGallery'
@@ -317,24 +318,26 @@ export default function AdminDashboard() {
 
     setUploadingPhoto(true);
     try {
-      const compressedList: string[] = [];
+      const optimizedList: { dataUrl: string; sizeKB: number }[] = [];
       for (let i = 0; i < files.length; i++) {
-        const compressed = await compressImageFile(files[i], 900, 0.72);
-        compressedList.push(compressed);
+        const result = await compressProductImageToRange(files[i], 10, 50);
+        optimizedList.push(result);
       }
+      const compressedList = optimizedList.map(o => o.dataUrl);
+      const sizeSummary = optimizedList.map(o => `${o.sizeKB} KB`).join(', ');
 
       if (target === 'newMain') {
         setNewProduct(prev => ({ ...prev, imageUrl: compressedList[0] }));
-        showToast('✓ Main photo ready! Click "Save & Publish Product" to publish.');
+        showToast(`✓ Main photo auto-filtered to ${sizeSummary} (10–50 KB)!`);
       } else if (target === 'newGallery') {
         setNewProduct(prev => ({
           ...prev,
           galleryImages: [...prev.galleryImages, ...compressedList],
         }));
-        showToast(`✓ Added ${compressedList.length} photo(s) to gallery!`);
+        showToast(`✓ Added ${compressedList.length} photo(s) (${sizeSummary}) to gallery!`);
       } else if (target === 'editMain' && editingProduct) {
         setEditingProduct(prev => (prev ? { ...prev, imageUrl: compressedList[0] } : null));
-        showToast('✓ Main photo updated! Click "Save Changes" to apply.');
+        showToast(`✓ Main photo auto-filtered to ${sizeSummary} (10–50 KB)! Click "Save Changes".`);
       } else if (target === 'editGallery' && editingProduct) {
         setEditingProduct(prev => {
           if (!prev) return null;
@@ -343,7 +346,7 @@ export default function AdminDashboard() {
             : (prev.imageUrl ? [prev.imageUrl] : []);
           return { ...prev, galleryImages: [...existing, ...compressedList] };
         });
-        showToast(`✓ Added ${compressedList.length} gallery photo(s)! Click "Save Changes" to save.`);
+        showToast(`✓ Added ${compressedList.length} gallery photo(s) (${sizeSummary})! Click "Save Changes".`);
       }
     } catch {
       showToast('Could not read that image file. Please try JPG/PNG.', 'error');
@@ -1618,10 +1621,17 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
 
                 {/* Main Image Upload & Link */}
                 <div className="col-span-1 md:col-span-2 bg-blue-50/60 p-4 rounded-2xl border border-blue-100 space-y-2">
-                  <label className="block font-bold text-blue-900">Main Product Image (പ്രധാന ഫോട്ടോ Upload/Link):</label>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <label className="block font-bold text-blue-900">Main Product Image (Auto-Filtered 10–50 KB):</label>
+                    {newProduct.imageUrl.startsWith('data:') && (
+                      <span className="text-[10px] font-bold bg-emerald-600 text-white px-2 py-0.5 rounded">
+                        ✓ {estimateDataUrlKB(newProduct.imageUrl)} KB
+                      </span>
+                    )}
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <div>
-                      <span className="text-[10px] font-bold text-gray-500 block mb-1">Upload Photo File from Device:</span>
+                      <span className="text-[10px] font-bold text-gray-500 block mb-1">Upload Photo File (Auto-sized 10–50 KB):</span>
                       <input
                         type="file"
                         accept="image/*"
@@ -1633,7 +1643,7 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                       <span className="text-[10px] font-bold text-gray-500 block mb-1">Or Paste Image URL:</span>
                       <input
                         type="text"
-                        placeholder="https://images.unsplash.com/..."
+                        placeholder="https://..."
                         value={newProduct.imageUrl}
                         onChange={e => setNewProduct({ ...newProduct, imageUrl: e.target.value })}
                         className="w-full p-2 border border-gray-300 rounded-xl outline-none bg-white text-xs"
@@ -1659,10 +1669,10 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                 {/* Additional Angle Photos (Gallery) */}
                 <div className="col-span-1 md:col-span-2 bg-purple-50/60 p-4 rounded-2xl border border-purple-100 space-y-3">
                   <label className="block font-bold text-purple-900">
-                    Multiple Photos / Angle Gallery (പല ആംഗിളിലുള്ള ഫോട്ടോസുകൾ):
+                    Multiple Photos / Angle Gallery (Auto-Filtered 10–50 KB per photo):
                   </label>
                   <p className="text-[11px] text-purple-800">
-                    Select one or multiple photos from your phone/PC, or paste image URLs below.
+                    Uploaded photos are automatically optimized to 10–50 KB for fast loading across mobile and desktop.
                   </p>
 
                   <div className="flex gap-2 items-center">

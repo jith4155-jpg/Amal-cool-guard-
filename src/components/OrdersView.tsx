@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ThemeSwitcher } from '../context/ThemeContext';
+import { useLanguage, LanguageSelector } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import { safeJsonParse } from '../utils/storeSync';
 
 export default function OrdersView() {
   const navigate = useNavigate();
+  const { t } = useLanguage();
   const {
     user,
     authReady,
@@ -61,21 +63,26 @@ export default function OrdersView() {
   // STRICT ISOLATION: Orders cannot be viewed without logging into your Gmail account
   if (!user) {
     return (
-      <div className="min-h-screen bg-gray-100 pb-20">
-        <div className="bg-white p-4 shadow-sm sticky top-0 z-40 flex items-center justify-between gap-2">
-          <h1 className="text-xl font-bold text-gray-900">My Orders</h1>
-          <ThemeSwitcher compact />
+      <div className="min-h-screen bg-gray-100 pb-24">
+        <div className="bg-white border-b border-gray-200 sticky top-0 z-40">
+          <div className="max-w-3xl mx-auto px-4 h-14 flex items-center justify-between gap-2">
+            <h1 className="text-lg font-extrabold text-gray-900">{t('myOrders')}</h1>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <ThemeSwitcher compact />
+              <LanguageSelector />
+            </div>
+          </div>
         </div>
 
-        <div className="p-4">
-          <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-200 max-w-md mx-auto mt-6 text-center space-y-4">
-            <div className="w-16 h-16 bg-blue-100 text-blue-600 text-3xl rounded-full flex items-center justify-center mx-auto">
+        <div className="p-4 max-w-xl mx-auto mt-4">
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200 text-center space-y-4">
+            <div className="w-14 h-14 bg-blue-100 text-blue-600 text-2xl rounded-full flex items-center justify-center mx-auto">
               🔐
             </div>
             <div>
-              <h2 className="text-lg font-black text-gray-900">Login Required (ലോഗിൻ ചെയ്യുക)</h2>
+              <h2 className="text-lg font-extrabold text-gray-900">{t('profileLocked')}</h2>
               <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">
-                നിങ്ങളുടെ ഓർഡറുകളും എത്ര ഓർഡർ ചെയ്തു എന്ന വിവരവും കാണാൻ <b>Gmail അക്കൗണ്ട്</b> വഴി ലോഗിൻ ചെയ്യുക.
+                {t('ordersLockedDesc')}
               </p>
             </div>
 
@@ -87,9 +94,9 @@ export default function OrdersView() {
                 if (res.error) setLoginError(res.error);
               }}
               disabled={signingIn}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-3.5 px-4 rounded-2xl shadow-lg transition text-xs disabled:opacity-60"
+              className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 rounded-xl shadow-sm transition text-xs sm:text-sm disabled:opacity-60"
             >
-              {signingIn ? 'Signing in...' : '✉️ Sign In with Google / Gmail (ലോഗിൻ ചെയ്യുക)'}
+              {signingIn ? 'Signing in...' : 'Sign In with Google / Gmail'}
             </button>
 
             {loginError && (
@@ -101,9 +108,9 @@ export default function OrdersView() {
             <button
               type="button"
               onClick={() => navigate('/login?redirect=/orders')}
-              className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 rounded-xl text-xs transition"
+              className="w-full h-10 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-xl text-xs transition"
             >
-              Open Login Page →
+              Open Login Page
             </button>
           </div>
         </div>
@@ -115,16 +122,16 @@ export default function OrdersView() {
     switch (status?.toLowerCase()) {
       case 'confirmed':
       case 'approved':
-        return <span className="bg-green-100 text-green-800 text-[11px] font-extrabold px-2.5 py-1 rounded-full">APPROVED ✓</span>;
+        return <span className="bg-green-100 text-green-800 text-[11px] font-extrabold px-2.5 py-1 rounded-md">APPROVED</span>;
       case 'cancelled':
       case 'canceled':
-        return <span className="bg-red-100 text-red-800 text-[11px] font-extrabold px-2.5 py-1 rounded-full">CANCELLED 🚫</span>;
+        return <span className="bg-red-100 text-red-800 text-[11px] font-extrabold px-2.5 py-1 rounded-md">CANCELLED</span>;
       case 'rejected':
-        return <span className="bg-red-100 text-red-800 text-[11px] font-extrabold px-2.5 py-1 rounded-full">REJECTED ✕</span>;
+        return <span className="bg-red-100 text-red-800 text-[11px] font-extrabold px-2.5 py-1 rounded-md">REJECTED</span>;
       case 'pending':
       case 'pending_verification':
       default:
-        return <span className="bg-amber-100 text-amber-800 text-[11px] font-extrabold px-2.5 py-1 rounded-full animate-pulse">PENDING VERIFICATION ⏳</span>;
+        return <span className="bg-amber-100 text-amber-800 text-[11px] font-extrabold px-2.5 py-1 rounded-md">PENDING VERIFICATION</span>;
     }
   };
 
@@ -134,22 +141,22 @@ export default function OrdersView() {
   ).length;
 
   return (
-    <div className="min-h-screen bg-gray-100 pb-20">
+    <div className="min-h-screen bg-gray-100 pb-24">
       {/* Header */}
-      <div className="bg-white p-4 shadow-sm sticky top-0 z-40 flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <h1 className="text-xl font-bold text-gray-900">My Orders</h1>
-          <p className="text-[11px] font-bold text-blue-700 truncate">✉️ {user.email}</p>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <ThemeSwitcher compact />
-          <span className="text-xs bg-blue-50 text-blue-700 px-3 py-1 rounded-full font-extrabold border border-blue-200">
-            {myOrders.length} {myOrders.length === 1 ? 'Order' : 'Orders'}
-          </span>
+      <div className="bg-white border-b border-gray-200 sticky top-0 z-40">
+        <div className="max-w-3xl mx-auto px-4 h-14 flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <h1 className="text-lg font-extrabold text-gray-900 leading-tight">{t('myOrders')}</h1>
+            <p className="text-[11px] font-semibold text-blue-700 truncate">{user.email}</p>
+          </div>
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <ThemeSwitcher compact />
+            <LanguageSelector />
+          </div>
         </div>
       </div>
 
-      <div className="p-4 space-y-4">
+      <div className="max-w-3xl mx-auto p-4 space-y-4">
         {/* Exact Gmail Order Count Summary Banner */}
         <div className="bg-white p-3.5 rounded-2xl shadow-xs border border-gray-200 grid grid-cols-3 gap-2 text-center">
           <div className="bg-blue-50 p-2 rounded-xl">

@@ -20,19 +20,20 @@ export default function AppStorefront() {
   const { t } = useLanguage();
   const { user, profile } = useAuth();
 
-  // Instant initialization from unified Admin-synced catalog
   const [products, setProducts] = useState<Product[]>(() => getCatalogProducts());
   const [customCategories, setCustomCategories] = useState<string[]>(() => getCategories());
+  const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({});
 
   const wishlistKey = user ? `amal_wishlist_${user.uid}` : 'amal_wishlist_guest';
-
   const [wishlist, setWishlist] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     try {
       const savedWishlistIds: string[] = safeJsonParse<string[]>(localStorage.getItem(wishlistKey), []);
       const wishMap: Record<string, boolean> = {};
-      savedWishlistIds.forEach(id => { wishMap[id] = true; });
+      savedWishlistIds.forEach(id => {
+        wishMap[id] = true;
+      });
       setWishlist(wishMap);
     } catch {
       setWishlist({});
@@ -42,7 +43,6 @@ export default function AppStorefront() {
   useEffect(() => {
     let isMounted = true;
 
-    // Silently record referral ID from URL (?L01N) without showing any promotion UI
     syncReferralFromUrl(true);
 
     const handleStoreSync = () => {
@@ -86,7 +86,7 @@ export default function AppStorefront() {
               price: Number(data.price) || 2499,
               discountPrice: Number(data.discountPrice || data.price) || 1999,
               description: data.description || 'Cooling coat for heat protection.',
-              imageUrl: data.imageUrl || 'https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=500',
+              imageUrl: data.imageUrl || '',
               galleryImages: Array.isArray(data.galleryImages) ? data.galleryImages : undefined,
               category: data.category || 'Coats',
               rating: Number(data.rating) || 4.7,
@@ -103,7 +103,7 @@ export default function AppStorefront() {
           return;
         }
       } catch {
-        // Handled silently - already rendered from unified local catalog
+        // fallback cleanly to local catalog
       }
 
       if (isMounted) {
@@ -135,16 +135,13 @@ export default function AppStorefront() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
 
-  // Top Category bar displays ONLY the categories configured/added in Admin
   const allCustomCategoryNames = Array.from(new Set(customCategories.map(c => c.trim()).filter(Boolean)));
   const categories = ['All', ...allCustomCategoryNames];
 
-  // Categories matching current search input so typing a category name highlights & selects it easily
   const matchingSearchedCategories = searchQuery.trim()
     ? allCustomCategoryNames.filter(c => c.toLowerCase().includes(searchQuery.trim().toLowerCase()))
     : [];
 
-  // Filter products by search and selected category
   const filteredProducts = products.filter(p => {
     const matchesCategory =
       selectedCategory === 'All' || p.category?.toLowerCase() === selectedCategory.toLowerCase();
@@ -158,261 +155,319 @@ export default function AppStorefront() {
 
   const savedSettings = safeJsonParse<Record<string, any>>(localStorage.getItem('amal_payment_settings'), {});
   const whatsappNum = savedSettings.whatsappNumber || '6238113451';
+  const firstName = (profile?.name || user?.displayName || user?.email || 'Account').split(' ')[0];
 
   return (
     <div className="min-h-screen bg-gray-100 pb-20">
-      {/* Header with Logo, Title, Language Selector & WhatsApp */}
-      <nav className="bg-white px-3.5 py-2.5 shadow-sm sticky top-0 z-50 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <img
-            src="/assets/aistudio/file_000000004d888211a2ae8deecb004de1_adbff682.png"
-            alt="Amal Coolguard Logo"
-            className="w-9 h-9 rounded-full border shadow-sm object-cover"
-            onError={e => {
-              (e.target as HTMLElement).style.display = 'none';
-            }}
-          />
-          <div className="leading-tight">
-            <span className="text-sm font-black text-gray-900 tracking-tight">
-              Amal Coolguard
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1.5">
-          {/* Eye-Comfort Theme Switcher (5 Colors) */}
-          <ThemeSwitcher compact />
-
-          {/* Prominent Language Switcher at the top */}
-          <LanguageSelector />
-
-          {user ? (
-            <Link
-              to="/account"
-              className="flex items-center gap-1 bg-blue-50 border border-blue-200 text-blue-700 text-[10px] font-extrabold px-2 py-1.5 rounded-xl"
-            >
-              <span>👤</span>
-              <span className="max-w-[55px] truncate">
-                {(profile?.name || user.displayName || user.email || 'User').split(' ')[0]}
+      {/* Flipkart-Style Clean Sticky Header (Zero Overlap on All Mobile & Desktop Widths) */}
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-50 shadow-xs">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
+          {/* Top Bar Row */}
+          <div className="h-14 flex items-center justify-between gap-2 sm:gap-4">
+            {/* Brand Zone (single-line, never wraps behind controls) */}
+            <Link to="/" className="flex items-center gap-2 min-w-0 shrink">
+              <img
+                src="/assets/aistudio/file_000000004d888211a2ae8deecb004de1_adbff682.png"
+                alt="Amal Coolguard"
+                className="w-8 h-8 rounded-full border border-gray-200 object-cover shrink-0"
+                onError={e => {
+                  (e.target as HTMLElement).style.display = 'none';
+                }}
+              />
+              <span className="text-sm sm:text-base font-extrabold text-gray-900 tracking-tight whitespace-nowrap truncate">
+                {t('brandName')}
               </span>
             </Link>
-          ) : (
-            <Link
-              to="/login"
-              className="bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-extrabold px-2.5 py-1.5 rounded-xl shadow transition"
-            >
-              {t('login')}
-            </Link>
-          )}
 
-          <a
-            href={`https://wa.me/91${whatsappNum}?text=Hello%20Amal%20Coolguard,%20I%20have%20an%20enquiry%20about%20your%20cooling%20vests.`}
-            target="_blank"
-            rel="noreferrer"
-            title="Chat with Amal Coolguard on WhatsApp"
-            className="bg-emerald-500 hover:bg-emerald-600 text-white w-8 h-8 rounded-full flex items-center justify-center text-sm shadow transition"
-          >
-            💬
-          </a>
-        </div>
-      </nav>
+            {/* Controls Zone (uniform h-9 controls, zero collision) */}
+            <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+              <ThemeSwitcher compact />
+              <LanguageSelector />
 
-      {/* Search Input Bar */}
-      <div className="px-4 pt-3">
-        <div className="relative">
-          <input
-            type="text"
-            placeholder={t('searchPlaceholder')}
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            className="w-full bg-white border border-gray-200 rounded-2xl py-2.5 pl-9 pr-4 text-xs font-medium text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-xs"
-          />
-          <span className="absolute left-3 top-2.5 text-gray-400 text-xs">🔍</span>
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery('')}
-              className="absolute right-3 top-2.5 text-gray-400 hover:text-gray-600 text-xs font-bold"
-            >
-              ✕
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Category Filter Chips at top of screen */}
-      <div className="flex gap-2 px-4 pt-2.5 overflow-x-auto no-scrollbar">
-        {categories.map(cat => (
-          <button
-            key={cat}
-            onClick={() => setSelectedCategory(cat)}
-            className={`text-xs font-extrabold px-3.5 py-1.5 rounded-xl transition whitespace-nowrap shadow-xs ${
-              selectedCategory === cat
-                ? 'bg-blue-600 text-white shadow'
-                : 'bg-white text-gray-700 border border-gray-200 hover:bg-gray-50'
-            }`}
-          >
-            {cat === 'All' ? t('allProducts') : cat}
-          </button>
-        ))}
-      </div>
-
-      {/* Matching Categories Quick-Jump when searching */}
-      {matchingSearchedCategories.length > 0 && (
-        <div className="px-4 pt-2 flex items-center gap-2 overflow-x-auto no-scrollbar">
-          <span className="text-[10px] font-bold text-gray-500 whitespace-nowrap">Categories:</span>
-          {matchingSearchedCategories.map(cat => (
-            <button
-              key={cat}
-              onClick={() => {
-                setSelectedCategory(cat);
-                setSearchQuery('');
-              }}
-              className="bg-indigo-50 text-indigo-700 border border-indigo-200 text-[11px] font-extrabold px-3 py-1 rounded-full whitespace-nowrap hover:bg-indigo-100 transition"
-            >
-              📂 {cat}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Clean Hero Banner: Amal Coolguard + English Sun Protection Cooling line only */}
-      <div className="bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-500 text-white p-5 mx-4 mt-3 rounded-2xl shadow-md">
-        <h2 className="text-xl font-extrabold leading-tight">Amal Coolguard</h2>
-        <p className="text-xs text-blue-100 font-semibold mt-1">
-          Sun Protection Cooling Gear
-        </p>
-      </div>
-
-      {/* Products Section */}
-      <main className="p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-extrabold text-base text-gray-900">
-            {selectedCategory === 'All' ? t('featuredTitle') : selectedCategory}
-          </h3>
-          <span className="text-xs text-gray-500 font-medium">
-            {filteredProducts.length} {t('productsCount')}
-          </span>
-        </div>
-
-        {filteredProducts.length === 0 ? (
-          <div className="p-10 bg-white rounded-2xl text-center text-xs text-gray-500 border border-dashed border-gray-300 space-y-2">
-            <p>
-              {searchQuery
-                ? `No products found matching "${searchQuery}".`
-                : `No products found in "${selectedCategory}" category yet.`}
-            </p>
-            {selectedCategory !== 'All' && (
-              <button
-                onClick={() => setSelectedCategory('All')}
-                className="bg-blue-600 text-white text-xs font-bold px-4 py-2 rounded-xl"
-              >
-                Show All Products
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-3.5">
-            {filteredProducts.map(product => {
-              const totals = calculateProductTotals(product);
-              const totalWithExtras = totals.finalTotal;
-
-              const discountPercent =
-                totals.originalBase > totals.basePrice
-                  ? Math.round(((totals.originalBase - totals.basePrice) / totals.originalBase) * 100)
-                  : 0;
-
-              const isSavedInWishlist = wishlist[product.id];
-
-              return (
+              {user ? (
                 <Link
-                  to={`/product/${product.id}`}
-                  key={product.id}
-                  className="bg-white p-3 rounded-2xl shadow-sm hover:shadow-md transition border border-gray-100 relative flex flex-col justify-between group"
+                  to="/account"
+                  className="h-9 inline-flex items-center gap-1.5 bg-blue-50 border border-blue-200 text-blue-700 text-xs font-bold px-2.5 sm:px-3 rounded-lg hover:bg-blue-100 transition whitespace-nowrap shrink-0"
                 >
-                  {/* Prominent Heart / Wishlist Button */}
-                  <button
-                    onClick={e => toggleWishlist(e, product.id)}
-                    title={isSavedInWishlist ? 'Remove from Wishlist' : 'Save to Wishlist'}
-                    className={`absolute top-2.5 right-2.5 w-9 h-9 rounded-full flex items-center justify-center text-lg shadow-md z-10 transition transform active:scale-125 ${
-                      isSavedInWishlist
-                        ? 'bg-red-50 text-red-600 border border-red-200 scale-105'
-                        : 'bg-white/90 text-gray-400 hover:text-red-500'
-                    }`}
-                  >
-                    {isSavedInWishlist ? '❤️' : '♡'}
-                  </button>
-
-                  <div>
-                    <div className="w-full h-36 bg-gray-50 rounded-xl overflow-hidden mb-2.5">
-                      <img
-                        src={product.imageUrl}
-                        alt={product.name}
-                        className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
-                      />
-                    </div>
-
-                    <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full uppercase">
-                      {product.category}
-                    </span>
-
-                    <h4 className="font-bold text-xs text-gray-900 mt-1.5 leading-snug line-clamp-2">
-                      {product.name}
-                    </h4>
-
-                    <div className="flex items-center gap-1 mt-1 text-[11px] text-gray-600">
-                      <span className="bg-green-600 text-white text-[10px] font-extrabold px-1.5 py-0.2 rounded">
-                        {product.rating || 4.8} ★
-                      </span>
-                      <span className="text-[10px] text-gray-400">({product.reviewsCount || 45})</span>
-                    </div>
-
-                    <div className="flex items-baseline gap-1.5 mt-2">
-                      <span className="text-sm font-extrabold text-gray-900">
-                        ₹{totalWithExtras}
-                      </span>
-                      {totals.originalTotal > totalWithExtras && (
-                        <span className="text-[11px] text-gray-400 line-through">₹{totals.originalTotal}</span>
-                      )}
-                    </div>
-
-                    {totals.gstPercent > 0 && (
-                      <span className="text-[10px] font-bold text-amber-700 block mt-0.5">
-                        +{totals.gstPercent}% GST (₹{totals.gstAmount})
-                      </span>
-                    )}
-
-                    {totals.deliveryFee > 0 ? (
-                      <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded inline-block mt-1">
-                        🚚 +₹{totals.deliveryFee} Delivery
-                      </span>
-                    ) : (
-                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded inline-block mt-1">
-                        🚚 Free Delivery
-                      </span>
-                    )}
-
-                    {product.estimatedDeliveryDays && (
-                      <span className="text-[10px] font-bold text-gray-500 block mt-0.5">
-                        ⏱️ Delivery: {product.estimatedDeliveryDays}
-                      </span>
-                    )}
-
-                    {discountPercent > 0 && (
-                      <span className="text-[10px] font-bold text-green-700 block mt-0.5">
-                        {discountPercent}% {t('specialDiscount')}
-                      </span>
-                    )}
-                  </div>
-
-                  <button className="w-full mt-3 bg-gradient-to-r from-orange-500 to-amber-600 text-white text-xs font-bold py-2 px-3 rounded-xl shadow hover:brightness-110 active:scale-98 transition flex items-center justify-center gap-1">
-                    <span>{t('orderNow')}</span>
-                  </button>
+                  <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                    <circle cx="12" cy="7" r="4" />
+                  </svg>
+                  <span className="max-w-[60px] sm:max-w-[100px] truncate">{firstName}</span>
                 </Link>
-              );
-            })}
+              ) : (
+                <Link
+                  to="/login"
+                  className="h-9 inline-flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3 sm:px-4 rounded-lg shadow-xs transition whitespace-nowrap shrink-0"
+                >
+                  {t('login')}
+                </Link>
+              )}
+
+              <a
+                href={`https://wa.me/91${whatsappNum}?text=Hello%20Amal%20Coolguard,%20I%20have%20an%20enquiry%20about%20your%20cooling%20vests.`}
+                target="_blank"
+                rel="noreferrer"
+                title="WhatsApp Support"
+                aria-label="WhatsApp Support"
+                className="w-9 h-9 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center justify-center shadow-xs transition shrink-0"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2Zm5.6 14.1c-.2.6-1.3 1.1-1.9 1.2-.5.1-1.1.1-1.8-.1a14 14 0 0 1-5.8-3.6 10.6 10.6 0 0 1-2.2-3.4c-.3-.8 0-1.6.5-2.1.3-.3.7-.5 1-.5h.7c.2 0 .5 0 .7.5l.9 2.1c.1.2.1.5 0 .7l-.4.6c-.2.2-.3.4-.1.7.4.7 1 1.4 1.7 2 .8.7 1.6 1.2 2.4 1.5.3.1.5 0 .7-.2l.7-.8c.2-.2.5-.3.8-.2l2 .9c.4.2.5.4.5.7 0 .3-.1.8-.4 1.3Z" />
+                </svg>
+              </a>
+            </div>
+          </div>
+
+          {/* Integrated Search Bar (Flipkart style) */}
+          <div className="pb-2.5">
+            <div className="relative flex items-center">
+              <svg
+                className="w-4 h-4 text-gray-400 absolute left-3.5 pointer-events-none"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                aria-hidden="true"
+              >
+                <circle cx="11" cy="11" r="8" />
+                <path d="m21 21-4.3-4.3" />
+              </svg>
+              <input
+                type="text"
+                placeholder={t('searchPlaceholder')}
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="w-full h-10 bg-gray-50 border border-gray-200 rounded-lg pl-10 pr-9 text-xs sm:text-sm font-medium text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  aria-label="Clear search"
+                  className="absolute right-2.5 w-6 h-6 flex items-center justify-center rounded-md text-gray-400 hover:text-gray-700 text-xs font-bold"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Responsive Store Container */}
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-3 space-y-4">
+        {/* Clean Category Filter Rail */}
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+          {categories.map(cat => {
+            const active = selectedCategory === cat;
+            return (
+              <button
+                key={cat}
+                type="button"
+                onClick={() => setSelectedCategory(cat)}
+                className={`h-9 px-4 rounded-lg text-xs font-bold transition whitespace-nowrap shrink-0 border ${
+                  active
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                    : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                {cat === 'All' ? t('allProducts') : cat}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Matching Categories Quick-Jump when searching */}
+        {matchingSearchedCategories.length > 0 && (
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+            <span className="text-xs font-semibold text-gray-500 whitespace-nowrap">Categories:</span>
+            {matchingSearchedCategories.map(cat => (
+              <button
+                key={cat}
+                type="button"
+                onClick={() => {
+                  setSelectedCategory(cat);
+                  setSearchQuery('');
+                }}
+                className="h-8 px-3 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 text-xs font-bold whitespace-nowrap hover:bg-blue-100 transition"
+              >
+                {cat}
+              </button>
+            ))}
           </div>
         )}
-      </main>
+
+        {/* Single Focal Store Banner */}
+        <section className="bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-600 text-white px-5 py-4 sm:px-8 sm:py-6 rounded-xl shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <h1 className="text-lg sm:text-2xl font-extrabold tracking-tight leading-tight">
+              {t('heroTitle')}
+            </h1>
+            <p className="text-xs sm:text-sm text-blue-100 font-medium mt-1">
+              {t('heroDesc')}
+            </p>
+          </div>
+          <div className="hidden sm:flex items-center gap-4 text-xs font-semibold text-blue-50 shrink-0">
+            <span>{t('heatBlock')}</span>
+            <span aria-hidden="true">·</span>
+            <span>{t('waterproof')}</span>
+          </div>
+        </section>
+
+        {/* Product Catalog Section */}
+        <main className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="font-extrabold text-sm sm:text-lg text-gray-900 tracking-tight">
+              {selectedCategory === 'All' ? t('featuredTitle') : selectedCategory}
+            </h2>
+            <span className="text-xs text-gray-500 font-semibold tabular-nums whitespace-nowrap shrink-0">
+              {filteredProducts.length} {t('productsCount')}
+            </span>
+          </div>
+
+          {filteredProducts.length === 0 ? (
+            <div className="p-10 bg-white rounded-xl text-center text-xs sm:text-sm text-gray-500 border border-dashed border-gray-300 space-y-3">
+              <p>
+                {searchQuery
+                  ? `No products found matching "${searchQuery}".`
+                  : `No products found in "${selectedCategory}" category yet.`}
+              </p>
+              {selectedCategory !== 'All' && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedCategory('All')}
+                  className="h-9 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-5 rounded-lg transition"
+                >
+                  {t('allProducts')}
+                </button>
+              )}
+            </div>
+          ) : (
+            <div
+              className={`grid gap-3 sm:gap-4 lg:gap-5 ${
+                filteredProducts.length === 1
+                  ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
+                  : 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4'
+              }`}
+            >
+              {filteredProducts.map(product => {
+                const totals = calculateProductTotals(product);
+                const totalWithExtras = totals.finalTotal;
+                const discountPercent =
+                  totals.originalBase > totals.basePrice
+                    ? Math.round(((totals.originalBase - totals.basePrice) / totals.originalBase) * 100)
+                    : 0;
+                const isSavedInWishlist = wishlist[product.id];
+                const imgBroken = brokenImages[product.id] || !product.imageUrl;
+
+                return (
+                  <Link
+                    to={`/product/${product.id}`}
+                    key={product.id}
+                    className="bg-white rounded-xl border border-gray-200 shadow-xs hover:shadow-md hover:-translate-y-0.5 transition duration-150 flex flex-col justify-between overflow-hidden group"
+                  >
+                    <div>
+                      {/* Clean Product Photo Stage */}
+                      <div className="relative aspect-[4/3] sm:aspect-square w-full bg-gray-50 overflow-hidden border-b border-gray-100">
+                        {!imgBroken ? (
+                          <img
+                            src={product.imageUrl}
+                            alt={product.name}
+                            referrerPolicy="no-referrer"
+                            onError={() => setBrokenImages(prev => ({ ...prev, [product.id]: true }))}
+                            className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center text-gray-400">
+                            <svg className="w-8 h-8 mb-1.5 opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                              <rect x="3" y="3" width="18" height="18" rx="2" />
+                              <circle cx="8.5" cy="8.5" r="1.5" />
+                              <path d="m21 15-5-5L5 21" />
+                            </svg>
+                            <span className="text-[11px] font-semibold line-clamp-1">{product.name}</span>
+                          </div>
+                        )}
+
+                        {/* Wishlist Heart Toggle */}
+                        <button
+                          type="button"
+                          onClick={e => toggleWishlist(e, product.id)}
+                          title={isSavedInWishlist ? 'Remove from Wishlist' : 'Save to Wishlist'}
+                          aria-label={isSavedInWishlist ? 'Remove from Wishlist' : 'Save to Wishlist'}
+                          className={`absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center text-sm shadow-sm z-10 transition active:scale-110 border ${
+                            isSavedInWishlist
+                              ? 'bg-red-50 text-red-600 border-red-200'
+                              : 'bg-white/90 text-gray-500 border-gray-200 hover:text-red-500'
+                          }`}
+                        >
+                          {isSavedInWishlist ? '♥' : '♡'}
+                        </button>
+                      </div>
+
+                      {/* Card Body: Clean Typographic Hierarchy (Flipkart style, zero badge clutter) */}
+                      <div className="p-3 sm:p-4 space-y-1.5">
+                        <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500 truncate">
+                          {product.category}
+                        </p>
+
+                        <h3 className="font-bold text-xs sm:text-sm text-gray-900 leading-snug line-clamp-2 min-h-[2.3rem] sm:min-h-[2.6rem]">
+                          {product.name}
+                        </h3>
+
+                        {/* Rating & Delivery inline metadata */}
+                        <div className="flex items-center gap-1.5 text-[11px] text-gray-500 flex-wrap">
+                          <span className="bg-emerald-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded tabular-nums">
+                            {product.rating || 4.8} ★
+                          </span>
+                          <span className="tabular-nums">({product.reviewsCount || 45})</span>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-semibold text-emerald-700 truncate">
+                            {totals.deliveryFee > 0 ? `+₹${totals.deliveryFee} Del.` : t('freeDelivery')}
+                          </span>
+                        </div>
+
+                        {/* Price Row */}
+                        <div className="flex items-baseline gap-1.5 pt-1 flex-wrap tabular-nums">
+                          <span className="text-base sm:text-lg font-extrabold text-gray-900">
+                            ₹{totalWithExtras}
+                          </span>
+                          {totals.originalTotal > totalWithExtras && (
+                            <span className="text-xs text-gray-400 line-through">
+                              ₹{totals.originalTotal}
+                            </span>
+                          )}
+                          {discountPercent > 0 && (
+                            <span className="text-[11px] font-bold text-emerald-700">
+                              {discountPercent}% {t('specialDiscount')}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Optional GST & Delivery Days crisp single line */}
+                        {(totals.gstPercent > 0 || product.estimatedDeliveryDays) && (
+                          <p className="text-[10.5px] text-gray-500 truncate tabular-nums">
+                            {totals.gstPercent > 0 ? `Incl. ${totals.gstPercent}% GST` : ''}
+                            {totals.gstPercent > 0 && product.estimatedDeliveryDays ? ' · ' : ''}
+                            {product.estimatedDeliveryDays ? `Est. ${product.estimatedDeliveryDays}` : ''}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Crisp Single CTA Button */}
+                    <div className="px-3 pb-3 sm:px-4 sm:pb-4 pt-0">
+                      <span className="h-9 w-full bg-blue-600 group-hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-xs transition flex items-center justify-center whitespace-nowrap">
+                        {t('orderNow')}
+                      </span>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }
