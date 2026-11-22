@@ -28,9 +28,9 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isVerifiedUser() && (
+      return isSignedIn() && (
         request.auth.token.email == 'libinvincent310@gmail.com' ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        (isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)))
       );
     }
 
@@ -166,6 +166,13 @@ service cloud.firestore {
         isOptNumber(data, 'commission');
     }
 
+    function isValidCatalogSetting(data) {
+      return data.keys().hasAll(['initialized']) &&
+        data.keys().hasOnly(['initialized', 'deletedIds', 'updatedAt']) &&
+        data.initialized is bool &&
+        (!('deletedIds' in data) || (data.deletedIds is list && data.deletedIds.size() <= 200 && (data.deletedIds.size() == 0 || data.deletedIds[0] is string)));
+    }
+
     // 4. Collection Rules
     match /test/connection {
       allow get: if true;
@@ -213,9 +220,9 @@ service cloud.firestore {
     }
 
     match /settings/{settingId} {
-      allow get: if isValidId(settingId) && (settingId in ['payment', 'categories'] || isVerifiedUser() || isAdmin());
+      allow get: if isValidId(settingId) && (settingId in ['payment', 'categories', 'catalog'] || isVerifiedUser() || isAdmin());
       allow create, update: if isValidId(settingId) && (
-        isAdmin() ||
+        (isAdmin() && (settingId != 'catalog' || isValidCatalogSetting(incoming()))) ||
         (
           settingId == 'order_counter' &&
           isVerifiedUser() &&

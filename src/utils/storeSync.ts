@@ -23,7 +23,7 @@ export const STORAGE_KEYS = {
   CATEGORIES_INITIALIZED: 'amal_categories_initialized',
 };
 
-export const DEFAULT_CATEGORIES = ['Coats', 'Vests', 'Jackets'];
+export const DEFAULT_CATEGORIES: string[] = [];
 
 export interface StorePaymentSettings {
   enableCOD: boolean;
@@ -278,12 +278,39 @@ export async function compressImageFile(
 
 // ---------------- PRODUCT CATALOG SYNC ----------------
 
+export const DEFAULT_DELETED_PRODUCT_IDS = ['1', '2', '3', '4'];
+
 export function getDeletedProductIds(): string[] {
-  return safeJsonParse<string[]>(localStorage.getItem(STORAGE_KEYS.DELETED_PRODUCT_IDS), []);
+  const local = safeJsonParse<string[] | null>(localStorage.getItem(STORAGE_KEYS.DELETED_PRODUCT_IDS), null);
+  if (local !== null && Array.isArray(local)) {
+    return Array.from(new Set([...DEFAULT_DELETED_PRODUCT_IDS, ...local.map(String)]));
+  }
+  return [...DEFAULT_DELETED_PRODUCT_IDS];
+}
+
+export function syncDeletedProductIds(ids: string[]): string[] {
+  if (!Array.isArray(ids)) return getDeletedProductIds();
+  const current = getDeletedProductIds();
+  const next = Array.from(new Set([...current, ...ids.map(String)]));
+  safeSetStorage(STORAGE_KEYS.DELETED_PRODUCT_IDS, JSON.stringify(next));
+
+  // Purge deleted items from local cache
+  const rawCatalog = localStorage.getItem(STORAGE_KEYS.CATALOG);
+  if (rawCatalog !== null) {
+    const parsed = safeJsonParse<Product[]>(rawCatalog, []);
+    if (Array.isArray(parsed)) {
+      const deletedSet = new Set(next);
+      const cleaned = parsed.filter(p => p && p.id && !deletedSet.has(p.id));
+      safeSetStorage(STORAGE_KEYS.CATALOG, JSON.stringify(cleaned));
+      safeSetStorage(STORAGE_KEYS.CACHED_PRODUCTS, JSON.stringify(cleaned));
+    }
+  }
+  notifyStoreUpdated();
+  return next;
 }
 
 export function isProductDeleted(productId: string): boolean {
-  return getDeletedProductIds().includes(productId);
+  return getDeletedProductIds().includes(String(productId));
 }
 
 export function getCatalogProducts(): Product[] {
@@ -298,20 +325,23 @@ export function getCatalogProducts(): Product[] {
     }
   }
 
-  // 2. Migrate legacy cached / custom / mock data once
-  const cachedRemote = safeJsonParse<Product[]>(localStorage.getItem(STORAGE_KEYS.CACHED_PRODUCTS), []);
-  const customLocal = safeJsonParse<Product[]>(localStorage.getItem(STORAGE_KEYS.CUSTOM_PRODUCTS), []);
-
-  const mergedMap = new Map<string, Product>();
-  for (const item of [...customLocal, ...cachedRemote, ...MOCK_PRODUCTS]) {
-    if (item && item.id && !deletedSet.has(item.id) && !mergedMap.has(item.id)) {
-      mergedMap.set(item.id, item);
-    }
-  }
-
-  const initialList = Array.from(mergedMap.values());
+  // 2. Default clean starter list (empty - no demo products)
+  const initialList = MOCK_PRODUCTS.filter(p => !deletedSet.has(p.id));
   saveCatalogProducts(initialList, false);
   return initialList;
+}
+
+export function clearAllCatalogProducts(): Product[] {
+  const current = getCatalogProducts();
+  const allIds = current.map(p => p.id);
+  const nextDeleted = Array.from(new Set([...getDeletedProductIds(), ...allIds, '1', '2', '3', '4']));
+  safeSetStorage(STORAGE_KEYS.DELETED_PRODUCT_IDS, JSON.stringify(nextDeleted));
+  safeSetStorage(STORAGE_KEYS.CATALOG, JSON.stringify([]));
+  safeSetStorage(STORAGE_KEYS.CACHED_PRODUCTS, JSON.stringify([]));
+  safeSetStorage(STORAGE_KEYS.CUSTOM_PRODUCTS, JSON.stringify([]));
+  safeSetStorage(STORAGE_KEYS.CATALOG_DIRTY, 'true');
+  notifyStoreUpdated();
+  return [];
 }
 
 export function saveCatalogProducts(list: Product[], markDirty = true): boolean {
@@ -395,29 +425,39 @@ export function clearCatalogDirty() {
 export function mergeRemoteCatalogProducts(remoteProducts: Product[]): Product[] {
   const deletedSet = new Set(getDeletedProductIds());
   const filteredRemote = remoteProducts.filter(p => p && p.id && !deletedSet.has(p.id));
-  const localCatalog = getCatalogProducts();
-  const isDirty = localStorage.getItem(STORAGE_KEYS.CATALOG_DIRTY) === 'true';
 
-  if (filteredRemote.length === 0) {
-    return localCatalog;
-  }
+  // Preserve local custom/newly-added products that haven't been pushed to remote yet
+  const customLocal = safeJsonParse<Product[]>(localStorage.getItem(STORAGE_KEYS.CUSTOM_PRODUCTS), []);
+  const validCustom = customLocal.filter(p => p && p.id && !deletedSet.has(p.id));
 
-  if (!isDirty) {
-    saveCatalogProducts(filteredRemote, false);
-    return filteredRemote;
-  }
+  const remoteIdSet = new Set(filteredRemote.map(p => p.id));
+  const unpushedCustom = validCustom.filter(p => !remoteIdSet.has(p.id));
 
-  // Merge: authoritative Firestore product docs overwrite stale/mock images for matching IDs,
-  // while preserving any unsynced local-only products (`prod_*`) created before Cloud sync.
-  const remoteMap = new Map(filteredRemote.map(r => [r.id, r]));
-  const combined: Product[] = [...filteredRemote];
-  for (const loc of localCatalog) {
-    if (!deletedSet.has(loc.id) && !remoteMap.has(loc.id) && loc.id.startsWith('prod_')) {
-      combined.unshift(loc);
+  // If local catalog is marked dirty (user just edited a product locally), keep local version
+  const currentLocal = getCatalogProducts();
+  const localById = new Map<string, Product>();
+  for (const lp of currentLocal) {
+    if (lp && lp.id && !deletedSet.has(lp.id)) {
+      localById.set(lp.id, lp);
     }
   }
-  saveCatalogProducts(combined, false);
-  return combined;
+
+  const isDirty = localStorage.getItem(STORAGE_KEYS.CATALOG_DIRTY) === 'true';
+  const mergedProducts = filteredRemote.map(rp => {
+    if (isDirty && localById.has(rp.id)) {
+      return localById.get(rp.id)!;
+    }
+    return rp;
+  });
+
+  const merged = [...mergedProducts, ...unpushedCustom];
+
+  if (merged.length > 0) {
+    saveCatalogProducts(merged, false);
+    return merged;
+  }
+
+  return getCatalogProducts();
 }
 
 export function resolveOrderProductImage(order: any, catalog?: Product[]): string {
@@ -765,7 +805,11 @@ export function getCategories(): string[] {
   if (raw !== null) {
     const parsed = safeJsonParse<string[]>(raw, []);
     if (Array.isArray(parsed)) {
-      return parsed.map(c => String(c).trim()).filter(Boolean);
+      // Purge phantom legacy categories like 'Rainwear' or 'Jackets'
+      const filtered = parsed
+        .map(c => String(c).trim())
+        .filter(c => Boolean(c) && c.toLowerCase() !== 'rainwear' && c.toLowerCase() !== 'jackets');
+      return filtered;
     }
   }
 
@@ -787,6 +831,7 @@ export function saveCategories(categories: string[]): string[] {
     const trimmed = String(cat).trim();
     if (!trimmed) continue;
     const key = trimmed.toLowerCase();
+    if (key === 'rainwear' || key === 'jackets') continue; // Always purge deleted ghost categories
     if (!seenLower.has(key)) {
       seenLower.add(key);
       clean.push(trimmed);
@@ -809,6 +854,13 @@ export function deleteCategory(name: string): string[] {
   const target = name.trim().toLowerCase();
   const current = getCategories();
   return saveCategories(current.filter(c => c.trim().toLowerCase() !== target));
+}
+
+export function clearAllCategories(): string[] {
+  safeSetStorage(STORAGE_KEYS.CATEGORIES, JSON.stringify([]));
+  safeSetStorage(STORAGE_KEYS.CATEGORIES_INITIALIZED, 'true');
+  notifyStoreUpdated();
+  return [];
 }
 
 // ---------------- LIVE PAYMENT & STORE SETTINGS ----------------

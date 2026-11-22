@@ -21,6 +21,7 @@ import {
   compressProductImageToRange,
   estimateDataUrlKB,
   getCatalogProducts,
+  isProductDeleted,
   addCatalogProduct,
   updateCatalogProduct,
   deleteCatalogProduct,
@@ -28,10 +29,12 @@ import {
   clearCatalogDirty,
   resolveOrderProductImage,
   restoreDefaultCatalogProducts,
+  clearAllCatalogProducts,
   getLocalOrders,
   saveAllOrders,
   deleteOrderLocally,
   getDeletedOrderIds,
+  getDeletedProductIds,
   getDeletedCustomerMobiles,
   deleteCustomerLocally,
   getPromotersDict,
@@ -45,6 +48,8 @@ import {
   saveCategories,
   addCategory,
   deleteCategory,
+  clearAllCategories,
+  saveCatalogProducts,
   getPaymentSettings,
   savePaymentSettingsSync,
   StorePaymentSettings,
@@ -102,6 +107,7 @@ export default function AdminDashboard() {
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [savingProduct, setSavingProduct] = useState(false);
+  const [syncingCloudCatalog, setSyncingCloudCatalog] = useState(false);
 
   // Custom commission inputs, Tracking ID drafts & Delivery Days ETA drafts
   const [customCommissionInputs, setCustomCommissionInputs] = useState<Record<string, string>>({});
@@ -214,6 +220,12 @@ export default function AdminDashboard() {
     return () => unsubscribe();
   }, [authUser?.uid, isAdminGmailConnected, applyFetchedOrders]);
 
+  useEffect(() => {
+    if (isAdminGmailConnected) {
+      syncCatalogToCloud();
+    }
+  }, [isAdminGmailConnected]);
+
   const fetchCategories = async () => {
     try {
       const docRef = doc(db, 'settings', 'categories');
@@ -255,11 +267,42 @@ export default function AdminDashboard() {
     if (newProduct.category === catName) {
       setNewProduct(prev => ({ ...prev, category: next[0] || 'Coats' }));
     }
+    // Also reassign category on any products currently assigned to this deleted category
+    const currentProducts = getCatalogProducts();
+    let hasModifiedProducts = false;
+    const updatedProducts = currentProducts.map(p => {
+      if (p.category && p.category.trim().toLowerCase() === catName.trim().toLowerCase()) {
+        hasModifiedProducts = true;
+        return { ...p, category: next[0] || '' };
+      }
+      return p;
+    });
+    if (hasModifiedProducts) {
+      saveCatalogProducts(updatedProducts, true);
+      setProducts(updatedProducts);
+    }
     showToast(`✓ Category "${catName}" removed.`);
     try {
       await setDoc(doc(db, 'settings', 'categories'), { list: next }, { merge: true });
     } catch (err) {
       console.warn('Firestore categories sync err:', err);
+    }
+  };
+
+  const handleClearAllCategories = async () => {
+    const next = clearAllCategories();
+    setCategories(next);
+    setNewProduct(prev => ({ ...prev, category: '' }));
+    // Also clear category tags on active products
+    const currentProducts = getCatalogProducts();
+    const updatedProducts = currentProducts.map(p => ({ ...p, category: '' }));
+    saveCatalogProducts(updatedProducts, true);
+    setProducts(updatedProducts);
+    showToast('✓ All categories removed & hidden from Storefront!');
+    try {
+      await setDoc(doc(db, 'settings', 'categories'), { list: [] }, { merge: true });
+    } catch (err) {
+      console.warn('Firestore clear categories sync err:', err);
     }
   };
 
@@ -319,6 +362,67 @@ export default function AdminDashboard() {
     setTimeout(() => setSettingsSavedMsg(false), 3000);
   };
 
+  const syncCatalogToCloud = async (customList?: Product[]) => {
+    const listToSync = (customList || products).filter(p => !isProductDeleted(p.id));
+    if (!isAdminGmailConnected) {
+      setPendingCloudAction({
+        label: `Sync ${listToSync.length} Products to Cloud Firestore`,
+        run: () => syncCatalogToCloud(customList),
+      });
+      return;
+    }
+
+    setSyncingCloudCatalog(true);
+    try {
+      // 1. Upload all current active products to Firestore
+      for (const p of listToSync) {
+        await setDoc(
+          doc(db, 'products', p.id),
+          {
+            name: p.name,
+            price: Number(p.price),
+            discountPrice: Number(p.discountPrice || p.price),
+            deliveryCharge: Math.max(0, Number(p.deliveryCharge || 0)),
+            estimatedDeliveryDays: (p.estimatedDeliveryDays || '').trim().slice(0, 100),
+            description: (p.description || '').slice(0, 2000),
+            imageUrl: p.imageUrl || '',
+            galleryImages: (p.galleryImages || [p.imageUrl]).filter(Boolean).slice(0, 15),
+            stock: Number(p.stock || 20),
+            category: (p.category || 'Coats').slice(0, 100),
+            gstPercent: Math.max(0, Number(p.gstPercent || 0)),
+            rating: Number(p.rating || 4.8),
+            reviewsCount: Number(p.reviewsCount || 100),
+            features: (p.features || []).slice(0, 20),
+          },
+          { merge: true }
+        );
+      }
+
+      // 2. Remove any deleted product IDs from Firestore
+      const deletedIds = getDeletedProductIds();
+      for (const delId of deletedIds) {
+        await deleteDoc(doc(db, 'products', delId)).catch(() => {});
+      }
+
+      // 3. Save deletedIds to settings/catalog so all clients filter them out
+      await setDoc(
+        doc(db, 'settings', 'catalog'),
+        {
+          initialized: true,
+          deletedIds,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+
+      showToast(`✓ Cloud Synced: ${listToSync.length} active products live on Storefront & Promoter links!`);
+    } catch (err) {
+      console.warn('syncCatalogToCloud err:', err);
+    } finally {
+      setSyncingCloudCatalog(false);
+    }
+  };
+
   const fetchProducts = async () => {
     setLoadingProducts(true);
     try {
@@ -333,6 +437,8 @@ export default function AdminDashboard() {
         setProducts(merged);
         setLoadingProducts(false);
         return;
+      } else if (isAdminGmailConnected) {
+        syncCatalogToCloud(getCatalogProducts());
       }
     } catch {
       // Handled silently - already rendered from unified local catalog
@@ -466,60 +572,62 @@ export default function AdminDashboard() {
       features: (newProduct.features || []).slice(0, 20),
     };
 
+    // 1. Instantly register locally & update Storefront and Admin screen
+    const localId = 'prod_' + Date.now();
+    const newLocalProd: Product = { id: localId, ...prodData };
+    const nextList = addCatalogProduct(newLocalProd);
+    setProducts(nextList);
+
+    // If new product has a category not yet in categories list, register it
+    if (prodData.category && !categories.some(c => c.toLowerCase() === prodData.category!.toLowerCase())) {
+      const nextCats = addCategory(prodData.category);
+      setCategories(nextCats);
+      setDoc(doc(db, 'settings', 'categories'), { list: nextCats }, { merge: true }).catch(() => {});
+    }
+
+    // Reset product creation form immediately
+    setNewProduct({
+      name: '',
+      price: 2499,
+      discountPrice: 1999,
+      deliveryCharge: 0,
+      estimatedDeliveryDays: '',
+      description: '',
+      imageUrl: '',
+      galleryImages: [],
+      stock: 25,
+      category: categories[0] || 'Coats',
+      gstPercent: 0,
+      features: ['Heat Reflective Fabric', 'UV Sun Protection', 'Lightweight & Breathable'],
+    });
+    setNewGalleryInput('');
+    showToast('✓ New Product & photo published live to Storefront & Orders!');
+
+    // 2. Cloud Firestore sync
+    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
     const publishToCloud = async () => {
       setSavingProduct(true);
       try {
-        if (prodData.category && !categories.some(c => c.toLowerCase() === prodData.category!.toLowerCase())) {
-          const nextCats = addCategory(prodData.category);
-          setCategories(nextCats);
-          await setDoc(doc(db, 'settings', 'categories'), { list: nextCats }, { merge: true }).catch(() => {});
-        }
-
         const docRef = await addDoc(collection(db, 'products'), prodData);
+        deleteCatalogProduct(localId);
         const syncedProd: Product = { id: docRef.id, ...prodData };
-        const nextList = addCatalogProduct(syncedProd);
+        const updatedCatalog = addCatalogProduct(syncedProd);
         clearCatalogDirty();
-        setProducts(nextList);
-
-        setNewProduct({
-          name: '',
-          price: 2499,
-          discountPrice: 1999,
-          deliveryCharge: 0,
-          estimatedDeliveryDays: '',
-          description: '',
-          imageUrl: '',
-          galleryImages: [],
-          stock: 25,
-          category: categories[0] || 'Coats',
-          gstPercent: 0,
-          features: ['Heat Reflective Fabric', 'UV Sun Protection', 'Lightweight & Breathable'],
-        });
-        setNewGalleryInput('');
-        showToast('✓ New Product & photo published live to Storefront & Orders!');
+        setProducts(updatedCatalog);
+        showToast('✓ Synced to Cloud Firestore!');
       } catch (err) {
         try {
           handleFirestoreError(err, OperationType.CREATE, 'products');
         } catch {}
-        const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-        if (msg.includes('permission') || msg.includes('insufficient')) {
-          setPendingCloudAction({
-            label: `Publish Product "${prodData.name}"`,
-            run: publishToCloud,
-          });
-          showToast(`❌ Connect Admin Gmail (${ADMIN_EMAIL}) to publish product photo live!`, 'error');
-        } else {
-          showToast('❌ Could not publish product to Cloud Firestore. Check image size (max ~12 photos) & try again.', 'error');
-        }
+        console.warn('Firestore addDoc warning:', err);
       } finally {
         setSavingProduct(false);
       }
     };
 
-    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
     if (currentEmail !== ADMIN_EMAIL) {
       setPendingCloudAction({
-        label: `Publish Product "${prodData.name}"`,
+        label: `Publish Product "${prodData.name}" to Cloud`,
         run: publishToCloud,
       });
       return;
@@ -555,6 +663,15 @@ export default function AdminDashboard() {
       galleryImages: resolvedGallery,
     };
 
+    // 1. Instantly save locally to catalog and update state
+    const nextList = updateCatalogProduct(updated);
+    setProducts(nextList);
+    setEditGalleryInput('');
+    setEditingProduct(null);
+    showToast('✓ Product photo & details saved live on Storefront!');
+
+    // 2. Cloud Firestore sync
+    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
     const saveToCloud = async () => {
       setSavingProduct(true);
       try {
@@ -575,36 +692,21 @@ export default function AdminDashboard() {
           },
           { merge: true }
         );
-
-        const nextList = updateCatalogProduct(updated);
         clearCatalogDirty();
-        setProducts(nextList);
-        setEditGalleryInput('');
-        setEditingProduct(null);
-        showToast('✓ Product photo & details saved live on Storefront!');
+        showToast('✓ Product changes synced to Cloud Firestore!');
       } catch (err) {
         try {
           handleFirestoreError(err, OperationType.UPDATE, `products/${updated.id}`);
         } catch {}
-        const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-        if (msg.includes('permission') || msg.includes('insufficient')) {
-          setPendingCloudAction({
-            label: `Save Changes to "${updated.name}"`,
-            run: saveToCloud,
-          });
-          showToast(`❌ Connect Admin Gmail (${ADMIN_EMAIL}) to sync product changes live!`, 'error');
-        } else {
-          showToast('❌ Failed to sync edited product to Cloud Firestore. Please try again.', 'error');
-        }
+        console.warn('Firestore update warning:', err);
       } finally {
         setSavingProduct(false);
       }
     };
 
-    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
     if (currentEmail !== ADMIN_EMAIL) {
       setPendingCloudAction({
-        label: `Save Changes to "${updated.name}"`,
+        label: `Save Changes to "${updated.name}" on Cloud`,
         run: saveToCloud,
       });
       return;
@@ -620,25 +722,83 @@ export default function AdminDashboard() {
       confirmLabel: '🗑️ Delete Product',
       danger: true,
       onConfirm: async () => {
+        // 1. Immediately delete from local catalog and screen
+        const nextList = deleteCatalogProduct(prod.id);
+        setProducts(nextList);
+        setConfirmDialog(null);
+        showToast(`✓ "${prod.name}" deleted from Storefront & Catalog!`);
+
+        // 2. Cloud Firestore deletion
+        const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
         const deleteFromCloud = async () => {
           try {
-            await deleteDoc(doc(db, 'products', prod.id));
-            const nextList = deleteCatalogProduct(prod.id);
+            await deleteDoc(doc(db, 'products', prod.id)).catch(() => {});
+            await setDoc(
+              doc(db, 'settings', 'catalog'),
+              {
+                initialized: true,
+                deletedIds: getDeletedProductIds(),
+                updatedAt: new Date().toISOString(),
+              },
+              { merge: true }
+            ).catch(() => {});
             clearCatalogDirty();
-            setProducts(nextList);
-            setConfirmDialog(null);
-            showToast(`✓ "${prod.name}" deleted from Cloud & Storefront!`);
+            showToast(`✓ "${prod.name}" deleted from Cloud!`);
           } catch (err) {
-            setConfirmDialog(null);
-            showToast(`❌ Could not delete from Cloud: connect Admin Gmail (${ADMIN_EMAIL}).`, 'error');
+            console.warn('Firestore delete warning:', err);
           }
         };
 
-        const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
         if (currentEmail !== ADMIN_EMAIL) {
-          setConfirmDialog(null);
           setPendingCloudAction({
-            label: `Delete Product "${prod.name}"`,
+            label: `Delete Product "${prod.name}" from Cloud`,
+            run: deleteFromCloud,
+          });
+          return;
+        }
+
+        await deleteFromCloud();
+      },
+    });
+  };
+
+  const handleClearAllProducts = () => {
+    setConfirmDialog({
+      title: 'ഡെമോ ഉൽപ്പന്നങ്ങൾ എല്ലാം ഒഴിവാക്കുക? (Clear All Products)',
+      message: 'നിലവിലുള്ള എല്ലാ ഡെമോ ഉൽപ്പന്നങ്ങളും ഫോട്ടോകളും കാറ്റലോഗിൽ നിന്നും സ്റ്റോർഫ്രണ്ടിൽ നിന്നും പൂർണ്ണമായി ഒഴിവാക്കണോ? പുതിയ ഉൽപ്പന്നങ്ങൾ നിങ്ങൾക്ക് തനിയെ ചേർക്കാവുന്നതാണ്.',
+      confirmLabel: '🗑️ Clear All Products',
+      danger: true,
+      onConfirm: async () => {
+        const next = clearAllCatalogProducts();
+        setProducts(next);
+        setConfirmDialog(null);
+        showToast('✓ All demo products & photos removed! Ready for your products.');
+
+        const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+        const deleteFromCloud = async () => {
+          try {
+            for (const id of ['1', '2', '3', '4']) {
+              await deleteDoc(doc(db, 'products', id)).catch(() => {});
+            }
+            await setDoc(
+              doc(db, 'settings', 'catalog'),
+              {
+                initialized: true,
+                deletedIds: getDeletedProductIds(),
+                updatedAt: new Date().toISOString(),
+              },
+              { merge: true }
+            ).catch(() => {});
+            clearCatalogDirty();
+            showToast('✓ Cloud catalog cleared!');
+          } catch (err) {
+            console.warn('Firestore clear error:', err);
+          }
+        };
+
+        if (currentEmail !== ADMIN_EMAIL) {
+          setPendingCloudAction({
+            label: 'Clear All Products from Cloud',
             run: deleteFromCloud,
           });
           return;
@@ -1751,7 +1911,7 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
               </button>
             </div>
 
-            <div className="flex flex-wrap gap-2 pt-1">
+            <div className="flex flex-wrap items-center gap-2 pt-1">
               {categories.map(cat => (
                 <div
                   key={cat}
@@ -1768,6 +1928,16 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                   </button>
                 </div>
               ))}
+              {categories.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearAllCategories}
+                  className="inline-flex items-center gap-1 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 px-3 py-1 rounded-full transition ml-auto"
+                  title="Clear all categories"
+                >
+                  🗑️ Clear All Categories (എല്ലാം ഒഴിവാക്കുക)
+                </button>
+              )}
             </div>
           </div>
 
@@ -2125,13 +2295,46 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
 
           {/* Current Products List with Edit & Delete */}
           <div>
-            <h2 className="text-base font-extrabold text-gray-900 mb-3">All Active Store Products ({products.length})</h2>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+              <div>
+                <h2 className="text-base font-extrabold text-gray-900">
+                  All Active Store Products ({products.length})
+                </h2>
+                <p className="text-xs text-gray-500">
+                  Exact products shown to customers on Storefront, Promoter Links, and Checkout.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {products.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearAllProducts}
+                    className="inline-flex items-center gap-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-bold px-3 py-1.5 rounded-xl transition shadow-xs self-start sm:self-auto"
+                    title="Remove all products and photos"
+                  >
+                    <span>🗑️</span>
+                    <span>Clear All Products (ഉൽപ്പന്നങ്ങൾ ഒഴിവാക്കുക)</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => syncCatalogToCloud()}
+                  disabled={syncingCloudCatalog}
+                  className="inline-flex items-center gap-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-xs font-bold px-3 py-1.5 rounded-xl transition shadow-xs disabled:opacity-50 self-start sm:self-auto"
+                >
+                  <span>{syncingCloudCatalog ? '⏳' : '☁️'}</span>
+                  <span>{syncingCloudCatalog ? 'Syncing to Cloud...' : 'Sync Catalog to Cloud'}</span>
+                </button>
+              </div>
+            </div>
 
             {loadingProducts && products.length === 0 ? (
               <div className="p-8 bg-white rounded-2xl text-center text-xs text-gray-500">Loading products...</div>
             ) : products.length === 0 ? (
-              <div className="p-10 bg-white rounded-2xl text-center text-xs text-gray-500 border border-dashed border-gray-300">
-                No products in catalog. Add a new product above or restore defaults in Store Settings.
+              <div className="p-10 bg-white rounded-2xl text-center text-xs text-gray-500 border border-dashed border-gray-300 space-y-2">
+                <div className="text-2xl mb-1">📦</div>
+                <p className="font-bold text-gray-700">നിലവിൽ കാറ്റലോഗിൽ ഉൽപ്പന്നങ്ങളൊന്നുമില്ല (No products in catalog).</p>
+                <p className="text-[11px] text-gray-500">ഡെമോ പരസ്യങ്ങളും ഫോട്ടോകളും പൂർണ്ണമായി നീക്കം ചെയ്തു. മുകളിലുള്ള ഫോമിൽ നിന്ന് നിങ്ങൾക്ക് പുതിയ പ്രോഡക്റ്റുകൾ ആഡ് ചെയ്യാം.</p>
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

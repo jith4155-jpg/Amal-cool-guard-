@@ -13,6 +13,7 @@ import {
   getCategories,
   saveCategories,
   calculateProductTotals,
+  syncDeletedProductIds,
   safeJsonParse,
 } from './utils/storeSync';
 
@@ -55,20 +56,22 @@ export default function AppStorefront() {
     window.addEventListener('amal_store_updated', handleStoreSync);
     window.addEventListener('storage', handleStoreSync);
 
-    const fetchCategoriesRemote = async () => {
-      try {
-        const snap = await Promise.race([
-          getDoc(doc(db, 'settings', 'categories')),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000)),
-        ]);
-        if (snap.exists() && Array.isArray(snap.data().list) && isMounted) {
-          const synced = saveCategories(snap.data().list);
-          setCustomCategories(synced);
+    const unsubscribeCategories = onSnapshot(
+      doc(db, 'settings', 'categories'),
+      docSnap => {
+        if (!isMounted) return;
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (Array.isArray(data?.list)) {
+            const synced = saveCategories(data.list);
+            setCustomCategories(synced);
+          }
         }
-      } catch {
+      },
+      () => {
         // local categories already loaded
       }
-    };
+    );
 
     const unsubscribeProducts = onSnapshot(
       collection(db, 'products'),
@@ -111,10 +114,31 @@ export default function AppStorefront() {
       }
     );
 
-    fetchCategoriesRemote();
+    const fetchCatalogSettingsRemote = async () => {
+      try {
+        const snap = await Promise.race([
+          getDoc(doc(db, 'settings', 'catalog')),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000)),
+        ]);
+        if (snap.exists() && isMounted) {
+          const data = snap.data();
+          if (Array.isArray(data?.deletedIds)) {
+            syncDeletedProductIds(data.deletedIds);
+            if (isMounted) {
+              setProducts(getCatalogProducts());
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    fetchCatalogSettingsRemote();
     return () => {
       isMounted = false;
       unsubscribeProducts();
+      unsubscribeCategories();
       window.removeEventListener('amal_store_updated', handleStoreSync);
       window.removeEventListener('storage', handleStoreSync);
     };
@@ -135,11 +159,19 @@ export default function AppStorefront() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
 
-  const allCustomCategoryNames = Array.from(new Set(customCategories.map(c => c.trim()).filter(Boolean)));
-  const categories = ['All', ...allCustomCategoryNames];
+  // Categories shown: only categories that actually exist among active products (no empty ghost categories)
+  const isCategoriesInitialized = typeof window !== 'undefined' && localStorage.getItem('amal_categories_initialized') === 'true';
+
+  const validCategoryNames = (
+    isCategoriesInitialized
+      ? customCategories
+      : Array.from(new Set(products.map(p => (p.category || '').trim()).filter(Boolean)))
+  ).filter(c => Boolean(c) && products.some(p => p.category?.trim().toLowerCase() === c.trim().toLowerCase()));
+
+  const categories = validCategoryNames.length > 0 ? ['All', ...Array.from(new Set(validCategoryNames))] : [];
 
   const matchingSearchedCategories = searchQuery.trim()
-    ? allCustomCategoryNames.filter(c => c.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+    ? validCategoryNames.filter(c => c.toLowerCase().includes(searchQuery.trim().toLowerCase()))
     : [];
 
   const filteredProducts = products.filter(p => {
@@ -257,26 +289,28 @@ export default function AppStorefront() {
 
       {/* Main Responsive Store Container */}
       <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-3 space-y-4">
-        {/* Clean Category Filter Rail */}
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
-          {categories.map(cat => {
-            const active = selectedCategory === cat;
-            return (
-              <button
-                key={cat}
-                type="button"
-                onClick={() => setSelectedCategory(cat)}
-                className={`h-9 px-4 rounded-lg text-xs font-bold transition whitespace-nowrap shrink-0 border ${
-                  active
-                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
-                    : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-                }`}
-              >
-                {cat === 'All' ? t('allProducts') : cat}
-              </button>
-            );
-          })}
-        </div>
+        {/* Category Filter Rail (hidden if all categories cleared or single category) */}
+        {categories.length > 1 && (
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+            {categories.map(cat => {
+              const active = selectedCategory === cat;
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setSelectedCategory(cat)}
+                  className={`h-9 px-4 rounded-lg text-xs font-bold transition whitespace-nowrap shrink-0 border ${
+                    active
+                      ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                      : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  {cat === 'All' ? t('allProducts') : cat}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Matching Categories Quick-Jump when searching */}
         {matchingSearchedCategories.length > 0 && (
@@ -298,22 +332,24 @@ export default function AppStorefront() {
           </div>
         )}
 
-        {/* Single Focal Store Banner */}
-        <section className="bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-600 text-white px-5 py-4 sm:px-8 sm:py-6 rounded-xl shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h1 className="text-lg sm:text-2xl font-extrabold tracking-tight leading-tight">
-              {t('heroTitle')}
-            </h1>
-            <p className="text-xs sm:text-sm text-blue-100 font-medium mt-1">
-              {t('heroDesc')}
-            </p>
-          </div>
-          <div className="hidden sm:flex items-center gap-4 text-xs font-semibold text-blue-50 shrink-0">
-            <span>{t('heatBlock')}</span>
-            <span aria-hidden="true">·</span>
-            <span>{t('waterproof')}</span>
-          </div>
-        </section>
+        {/* Store Banner (shown when catalog has active products) */}
+        {products.length > 0 && (
+          <section className="bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-600 text-white px-5 py-4 sm:px-8 sm:py-6 rounded-xl shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h1 className="text-lg sm:text-2xl font-extrabold tracking-tight leading-tight">
+                {t('heroTitle')}
+              </h1>
+              <p className="text-xs sm:text-sm text-blue-100 font-medium mt-1">
+                {t('heroDesc')}
+              </p>
+            </div>
+            <div className="hidden sm:flex items-center gap-4 text-xs font-semibold text-blue-50 shrink-0">
+              <span>{t('heatBlock')}</span>
+              <span aria-hidden="true">·</span>
+              <span>{t('waterproof')}</span>
+            </div>
+          </section>
+        )}
 
         {/* Product Catalog Section */}
         <main className="space-y-3">
@@ -327,13 +363,33 @@ export default function AppStorefront() {
           </div>
 
           {filteredProducts.length === 0 ? (
-            <div className="p-10 bg-white rounded-xl text-center text-xs sm:text-sm text-gray-500 border border-dashed border-gray-300 space-y-3">
-              <p>
-                {searchQuery
-                  ? `No products found matching "${searchQuery}".`
-                  : `No products found in "${selectedCategory}" category yet.`}
-              </p>
-              {selectedCategory !== 'All' && (
+            <div className="py-14 px-4 bg-white rounded-2xl border border-dashed border-gray-300 text-center space-y-4 max-w-md mx-auto my-4 shadow-2xs">
+              <div className="w-16 h-16 bg-blue-50 text-blue-600 text-3xl rounded-full flex items-center justify-center mx-auto shadow-inner">
+                🛍️
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-extrabold text-base text-gray-900">
+                  {searchQuery
+                    ? `No products found matching "${searchQuery}".`
+                    : 'ഉൽപ്പന്നങ്ങൾ ലഭ്യമല്ല (No Products in Store)'}
+                </h3>
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  {searchQuery
+                    ? 'മറ്റൊരു വാക്ക് നൽകി തിരയുക അല്ലെങ്കിൽ എല്ലാ കാറ്റഗറിയും പരിശോധിക്കുക.'
+                    : 'ഡെമോ പരസ്യങ്ങളും ഫോട്ടോകളും പൂർണ്ണമായി നീക്കം ചെയ്തിട്ടുണ്ട്. അഡ്മിൻ പാനലിൽ നിന്ന് നിങ്ങൾക്ക് പുതിയ യഥാർത്ഥ പ്രോഡക്റ്റുകൾ ചേർക്കാവുന്നതാണ്.'}
+                </p>
+              </div>
+              {!searchQuery && (
+                <div className="pt-2">
+                  <Link
+                    to="/admin"
+                    className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs px-5 py-2.5 rounded-xl shadow-xs transition"
+                  >
+                    <span>➕</span> അഡ്മിൻ പാനൽ തുറക്കുക (Open Admin)
+                  </Link>
+                </div>
+              )}
+              {selectedCategory !== 'All' && searchQuery && (
                 <button
                   type="button"
                   onClick={() => setSelectedCategory('All')}

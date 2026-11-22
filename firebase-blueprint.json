@@ -129,11 +129,13 @@
     },
     "setting": {
       "title": "StoreSetting",
-      "description": "Storefront configuration documents (payment, categories, order_counter).",
+      "description": "Storefront configuration documents (payment, categories, catalog, order_counter).",
       "type": "object",
       "properties": {
         "nextVal": { "type": "number" },
         "list": { "type": "array" },
+        "initialized": { "type": "boolean" },
+        "deletedIds": { "type": "array" },
         "enableCOD": { "type": "boolean" },
         "enableUPI": { "type": "boolean" },
         "enableCard": { "type": "boolean" },
