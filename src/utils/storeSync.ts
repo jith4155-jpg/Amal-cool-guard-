@@ -50,7 +50,7 @@ export const DEFAULT_PAYMENT_SETTINGS: StorePaymentSettings = {
   enableCard: true,
   merchantUpiId: 'amalcoolguard@upi',
   whatsappNumber: '6238113451',
-  storeBaseUrl: 'https://amal-cool-guard.vercel.app',
+  storeBaseUrl: 'https://amalcoolguard.in',
   gstNumber: '',
   pickupName: 'Amal Coolguard',
   pickupPhone: '6238113451',
@@ -91,7 +91,7 @@ export function calculateProductTotals(input: {
   };
 }
 
-export const DEFAULT_STORE_BASE_URL = 'https://amal-cool-guard.vercel.app';
+export const DEFAULT_STORE_BASE_URL = 'https://amalcoolguard.in';
 
 let hasHandledInitialReferralEntry = false;
 
