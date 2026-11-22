@@ -2,29 +2,32 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { db } from '../firebase';
 import { doc, getDoc, collection, addDoc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { MOCK_PRODUCTS, Product } from '../data/mockProducts';
+import { Product } from '../data/mockProducts';
+import {
+  getCatalogProducts,
+  isProductDeleted,
+  compressImageFile,
+  getActiveReferralCode,
+  syncReferralFromUrl,
+  getLocalOrders,
+  saveAllOrders,
+  restoreDeletedCustomerMobile,
+  safeJsonParse,
+} from '../utils/storeSync';
 
 export default function ProductDetails() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  // Synchronous initial product state lookup for instant rendering
-  const [product, setProduct] = useState<Product | null>(() => {
-    try {
-      if (!id) return MOCK_PRODUCTS[0];
-      const cachedRemote = localStorage.getItem('amal_cached_products');
-      if (cachedRemote) {
-        const parsed = JSON.parse(cachedRemote);
-        const hit = parsed.find((p: any) => p.id === id);
-        if (hit) return hit;
-      }
-      const customLocal = JSON.parse(localStorage.getItem('amal_custom_products') || '[]');
-      const foundCustom = customLocal.find((p: any) => p.id === id);
-      if (foundCustom) return foundCustom;
-      return MOCK_PRODUCTS.find(p => p.id === id) || MOCK_PRODUCTS[0];
-    } catch {
-      return MOCK_PRODUCTS[0];
-    }
-  });
+
+  const findProductFromCatalog = (targetId?: string): Product | null => {
+    const catalog = getCatalogProducts();
+    if (!targetId) return catalog[0] || null;
+    if (isProductDeleted(targetId)) return null;
+    return catalog.find(p => p.id === targetId) || null;
+  };
+
+  // Synchronous initial product state lookup from Admin-synced catalog
+  const [product, setProduct] = useState<Product | null>(() => findProductFromCatalog(id));
   const [loading, setLoading] = useState(false);
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
   const [showOrderModal, setShowOrderModal] = useState(false);
@@ -46,7 +49,7 @@ export default function ProductDetails() {
   // Customer order form state with auto-fill from logged in session
   const [formData, setFormData] = useState(() => {
     try {
-      const session = JSON.parse(localStorage.getItem('amal_customer_session') || 'null');
+      const session = safeJsonParse<any>(localStorage.getItem('amal_customer_session'), null);
       const savedAddress = localStorage.getItem('amal_saved_address') || '';
       const savedPincode = localStorage.getItem('amal_saved_pincode') || '';
       return {
@@ -74,8 +77,11 @@ export default function ProductDetails() {
   useEffect(() => {
     let isMounted = true;
 
+    // Preserve/capture promoter query if landing directly on /product/:id?promoter=CODE
+    syncReferralFromUrl(false);
+
     // Load admin payment settings
-    const savedSettings = JSON.parse(localStorage.getItem('amal_payment_settings') || 'null');
+    const savedSettings = safeJsonParse<any>(localStorage.getItem('amal_payment_settings'), null);
     if (savedSettings) {
       setFormData(prev => ({
         ...prev,
@@ -85,7 +91,28 @@ export default function ProductDetails() {
       }));
     }
 
+    const handleSync = () => {
+      if (isMounted) {
+        setProduct(findProductFromCatalog(id));
+      }
+    };
+    window.addEventListener('amal_store_updated', handleSync);
+    window.addEventListener('storage', handleSync);
+
     const fetchProduct = async () => {
+      if (id && isProductDeleted(id)) {
+        if (isMounted) setProduct(null);
+        return;
+      }
+
+      // First check local catalog so Admin edits show even if Firestore didn't save due to auth
+      const localMatch = findProductFromCatalog(id);
+      const isCatalogDirty = localStorage.getItem('amal_catalog_dirty') === 'true';
+      if (localMatch && isCatalogDirty) {
+        if (isMounted) setProduct(localMatch);
+        return;
+      }
+
       try {
         if (id) {
           const docRef = doc(db, 'products', id);
@@ -99,42 +126,45 @@ export default function ProductDetails() {
             setProduct({
               id: docSnap.id,
               name: data.name || 'Amal Coolguard Vest',
-              price: data.price || 2499,
-              discountPrice: data.discountPrice || data.price || 1999,
+              price: Number(data.price) || 2499,
+              discountPrice: Number(data.discountPrice || data.price) || 1999,
               description: data.description || 'Premium heat protection cooling vest for bike riders.',
               imageUrl: data.imageUrl || 'https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=600',
-              galleryImages: data.galleryImages || (data.imageUrl ? [data.imageUrl] : []),
+              galleryImages: Array.isArray(data.galleryImages) && data.galleryImages.length > 0
+                ? data.galleryImages
+                : (data.imageUrl ? [data.imageUrl] : []),
               category: data.category || 'Coats',
-              rating: data.rating || 4.8,
-              reviewsCount: data.reviewsCount || 120,
-              features: data.features || ['Heat Reflective', 'UV Protection', 'Water Resistant'],
+              rating: Number(data.rating) || 4.8,
+              reviewsCount: Number(data.reviewsCount) || 120,
+              features: Array.isArray(data.features) ? data.features : ['Heat Reflective', 'UV Protection', 'Water Resistant'],
+              stock: typeof data.stock === 'number' ? data.stock : undefined,
+              gstPercent: typeof data.gstPercent === 'number' ? data.gstPercent : 0,
             });
             return;
           }
         }
-      } catch (err) {
-        // Fallback silently
+      } catch {
+        // Fallback silently to local catalog
       }
 
       if (isMounted) {
-        // Search in local custom products
-        const customLocal = JSON.parse(localStorage.getItem('amal_custom_products') || '[]');
-        const foundCustom = customLocal.find((p: any) => p.id === id);
-
-        const mockItem = foundCustom || MOCK_PRODUCTS.find(p => p.id === id) || MOCK_PRODUCTS[0];
-        setProduct(mockItem);
+        setProduct(findProductFromCatalog(id));
       }
     };
 
     fetchProduct();
 
     // Load local reviews for this product
-    const localRev = JSON.parse(localStorage.getItem(`amal_reviews_${id}`) || '[]');
+    const localRev = safeJsonParse<any[]>(localStorage.getItem(`amal_reviews_${id}`), []);
     if (localRev.length > 0) {
       setReviewsList(prev => [...localRev, ...prev]);
     }
 
-    return () => { isMounted = false; };
+    return () => {
+      isMounted = false;
+      window.removeEventListener('amal_store_updated', handleSync);
+      window.removeEventListener('storage', handleSync);
+    };
   }, [id]);
 
   const handleReviewSubmit = (e: React.FormEvent) => {
@@ -168,34 +198,32 @@ export default function ProductDetails() {
     window.location.href = upiUrl;
   };
 
-  const handleScreenshotChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleScreenshotChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      setUploadingScreenshot(true);
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const result = reader.result as string;
-        setScreenshotPreview(result);
-        setUploadingScreenshot(false);
+    if (!file) return;
+    setUploadingScreenshot(true);
+    try {
+      const result = await compressImageFile(file, 900, 0.72);
+      setScreenshotPreview(result);
 
-        // Update local storage order if present
-        if (submittedOrderId) {
-          const localOrders = JSON.parse(localStorage.getItem('amal_orders') || '[]');
-          const updated = localOrders.map((o: any) => 
-            o.orderId === submittedOrderId ? { ...o, screenshot: result, status: 'pending_verification' } : o
-          );
-          localStorage.setItem('amal_orders', JSON.stringify(updated));
-        }
+      if (submittedOrderId) {
+        const currentOrders = getLocalOrders();
+        const updated = currentOrders.map((o: any) =>
+          o.orderId === submittedOrderId ? { ...o, screenshot: result, status: 'pending_verification' } : o
+        );
+        saveAllOrders(updated);
+      }
 
-        // Update Firestore document if doc ID exists
-        if (submittedDocId) {
-          updateDoc(doc(db, 'bookings', submittedDocId), {
-            paymentScreenshot: result,
-            status: 'pending_verification',
-          }).catch(err => console.warn('Firestore update screenshot err:', err));
-        }
-      };
-      reader.readAsDataURL(file);
+      if (submittedDocId) {
+        updateDoc(doc(db, 'bookings', submittedDocId), {
+          paymentScreenshot: result,
+          status: 'pending_verification',
+        }).catch(err => console.warn('Firestore update screenshot err:', err));
+      }
+    } catch (err) {
+      console.warn('Screenshot compression err:', err);
+    } finally {
+      setUploadingScreenshot(false);
     }
   };
 
@@ -214,7 +242,7 @@ export default function ProductDetails() {
         const localVal = Number(localStorage.getItem('amal_order_sequence_counter') || '1');
         currentCounter = localVal;
       }
-    } catch (err) {
+    } catch {
       currentCounter = Number(localStorage.getItem('amal_order_sequence_counter') || '1');
     }
 
@@ -225,12 +253,12 @@ export default function ProductDetails() {
 
     const amount = product.discountPrice || product.price;
 
-    // Check active promoter referral code and configured commission
-    const activeRefCode = localStorage.getItem('amal_active_referral_code') || null;
+    // Only attribute promoter if user arrived via a promoter referral link (?promoter=CODE)
+    const activeRefCode = getActiveReferralCode();
     let commissionAmt = 100;
     if (activeRefCode) {
       try {
-        const promotersList = JSON.parse(localStorage.getItem('amal_promoters_list') || '{}');
+        const promotersList = safeJsonParse<Record<string, any>>(localStorage.getItem('amal_promoters_list'), {});
         const foundProm = promotersList[activeRefCode.toUpperCase()];
         if (foundProm && typeof foundProm.commissionPerSale === 'number') {
           commissionAmt = foundProm.commissionPerSale;
@@ -262,12 +290,13 @@ export default function ProductDetails() {
       console.warn('Saved locally due to offline/permission:', error);
     }
 
-    const localOrders = JSON.parse(localStorage.getItem('amal_orders') || '[]');
-    localOrders.unshift({
+    const newOrderRecord = {
       orderId,
       docId: createdDocId,
       productId: product.id,
       productName: product.name,
+      imageUrl: product.imageUrl,
+      gstPercent: product.gstPercent || 0,
       price: amount,
       customerName: formData.customerName,
       phoneNumber: formData.phoneNumber,
@@ -280,10 +309,11 @@ export default function ProductDetails() {
       status: 'pending_verification',
       screenshot: screenshotPreview || null,
       createdAt: new Date().toISOString(),
-    });
-    localStorage.setItem('amal_orders', JSON.stringify(localOrders));
+    };
 
-    // Save default delivery address for future orders
+    const existingOrders = getLocalOrders();
+    saveAllOrders([newOrderRecord, ...existingOrders]);
+
     if (formData.address) {
       localStorage.setItem('amal_saved_address', formData.address);
     }
@@ -291,9 +321,9 @@ export default function ProductDetails() {
       localStorage.setItem('amal_saved_pincode', formData.pincode);
     }
 
-    // Also update registered user's saved address in customer dictionary
     if (formData.phoneNumber) {
-      const regUsers = JSON.parse(localStorage.getItem('amal_registered_users') || '{}');
+      restoreDeletedCustomerMobile(formData.phoneNumber);
+      const regUsers = safeJsonParse<Record<string, any>>(localStorage.getItem('amal_registered_users'), {});
       if (regUsers[formData.phoneNumber]) {
         regUsers[formData.phoneNumber].address = formData.address;
         regUsers[formData.phoneNumber].pincode = formData.pincode;
@@ -305,7 +335,6 @@ export default function ProductDetails() {
     setSubmittedOrderId(orderId);
     setSubmittedDocId(createdDocId);
 
-    // Trigger UPI app launch if UPI payment selected
     if (formData.paymentMethod === 'UPI') {
       setTimeout(() => {
         triggerUpiPayment(orderId, amount);
@@ -326,24 +355,21 @@ export default function ProductDetails() {
 
   if (!product) {
     return (
-      <div className="min-h-screen bg-gray-50 p-6 text-center">
-        <p className="text-red-500 font-bold mb-4">Product not found</p>
+      <div className="min-h-screen bg-gray-50 p-6 text-center flex flex-col items-center justify-center">
+        <p className="text-red-500 font-bold mb-4">Product not found or removed by Admin</p>
         <Link to="/" className="bg-blue-600 text-white px-6 py-2 rounded-full font-bold">Back to Shop</Link>
       </div>
     );
   }
 
-  const imagesList = product.galleryImages && product.galleryImages.length > 0 
-    ? product.galleryImages 
-    : [
-        product.imageUrl,
-        'https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=600',
-        'https://images.unsplash.com/photo-1554568218-0f1715e72254?w=600',
-        'https://images.unsplash.com/photo-1523381210434-271e8be1952b?w=600'
-      ];
+  const imagesList =
+    product.galleryImages && product.galleryImages.length > 0
+      ? product.galleryImages
+      : [product.imageUrl];
+  const safeImgIndex = selectedImageIndex < imagesList.length ? selectedImageIndex : 0;
 
-  const discountPercent = product.price && product.discountPrice 
-    ? Math.round(((product.price - product.discountPrice) / product.price) * 100) 
+  const discountPercent = product.price && product.discountPrice
+    ? Math.round(((product.price - product.discountPrice) / product.price) * 100)
     : 0;
 
   return (
@@ -360,9 +386,9 @@ export default function ProductDetails() {
       {/* Main Image Gallery */}
       <div className="bg-white p-4">
         <div className="relative w-full h-80 bg-gray-50 rounded-2xl overflow-hidden mb-3">
-          <img 
-            src={imagesList[selectedImageIndex]} 
-            alt={product.name} 
+          <img
+            src={imagesList[safeImgIndex]}
+            alt={product.name}
             className="w-full h-full object-cover transition-all duration-300"
           />
           {discountPercent > 0 && (
@@ -379,7 +405,7 @@ export default function ProductDetails() {
               key={idx}
               onClick={() => setSelectedImageIndex(idx)}
               className={`w-16 h-16 rounded-lg overflow-hidden border-2 flex-shrink-0 ${
-                selectedImageIndex === idx ? 'border-blue-600 ring-2 ring-blue-300' : 'border-gray-200 opacity-70'
+                safeImgIndex === idx ? 'border-blue-600 ring-2 ring-blue-300' : 'border-gray-200 opacity-70'
               }`}
             >
               <img src={img} alt="thumb" className="w-full h-full object-cover" />

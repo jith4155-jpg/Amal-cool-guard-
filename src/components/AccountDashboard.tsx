@@ -1,6 +1,7 @@
 import { useNavigate, Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
-import { MOCK_PRODUCTS, Product } from '../data/mockProducts';
+import { Product } from '../data/mockProducts';
+import { getCatalogProducts, safeJsonParse } from '../utils/storeSync';
 
 export default function AccountDashboard() {
   const navigate = useNavigate();
@@ -13,12 +14,12 @@ export default function AccountDashboard() {
   }, []);
 
   const loadWishlistData = () => {
-    const savedIds: string[] = JSON.parse(localStorage.getItem('amal_wishlist') || '[]');
+    const savedIds: string[] = safeJsonParse<string[]>(localStorage.getItem('amal_wishlist'), []);
     setWishlistCount(savedIds.length);
 
-    // Find saved products matching IDs or fallback to MOCK_PRODUCTS
-    const items = MOCK_PRODUCTS.filter(p => savedIds.includes(p.id));
-    setSavedProducts(items.length > 0 ? items : (savedIds.length > 0 ? [MOCK_PRODUCTS[0]] : []));
+    const catalog = getCatalogProducts();
+    const items = catalog.filter(p => savedIds.includes(p.id));
+    setSavedProducts(items);
   };
 
   const removeFromWishlist = (productId: string) => {

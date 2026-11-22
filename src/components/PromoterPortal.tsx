@@ -1,7 +1,14 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams, Link } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { db } from '../firebase';
-import { collection, getDocs, doc, setDoc, query, where, getDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, setDoc, query } from 'firebase/firestore';
+import {
+  getCleanStoreBaseUrl,
+  getPromotersDict,
+  getLocalOrders,
+  getDeletedOrderIds,
+  safeJsonParse,
+} from '../utils/storeSync';
 
 export interface PromoterProfile {
   id: string; // Auto-generated code e.g. L01N (First Letter + Counter + Last Letter)
@@ -21,13 +28,13 @@ export interface PromoterProfile {
 }
 
 export default function PromoterPortal() {
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
   const [isLogin, setIsLogin] = useState(false);
   const [promoter, setPromoter] = useState<PromoterProfile | null>(() => {
     try {
-      const saved = localStorage.getItem('amal_promoter_session');
-      return saved ? JSON.parse(saved) : null;
+      const saved = safeJsonParse<PromoterProfile | null>(localStorage.getItem('amal_promoter_session'), null);
+      if (!saved) return null;
+      const dict = getPromotersDict();
+      return dict[saved.id] || saved;
     } catch {
       return null;
     }
@@ -53,35 +60,47 @@ export default function PromoterPortal() {
   const [loadingStats, setLoadingStats] = useState(false);
 
   useEffect(() => {
-    if (promoter) {
-      loadPromoterOrders(promoter.id);
-    }
-  }, [promoter]);
+    const syncPromoterData = () => {
+      if (promoter) {
+        const dict = getPromotersDict();
+        if (dict[promoter.id] && dict[promoter.id].commissionPerSale !== promoter.commissionPerSale) {
+          setPromoter(dict[promoter.id]);
+        }
+        loadPromoterOrders(promoter.id);
+      }
+    };
+    syncPromoterData();
+    window.addEventListener('amal_store_updated', syncPromoterData);
+    return () => window.removeEventListener('amal_store_updated', syncPromoterData);
+  }, [promoter?.id]);
 
   const loadPromoterOrders = async (promoterCode: string) => {
     setLoadingStats(true);
+    const deletedOrderIds = new Set(getDeletedOrderIds());
     let matched: any[] = [];
     try {
-      // Check local storage orders first
-      const localOrders = JSON.parse(localStorage.getItem('amal_orders') || '[]');
+      const localOrders = getLocalOrders();
       const localMatched = localOrders.filter(
-        (o: any) => o.referralCode?.toUpperCase() === promoterCode.toUpperCase() ||
-                    o.promoterId?.toUpperCase() === promoterCode.toUpperCase()
+        (o: any) =>
+          o.referralCode?.toUpperCase() === promoterCode.toUpperCase() ||
+          o.promoterId?.toUpperCase() === promoterCode.toUpperCase()
       );
       matched = [...localMatched];
     } catch {}
 
     try {
-      // Also fetch remote bookings if possible
       const q = query(collection(db, 'bookings'));
       const snap = await getDocs(q);
       const remoteMatched = snap.docs
         .map(d => ({ id: d.id, ...d.data() } as any))
-        .filter((o: any) => 
-          o.referralCode?.toUpperCase() === promoterCode.toUpperCase() ||
-          o.promoterId?.toUpperCase() === promoterCode.toUpperCase()
+        .filter(
+          (o: any) =>
+            !deletedOrderIds.has(String(o.orderId || '')) &&
+            !deletedOrderIds.has(String(o.id || '')) &&
+            (o.referralCode?.toUpperCase() === promoterCode.toUpperCase() ||
+              o.promoterId?.toUpperCase() === promoterCode.toUpperCase())
         );
-      
+
       const seen = new Set(matched.map(m => m.orderId || m.id));
       for (const r of remoteMatched) {
         if (!seen.has(r.orderId || r.id)) {
@@ -115,18 +134,16 @@ export default function PromoterPortal() {
       return;
     }
 
-    // Auto-generate promoter code from Name: First Letter + Counter (01, 02, 03...) + Last Letter
-    // Example: "Libin" -> L + 01 + N = "L01N"
     const trimmedName = name.trim().toUpperCase().replace(/[^A-Z]/g, '');
     const firstLetter = trimmedName.charAt(0) || 'P';
     const lastLetter = trimmedName.length > 1 ? trimmedName.charAt(trimmedName.length - 1) : 'M';
 
-    const allPromoters = JSON.parse(localStorage.getItem('amal_promoters_list') || '{}');
+    const allPromoters = getPromotersDict();
     let counterVal = Number(localStorage.getItem('amal_promoter_counter') || '1');
     let generatedCode = '';
 
     while (true) {
-      const paddedNum = String(counterVal).padStart(2, '0'); // '01', '02', '03'...
+      const paddedNum = String(counterVal).padStart(2, '0');
       generatedCode = `${firstLetter}${paddedNum}${lastLetter}`;
       if (!allPromoters[generatedCode]) {
         break;
@@ -134,7 +151,6 @@ export default function PromoterPortal() {
       counterVal++;
     }
 
-    // Save incremented counter
     localStorage.setItem('amal_promoter_counter', String(counterVal + 1));
 
     const newProfile: PromoterProfile = {
@@ -147,11 +163,11 @@ export default function PromoterPortal() {
       bankName: paymentType === 'bank' ? bankName.trim() : undefined,
       accountNumber: paymentType === 'bank' ? accountNumber.trim() : undefined,
       ifscCode: paymentType === 'bank' ? ifscCode.trim().toUpperCase() : undefined,
-      accountHolderName: paymentType === 'bank' ? (accountHolderName.trim() || name.trim()) : undefined,
+      accountHolderName: paymentType === 'bank' ? accountHolderName.trim() || name.trim() : undefined,
       password: password.trim() || '123456',
       createdAt: new Date().toISOString(),
-      commissionPerSale: 100, // ₹100 per coat
-      paidAmount: 0
+      commissionPerSale: 100,
+      paidAmount: 0,
     };
 
     allPromoters[generatedCode] = newProfile;
@@ -177,13 +193,13 @@ export default function PromoterPortal() {
       return;
     }
 
-    const allPromoters = JSON.parse(localStorage.getItem('amal_promoters_list') || '{}');
-    // Search by referral code or by phone number
+    const allPromoters = getPromotersDict();
     let found: PromoterProfile | null = allPromoters[inputVal] || null;
     if (!found) {
-      found = Object.values(allPromoters).find(
-        (p: any) => p.phone?.trim() === inputVal || p.phone?.replace(/\D/g, '') === inputVal.replace(/\D/g, '')
-      ) as PromoterProfile || null;
+      found =
+        (Object.values(allPromoters).find(
+          (p: any) => p.phone?.trim() === inputVal || p.phone?.replace(/\D/g, '') === inputVal.replace(/\D/g, '')
+        ) as PromoterProfile) || null;
     }
 
     if (!found) {
@@ -200,25 +216,21 @@ export default function PromoterPortal() {
     setPromoter(null);
   };
 
-  const copyReferralLink = (paramType: 'promoter' | 'ref' = 'promoter') => {
-    if (!promoter) return;
-    const origin = window.location.origin;
-    const fullLink = `${origin}/?${paramType}=${encodeURIComponent(promoter.id)}`;
-    navigator.clipboard.writeText(fullLink);
+  const storeBaseUrl = getCleanStoreBaseUrl();
+  const fullReferralLink = promoter ? `${storeBaseUrl}/?promoter=${encodeURIComponent(promoter.id)}` : '';
+  const whatsappShareUrl = promoter
+    ? `https://wa.me/?text=${encodeURIComponent(
+        `🛡️ Amal Coolguard - Kerala's Best Sun Protection Vest & Coat!\n` +
+          `Beat the summer heat while riding. Get genuine discounts using my special promoter link:\n👉 ${fullReferralLink}\n` +
+          `Promoter Code: ${promoter.id}`
+      )}`
+    : '#';
+
+  const copyReferralLink = () => {
+    if (!promoter || !fullReferralLink) return;
+    navigator.clipboard.writeText(fullReferralLink);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2500);
-  };
-
-  const shareOnWhatsApp = () => {
-    if (!promoter) return;
-    const origin = window.location.origin;
-    const fullLink = `${origin}/?promoter=${encodeURIComponent(promoter.id)}`;
-    const text = encodeURIComponent(
-      `🛡️ Amal Coolguard - Kerala's Best Sun Protection Vest & Coat!\n` +
-      `Beat the summer heat while riding. Get genuine discounts using my special promoter link:\n👉 ${fullLink}\n` +
-      `Promoter Code: ${promoter.id}`
-    );
-    window.open(`https://wa.me/?text=${text}`, '_blank');
   };
 
   // Commission calculations
@@ -539,11 +551,11 @@ export default function PromoterPortal() {
 
               <div className="bg-slate-950 border border-slate-800 p-3 rounded-2xl flex items-center justify-between gap-2 overflow-hidden">
                 <span className="text-xs text-amber-400 font-mono truncate font-bold">
-                  {window.location.origin}/?promoter={promoter.id}
+                  {fullReferralLink}
                 </span>
                 <button
                   type="button"
-                  onClick={() => copyReferralLink('promoter')}
+                  onClick={copyReferralLink}
                   className="bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-xs px-3.5 py-1.5 rounded-xl shadow shrink-0 transition"
                 >
                   {copiedLink ? '✓ Copied!' : 'Copy Link'}
@@ -555,19 +567,20 @@ export default function PromoterPortal() {
               </p>
 
               <div className="flex gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={shareOnWhatsApp}
+                <a
+                  href={whatsappShareUrl}
+                  target="_blank"
+                  rel="noreferrer"
                   className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs py-2.5 px-3 rounded-xl shadow flex items-center justify-center gap-1.5 transition"
                 >
                   <span>💬</span> Share Link on WhatsApp
-                </button>
+                </a>
                 <button
                   type="button"
-                  onClick={() => copyReferralLink('promoter')}
+                  onClick={copyReferralLink}
                   className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-extrabold text-xs py-2.5 px-3 rounded-xl border border-slate-700 shadow flex items-center justify-center gap-1.5 transition"
                 >
-                  <span>📋</span> Copy Full Link
+                  <span>📋</span> {copiedLink ? '✓ Copied!' : 'Copy Full Link'}
                 </button>
               </div>
             </div>

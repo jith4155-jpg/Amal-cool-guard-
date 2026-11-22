@@ -2,29 +2,23 @@ import { useState, useEffect } from 'react';
 import { db } from '../firebase';
 import { collection, getDocs, query, orderBy, doc, updateDoc } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
+import { getLocalOrders, saveAllOrders, getDeletedOrderIds } from '../utils/storeSync';
 
 export default function OrdersView() {
-  const [orders, setOrders] = useState<any[]>(() => {
-    try {
-      const cached = localStorage.getItem('amal_cached_orders');
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-      return JSON.parse(localStorage.getItem('amal_orders') || '[]');
-    } catch {
-      return [];
-    }
-  });
+  const [orders, setOrders] = useState<any[]>(() => getLocalOrders());
   const [loading, setLoading] = useState(false);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [confirmCancelModal, setConfirmCancelModal] = useState<any | null>(null);
 
   useEffect(() => {
     fetchOrders();
+    const onSync = () => setOrders(getLocalOrders());
+    window.addEventListener('amal_store_updated', onSync);
+    return () => window.removeEventListener('amal_store_updated', onSync);
   }, []);
 
   const fetchOrders = async () => {
+    const deletedSet = new Set(getDeletedOrderIds());
     let combined: any[] = [];
     try {
       const q = query(collection(db, 'bookings'), orderBy('createdAt', 'desc'));
@@ -33,27 +27,24 @@ export default function OrdersView() {
         setTimeout(() => reject(new Error('Timeout')), 1200)
       );
       const snapshot = await Promise.race([fetchPromise, timeoutPromise]);
-      const remote = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      const remote = snapshot.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .filter((o: any) => !deletedSet.has(String(o.orderId || '')) && !deletedSet.has(String(o.id || '')));
       combined = [...remote];
-    } catch (err) {
+    } catch {
       // Fallback
     }
 
-    // Merge local storage orders
-    const localOrders = JSON.parse(localStorage.getItem('amal_orders') || '[]');
-    const localIds = new Set(combined.map(o => o.orderId || o.id));
+    const localOrders = getLocalOrders();
+    const seenIds = new Set(combined.map(o => o.orderId || o.id));
     for (const loc of localOrders) {
-      if (!localIds.has(loc.orderId)) {
+      if (!seenIds.has(loc.orderId || loc.id)) {
         combined.push(loc);
       }
     }
 
-    if (combined.length > 0) {
-      setOrders(combined);
-      try {
-        localStorage.setItem('amal_cached_orders', JSON.stringify(combined));
-      } catch {}
-    }
+    setOrders(combined);
+    saveAllOrders(combined);
     setLoading(false);
   };
 
@@ -61,19 +52,12 @@ export default function OrdersView() {
     const targetOrderId = order.orderId || order.id;
     setCancellingId(targetOrderId);
 
-    // Update local state
-    setOrders(prev => prev.map(o => 
-      (o.orderId === targetOrderId || o.id === targetOrderId) ? { ...o, status: 'cancelled' } : o
-    ));
-
-    // Update local storage
-    const localOrders = JSON.parse(localStorage.getItem('amal_orders') || '[]');
-    const updatedLocal = localOrders.map((o: any) => 
-      (o.orderId === targetOrderId || o.id === targetOrderId) ? { ...o, status: 'cancelled' } : o
+    const nextOrders = orders.map(o =>
+      o.orderId === targetOrderId || o.id === targetOrderId ? { ...o, status: 'cancelled' } : o
     );
-    localStorage.setItem('amal_orders', JSON.stringify(updatedLocal));
+    setOrders(nextOrders);
+    saveAllOrders(nextOrders);
 
-    // Update Firestore document if available
     const docId = order.id || order.docId;
     if (docId) {
       try {
