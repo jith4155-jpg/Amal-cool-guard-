@@ -11,6 +11,7 @@ import {
   syncReferralFromUrl,
   getCategories,
   saveCategories,
+  calculateProductTotals,
   safeJsonParse,
 } from './utils/storeSync';
 
@@ -88,6 +89,7 @@ export default function AppStorefront() {
               stock: typeof data.stock === 'number' ? data.stock : undefined,
               gstPercent: typeof data.gstPercent === 'number' ? data.gstPercent : 0,
               deliveryCharge: typeof data.deliveryCharge === 'number' ? data.deliveryCharge : 0,
+              estimatedDeliveryDays: typeof data.estimatedDeliveryDays === 'string' ? data.estimatedDeliveryDays : '',
             };
           });
           const merged = mergeRemoteCatalogProducts(fetched);
@@ -304,13 +306,12 @@ export default function AppStorefront() {
         ) : (
           <div className="grid grid-cols-2 gap-3.5">
             {filteredProducts.map(product => {
-              const basePrice = Number(product.discountPrice || product.price || 0);
-              const deliveryFee = Number(product.deliveryCharge || 0);
-              const totalWithDelivery = basePrice + deliveryFee;
+              const totals = calculateProductTotals(product);
+              const totalWithExtras = totals.finalTotal;
 
               const discountPercent =
-                product.price && product.discountPrice && product.price > product.discountPrice
-                  ? Math.round(((product.price - product.discountPrice) / product.price) * 100)
+                totals.originalBase > totals.basePrice
+                  ? Math.round(((totals.originalBase - totals.basePrice) / totals.originalBase) * 100)
                   : 0;
 
               const isSavedInWishlist = wishlist[product.id];
@@ -360,20 +361,32 @@ export default function AppStorefront() {
 
                     <div className="flex items-baseline gap-1.5 mt-2">
                       <span className="text-sm font-extrabold text-gray-900">
-                        ₹{totalWithDelivery}
+                        ₹{totalWithExtras}
                       </span>
-                      {product.price && product.price > basePrice && (
-                        <span className="text-[11px] text-gray-400 line-through">₹{product.price + deliveryFee}</span>
+                      {totals.originalTotal > totalWithExtras && (
+                        <span className="text-[11px] text-gray-400 line-through">₹{totals.originalTotal}</span>
                       )}
                     </div>
 
-                    {deliveryFee > 0 ? (
+                    {totals.gstPercent > 0 && (
+                      <span className="text-[10px] font-bold text-amber-700 block mt-0.5">
+                        +{totals.gstPercent}% GST (₹{totals.gstAmount})
+                      </span>
+                    )}
+
+                    {totals.deliveryFee > 0 ? (
                       <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded inline-block mt-1">
-                        🚚 Includes ₹{deliveryFee} Delivery
+                        🚚 +₹{totals.deliveryFee} Delivery
                       </span>
                     ) : (
                       <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded inline-block mt-1">
                         🚚 Free Delivery
+                      </span>
+                    )}
+
+                    {product.estimatedDeliveryDays && (
+                      <span className="text-[10px] font-bold text-gray-500 block mt-0.5">
+                        ⏱️ Delivery: {product.estimatedDeliveryDays}
                       </span>
                     )}
 

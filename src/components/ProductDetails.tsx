@@ -16,6 +16,7 @@ import {
   getPaymentSettings,
   savePaymentSettingsSync,
   StorePaymentSettings,
+  calculateProductTotals,
   safeJsonParse,
 } from '../utils/storeSync';
 
@@ -179,6 +180,7 @@ export default function ProductDetails() {
               stock: typeof data.stock === 'number' ? data.stock : undefined,
               gstPercent: typeof data.gstPercent === 'number' ? data.gstPercent : 0,
               deliveryCharge: typeof data.deliveryCharge === 'number' ? data.deliveryCharge : 0,
+              estimatedDeliveryDays: typeof data.estimatedDeliveryDays === 'string' ? data.estimatedDeliveryDays : '',
             });
             return;
           }
@@ -291,11 +293,14 @@ export default function ProductDetails() {
     localStorage.setItem('amal_order_sequence_counter', String(nextCounter));
     setDoc(doc(db, 'settings', 'order_counter'), { nextVal: nextCounter }).catch(err => console.warn('Counter sync err:', err));
 
-    const itemBasePrice = Number(product.discountPrice || product.price || 0);
-    const deliveryFee = Number(product.deliveryCharge || 0);
-    const amount = itemBasePrice + deliveryFee;
+    const totals = calculateProductTotals(product);
+    const amount = totals.finalTotal;
+    const estDelivery =
+      (product.estimatedDeliveryDays || '').trim() ||
+      (paymentSettings.defaultDeliveryDays || '').trim() ||
+      '';
 
-    // Only attribute promoter if user arrived via a promoter referral link (?promoter=CODE)
+    // Only attribute promoter if user arrived via a referral link
     const activeRefCode = getActiveReferralCode();
     let commissionAmt = 100;
     if (activeRefCode) {
@@ -314,8 +319,12 @@ export default function ProductDetails() {
         orderId,
         productId: product.id,
         productName: product.name,
-        productPrice: itemBasePrice,
-        deliveryCharge: deliveryFee,
+        productPrice: totals.basePrice,
+        gstPercent: totals.gstPercent,
+        gstAmount: totals.gstAmount,
+        gstNumber: paymentSettings.gstNumber || '',
+        deliveryCharge: totals.deliveryFee,
+        estimatedDeliveryDays: estDelivery,
         price: amount,
         customerName: formData.customerName,
         phoneNumber: formData.phoneNumber,
@@ -340,9 +349,12 @@ export default function ProductDetails() {
       productId: product.id,
       productName: product.name,
       imageUrl: product.imageUrl,
-      gstPercent: product.gstPercent || 0,
-      productPrice: itemBasePrice,
-      deliveryCharge: deliveryFee,
+      productPrice: totals.basePrice,
+      gstPercent: totals.gstPercent,
+      gstAmount: totals.gstAmount,
+      gstNumber: paymentSettings.gstNumber || '',
+      deliveryCharge: totals.deliveryFee,
+      estimatedDeliveryDays: estDelivery,
       price: amount,
       customerName: formData.customerName,
       phoneNumber: formData.phoneNumber,
@@ -414,9 +426,13 @@ export default function ProductDetails() {
       : [product.imageUrl];
   const safeImgIndex = selectedImageIndex < imagesList.length ? selectedImageIndex : 0;
 
-  const itemBasePrice = Number(product.discountPrice || product.price || 0);
-  const deliveryFee = Number(product.deliveryCharge || 0);
-  const finalTotalPayable = itemBasePrice + deliveryFee;
+  const totals = calculateProductTotals(product);
+  const itemBasePrice = totals.basePrice;
+  const deliveryFee = totals.deliveryFee;
+  const finalTotalPayable = totals.finalTotal;
+  const estDeliveryText =
+    (product.estimatedDeliveryDays || '').trim() ||
+    (paymentSettings.defaultDeliveryDays || '').trim();
 
   const allowedPaymentMethods = [
     ...(paymentSettings.enableUPI !== false ? [{ id: 'UPI', label: '⚡ UPI / GPay' }] : []),
@@ -487,24 +503,34 @@ export default function ProductDetails() {
         <h2 className="text-xl font-bold text-gray-900 leading-tight mb-3">{product.name}</h2>
 
         <div className="bg-gray-50 p-3.5 rounded-2xl border border-gray-100 mb-4 space-y-1.5">
-          <div className="flex items-baseline gap-3">
+          <div className="flex items-baseline gap-3 flex-wrap">
             <span className="text-3xl font-extrabold text-gray-900">₹{finalTotalPayable}</span>
-            {product.price && product.price > itemBasePrice && (
-              <span className="text-base text-gray-400 line-through">₹{product.price + deliveryFee}</span>
+            {totals.originalTotal > finalTotalPayable && (
+              <span className="text-base text-gray-400 line-through">₹{totals.originalTotal}</span>
             )}
             <span className="text-xs font-bold text-green-600 bg-green-50 px-2 py-1 rounded">
-              Inclusive of all taxes
+              {totals.gstPercent > 0 ? `+ ${totals.gstPercent}% GST Included` : 'Inclusive of all taxes'}
             </span>
           </div>
-          {deliveryFee > 0 ? (
-            <p className="text-xs font-bold text-blue-700">
-              📦 Product ₹{itemBasePrice} + Delivery Charge ₹{deliveryFee} = Total ₹{finalTotalPayable}
+
+          <div className="text-xs font-bold space-y-0.5 pt-0.5">
+            <p className="text-gray-700">
+              🏷️ Item ₹{itemBasePrice}
+              {totals.gstPercent > 0 && ` + ${totals.gstPercent}% GST (₹${totals.gstAmount})`}
+              {deliveryFee > 0 ? ` + Delivery ₹${deliveryFee}` : ' • Free Delivery'}
+              {` = ₹${finalTotalPayable}`}
             </p>
-          ) : (
-            <p className="text-xs font-extrabold text-emerald-700">
-              🚚 Free Delivery Included
-            </p>
-          )}
+            {paymentSettings.gstNumber && (
+              <p className="text-[11px] text-amber-700 font-mono">
+                GSTIN: {paymentSettings.gstNumber}
+              </p>
+            )}
+            {estDeliveryText && (
+              <p className="text-xs font-extrabold text-emerald-700">
+                ⏱️ Estimated Delivery: {estDeliveryText}
+              </p>
+            )}
+          </div>
         </div>
 
         <p className="text-sm text-gray-600 leading-relaxed mb-6 bg-gray-50 p-4 rounded-xl border border-gray-100">
@@ -701,7 +727,16 @@ export default function ProductDetails() {
                 <div className="bg-gray-100 p-4 rounded-2xl text-xs text-gray-800 space-y-1.5 text-left border">
                   <p><span className="font-bold">Order ID:</span> {submittedOrderId}</p>
                   <p><span className="font-bold">Product Price:</span> ₹{itemBasePrice}</p>
+                  {totals.gstPercent > 0 && (
+                    <p>
+                      <span className="font-bold">GST ({totals.gstPercent}%):</span> ₹{totals.gstAmount}
+                      {paymentSettings.gstNumber ? ` • GSTIN: ${paymentSettings.gstNumber}` : ''}
+                    </p>
+                  )}
                   <p><span className="font-bold">Delivery Charge:</span> {deliveryFee > 0 ? `₹${deliveryFee}` : 'Free'}</p>
+                  {estDeliveryText && (
+                    <p><span className="font-bold">Estimated Delivery:</span> {estDeliveryText}</p>
+                  )}
                   <p><span className="font-bold">Total Amount:</span> ₹{finalTotalPayable}</p>
                   <p><span className="font-bold">Customer:</span> {formData.customerName}</p>
                   <p><span className="font-bold">Phone:</span> {formData.phoneNumber}</p>
@@ -753,8 +788,15 @@ export default function ProductDetails() {
                     <p className="font-bold text-xs text-gray-900 truncate">{product.name}</p>
                     <p className="text-sm font-extrabold text-blue-700">Total: ₹{finalTotalPayable}</p>
                     <p className="text-[10px] text-gray-600">
-                      {deliveryFee > 0 ? `Item ₹${itemBasePrice} + Delivery ₹${deliveryFee}` : `Item ₹${itemBasePrice} • Free Delivery`}
+                      Item ₹{itemBasePrice}
+                      {totals.gstPercent > 0 ? ` + ${totals.gstPercent}% GST ₹${totals.gstAmount}` : ''}
+                      {deliveryFee > 0 ? ` + Delivery ₹${deliveryFee}` : ' • Free Delivery'}
                     </p>
+                    {estDeliveryText && (
+                      <p className="text-[10px] text-emerald-700 font-bold">
+                        ⏱️ Estimated Delivery: {estDeliveryText}
+                      </p>
+                    )}
                   </div>
                 </div>
 

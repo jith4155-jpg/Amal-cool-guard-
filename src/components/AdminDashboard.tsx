@@ -42,6 +42,7 @@ import {
   getPaymentSettings,
   savePaymentSettingsSync,
   StorePaymentSettings,
+  calculateProductTotals,
 } from '../utils/storeSync';
 
 export type PaymentSettings = StorePaymentSettings;
@@ -67,8 +68,9 @@ export default function AdminDashboard() {
   // In-app Confirm Modal (replaces blocked window.confirm)
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
 
-  // In-app Shipping Label Print Modal (avoids blocked window.open popups)
+  // In-app Shipping Label Print Modal & Quick Pickup/GST Modal
   const [printLabelOrder, setPrintLabelOrder] = useState<any | null>(null);
+  const [showPickupQuickModal, setShowPickupQuickModal] = useState(false);
 
   // Unified catalog, orders, promoters & dynamic categories state
   const [products, setProducts] = useState<Product[]>(() => getCatalogProducts());
@@ -83,13 +85,14 @@ export default function AdminDashboard() {
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [savingProduct, setSavingProduct] = useState(false);
 
-  // Custom commission inputs & Order Tracking ID drafts
+  // Custom commission inputs, Tracking ID drafts & Delivery Days ETA drafts
   const [customCommissionInputs, setCustomCommissionInputs] = useState<Record<string, string>>({});
   const [trackingDrafts, setTrackingDrafts] = useState<
     Record<string, { trackingId: string; trackingUrl: string; courierName: string }>
   >({});
+  const [deliveryDaysDrafts, setDeliveryDaysDrafts] = useState<Record<string, string>>({});
 
-  // Payment settings state with instant local fallback
+  // Payment & store settings state
   const [paymentSettings, setPaymentSettings] = useState<StorePaymentSettings>(() => getPaymentSettings());
   const [settingsSavedMsg, setSettingsSavedMsg] = useState(false);
 
@@ -99,6 +102,7 @@ export default function AdminDashboard() {
     price: 2499,
     discountPrice: 1999,
     deliveryCharge: 0,
+    estimatedDeliveryDays: '',
     description: '',
     imageUrl: '',
     galleryImages: [] as string[],
@@ -365,12 +369,13 @@ export default function AdminDashboard() {
       price: Number(newProduct.price),
       discountPrice: Number(newProduct.discountPrice || newProduct.price),
       deliveryCharge: Math.max(0, Number(newProduct.deliveryCharge || 0)),
+      estimatedDeliveryDays: newProduct.estimatedDeliveryDays.trim(),
       description: newProduct.description.trim() || 'Premium heat protection cooling coat by Amal Coolguard.',
       imageUrl: finalMainImage,
       galleryImages: finalGallery,
       stock: Number(newProduct.stock || 20),
       category: newProduct.category || categories[0] || 'Coats',
-      gstPercent: Number(newProduct.gstPercent || 0),
+      gstPercent: Math.max(0, Number(newProduct.gstPercent || 0)),
       rating: 4.9,
       reviewsCount: 1,
       features: newProduct.features,
@@ -406,6 +411,7 @@ export default function AdminDashboard() {
       price: 2499,
       discountPrice: 1999,
       deliveryCharge: 0,
+      estimatedDeliveryDays: '',
       description: '',
       imageUrl: '',
       galleryImages: [],
@@ -438,8 +444,9 @@ export default function AdminDashboard() {
       price: Number(editingProduct.price),
       discountPrice: Number(editingProduct.discountPrice || editingProduct.price),
       deliveryCharge: Math.max(0, Number(editingProduct.deliveryCharge || 0)),
+      estimatedDeliveryDays: (editingProduct.estimatedDeliveryDays || '').trim(),
       stock: Number(editingProduct.stock || 0),
-      gstPercent: Number(editingProduct.gstPercent || 0),
+      gstPercent: Math.max(0, Number(editingProduct.gstPercent || 0)),
       imageUrl: resolvedMainImage,
       galleryImages: resolvedGallery,
     };
@@ -457,6 +464,7 @@ export default function AdminDashboard() {
           price: updated.price,
           discountPrice: updated.discountPrice,
           deliveryCharge: updated.deliveryCharge || 0,
+          estimatedDeliveryDays: updated.estimatedDeliveryDays || '',
           description: updated.description,
           imageUrl: updated.imageUrl,
           galleryImages: updated.galleryImages,
@@ -584,22 +592,71 @@ export default function AdminDashboard() {
     showToast(`✓ Tracking ID "${cleanTrackingId}" sent to Customer's Orders page!`);
   };
 
+  const handleSaveOrderDeliveryDays = async (order: any) => {
+    const orderKey = String(order.orderId || order.id);
+    const cleanDays = (
+      deliveryDaysDrafts[orderKey] ??
+      order.estimatedDeliveryDays ??
+      paymentSettings.defaultDeliveryDays ??
+      ''
+    ).trim();
+
+    if (!cleanDays) {
+      showToast('Please enter estimated delivery days (e.g. 3-5 Days).', 'error');
+      return;
+    }
+
+    const nextOrders = orders.map(o =>
+      o.orderId === order.orderId || o.id === order.id
+        ? { ...o, estimatedDeliveryDays: cleanDays }
+        : o
+    );
+    setOrders(nextOrders);
+    saveAllOrders(nextOrders);
+
+    const targetDocId = String(order.docId || order.id || order.orderId || '');
+    if (targetDocId) {
+      try {
+        await setDoc(
+          doc(db, 'bookings', targetDocId),
+          { estimatedDeliveryDays: cleanDays },
+          { merge: true }
+        );
+      } catch (err) {
+        console.warn('Firestore save delivery days err:', err);
+      }
+    }
+    showToast(`✓ Delivery time "${cleanDays}" applied for Customer!`);
+  };
+
   const handleCopyAddressForWhatsApp = (order: any) => {
+    const pickupBlock = paymentSettings.pickupAddress
+      ? `\nFROM (PICKUP): ${paymentSettings.pickupName || 'Amal Coolguard'}, ${paymentSettings.pickupAddress}${
+          paymentSettings.pickupPincode ? ` - ${paymentSettings.pickupPincode}` : ''
+        } (Ph: ${paymentSettings.pickupPhone || paymentSettings.whatsappNumber || '6238113451'})`
+      : '';
+    const gstLine =
+      Number(order.gstPercent || 0) > 0
+        ? ` | GST ${order.gstPercent}% (₹${order.gstAmount || 0})${
+            order.gstNumber || paymentSettings.gstNumber ? ` GSTIN: ${order.gstNumber || paymentSettings.gstNumber}` : ''
+          }`
+        : '';
+
     const text = `📦 AMAL COOLGUARD COURIER ADDRESS
 Order ID: #${order.orderId || order.id}
 ----------------------------------------
-NAME: ${order.customerName || 'N/A'}
+TO NAME: ${order.customerName || 'N/A'}
 PHONE: ${order.phoneNumber || 'N/A'}
 ADDRESS: ${order.address || 'N/A'}
-PINCODE: ${order.pincode || 'N/A'}
+PINCODE: ${order.pincode || 'N/A'}${pickupBlock}
 
 ITEM: ${order.productName || 'Amal Coolguard Vest'}
-AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
-      order.trackingId ? `\nTRACKING ID: ${order.trackingId}` : ''
-    }`;
+AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
+      order.estimatedDeliveryDays ? `\nEST. DELIVERY: ${order.estimatedDeliveryDays}` : ''
+    }${order.trackingId ? `\nTRACKING ID: ${order.trackingId}` : ''}`;
 
     navigator.clipboard.writeText(text);
-    showToast('✓ Customer address & booking details copied for WhatsApp!');
+    showToast('✓ Customer + Pickup address & bill details copied for WhatsApp!');
   };
 
   const handleUpdatePromoterCommission = async (promId: string, promName: string, amt: number) => {
@@ -789,11 +846,21 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
       {/* TAB 1: CUSTOMER ORDERS */}
       {activeTab === 'orders' && (
         <div className="space-y-4">
-          <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-200 flex items-center justify-between">
+          <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-200 flex flex-wrap items-center justify-between gap-2">
             <h2 className="font-extrabold text-sm text-gray-900">Customer Bookings & Payment Screenshots</h2>
-            <button onClick={fetchOrders} className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-1">
-              <span>🔄</span> Refresh List
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowPickupQuickModal(true)}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-extrabold px-3.5 py-2 rounded-xl shadow flex items-center gap-1.5 transition"
+              >
+                <span>📍</span>
+                <span>{paymentSettings.pickupAddress ? 'Edit Pickup Address & GSTIN' : '+ Add Pickup Address & GSTIN'}</span>
+              </button>
+              <button onClick={fetchOrders} className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-1">
+                <span>🔄</span> Refresh List
+              </button>
+            </div>
           </div>
 
           {loadingOrders && orders.length === 0 ? (
@@ -873,13 +940,11 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
                         <p className="font-extrabold text-blue-700 text-sm">
                           ₹{order.price} ({order.paymentMethod || 'UPI'})
                         </p>
-                        {Number(order.deliveryCharge || 0) > 0 ? (
-                          <p className="text-[10px] text-gray-500 font-semibold">
-                            Item ₹{order.productPrice || (Number(order.price) - Number(order.deliveryCharge))} + Delivery ₹{order.deliveryCharge}
-                          </p>
-                        ) : (
-                          <p className="text-[10px] text-emerald-700 font-semibold">Free Delivery</p>
-                        )}
+                        <p className="text-[10px] text-gray-500 font-semibold">
+                          Item ₹{order.productPrice || (Number(order.price) - Number(order.deliveryCharge || 0) - Number(order.gstAmount || 0))}
+                          {Number(order.gstPercent || 0) > 0 ? ` + ${order.gstPercent}% GST (₹${order.gstAmount || 0})` : ''}
+                          {Number(order.deliveryCharge || 0) > 0 ? ` + Del ₹${order.deliveryCharge}` : ' • Free Del'}
+                        </p>
                       </div>
                       {order.referralCode && (
                         <div className="bg-purple-50 border border-purple-200 p-2.5 rounded-xl col-span-2 flex items-center justify-between">
@@ -893,6 +958,48 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
                         </div>
                       )}
                     </div>
+
+                    {/* Estimated Delivery Days Control (Admin calculates distance & applies days for customer) */}
+                    {(() => {
+                      const orderKey = String(order.orderId || order.id);
+                      const daysDraft =
+                        deliveryDaysDrafts[orderKey] ??
+                        order.estimatedDeliveryDays ??
+                        paymentSettings.defaultDeliveryDays ??
+                        '';
+                      return (
+                        <div className="bg-emerald-50/70 border border-emerald-200 p-3 rounded-2xl space-y-2 mb-3">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <span className="text-xs font-extrabold text-emerald-950 flex items-center gap-1.5">
+                              <span>⏱️</span> Delivery Time (എത്ര ദിവസം കൊണ്ട് എത്തും):
+                            </span>
+                            {order.estimatedDeliveryDays && (
+                              <span className="text-[10px] bg-emerald-600 text-white font-bold px-2.5 py-0.5 rounded-full">
+                                Active: {order.estimatedDeliveryDays}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex gap-2 text-xs">
+                            <input
+                              type="text"
+                              placeholder="e.g. 3-5 Days / 2 Days"
+                              value={daysDraft}
+                              onChange={e =>
+                                setDeliveryDaysDrafts(prev => ({ ...prev, [orderKey]: e.target.value }))
+                              }
+                              className="flex-1 p-2.5 border border-emerald-300 rounded-xl bg-white outline-none font-bold text-gray-900"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleSaveOrderDeliveryDays(order)}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-4 py-2 rounded-xl shadow shrink-0 transition"
+                            >
+                              ✓ Apply ETA
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* Order Tracking ID Assignment Box (Sends directly to Customer's Orders Page) */}
                     {(() => {
@@ -1313,65 +1420,130 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
                   />
                 </div>
 
-                {/* Delivery Charge Field (Optional - 0 for Free Delivery) */}
-                <div className="col-span-1 md:col-span-2 bg-emerald-50/70 p-3.5 rounded-2xl border border-emerald-200 space-y-2">
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <label className="font-bold text-emerald-950">
-                      🚚 Delivery Charge ₹ (ഡെലിവറി ചാർജ് - ഒന്നും കൊടുത്തില്ലെങ്കിൽ Free Delivery):
+                {/* Delivery Charge, GST Tax Rate %, & Estimated Delivery Days */}
+                <div className="col-span-1 md:col-span-2 bg-emerald-50/70 p-3.5 rounded-2xl border border-emerald-200 space-y-2.5">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <label className="font-bold text-emerald-950">
+                          🚚 Delivery Charge ₹ (0 = Free):
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setNewProduct(prev => ({ ...prev, deliveryCharge: 0 }))}
+                          className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md border ${
+                            (newProduct.deliveryCharge || 0) === 0
+                              ? 'bg-emerald-600 text-white border-emerald-700'
+                              : 'bg-white text-emerald-700 border-emerald-300'
+                          }`}
+                        >
+                          Free (₹0)
+                        </button>
+                      </div>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="0 for Free Delivery, or e.g. 60"
+                        value={newProduct.deliveryCharge || ''}
+                        onChange={e => setNewProduct({ ...newProduct, deliveryCharge: Math.max(0, Number(e.target.value || 0)) })}
+                        className="w-full p-2.5 border border-emerald-300 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-white font-extrabold text-emerald-900"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-bold text-emerald-950 mb-1">
+                        ⏱️ Estimated Delivery Time (എത്ര ദിവസം):
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 3-5 Days"
+                        value={newProduct.estimatedDeliveryDays}
+                        onChange={e => setNewProduct({ ...newProduct, estimatedDeliveryDays: e.target.value })}
+                        className="w-full p-2.5 border border-emerald-300 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-white font-bold text-emerald-900"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* GST Percentage Quick Picker + Custom % Input */}
+                <div className="col-span-1 md:col-span-2 bg-indigo-50 p-3.5 rounded-2xl border border-indigo-200 space-y-2">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <label className="font-bold text-indigo-950">
+                      🧾 GST Tax Rate % (ജിഎസ് ടി ശതമാനം - ഓട്ടോമാറ്റിക് ടോട്ടലിൽ കൂടും):
                     </label>
                     <button
                       type="button"
-                      onClick={() => setNewProduct(prev => ({ ...prev, deliveryCharge: 0 }))}
-                      className={`text-[11px] font-extrabold px-2.5 py-1 rounded-lg border ${
-                        (newProduct.deliveryCharge || 0) === 0
-                          ? 'bg-emerald-600 text-white border-emerald-700'
-                          : 'bg-white text-emerald-700 border-emerald-300'
-                      }`}
+                      onClick={() => setShowPickupQuickModal(true)}
+                      className="text-[11px] font-bold text-blue-700 hover:underline"
                     >
-                      Free Delivery (₹0)
+                      {paymentSettings.gstNumber ? `GSTIN: ${paymentSettings.gstNumber} (Edit)` : '+ Set Store GSTIN Number'}
                     </button>
                   </div>
-                  <input
-                    type="number"
-                    min="0"
-                    placeholder="0 (Leave 0 for Free Delivery, or enter e.g. 60)"
-                    value={newProduct.deliveryCharge || ''}
-                    onChange={e => setNewProduct({ ...newProduct, deliveryCharge: Math.max(0, Number(e.target.value || 0)) })}
-                    className="w-full p-3 border border-emerald-300 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-white font-extrabold text-emerald-900"
-                  />
-                  <p className="text-[11px] text-emerald-800">
-                    If you enter a delivery charge, it is automatically added/mixed into the final customer price on the website!
-                  </p>
-                </div>
-
-                {/* Live Price + Delivery Combined Preview */}
-                <div className="col-span-1 md:col-span-2 bg-amber-50 p-3.5 rounded-2xl border border-amber-200 flex items-center justify-between gap-2 flex-wrap">
-                  <div>
-                    <span className="text-[11px] font-bold text-amber-900 block">
-                      Combined Customer Price Preview (പ്രൊഫൈലിൽ കസ്റ്റമർ കാണുന്ന ആകെ വില):
-                    </span>
-                    <div className="flex items-baseline gap-2 mt-1 flex-wrap">
-                      <span className="text-lg font-black text-gray-900">
-                        ₹{(newProduct.discountPrice || newProduct.price || 0) + (newProduct.deliveryCharge || 0)}
-                      </span>
-                      {newProduct.price > (newProduct.discountPrice || 0) && (
-                        <span className="text-sm text-gray-400 line-through font-bold">
-                          ₹{newProduct.price + (newProduct.deliveryCharge || 0)}
-                        </span>
-                      )}
-                      <span className="text-[11px] font-bold text-emerald-700">
-                        {(newProduct.deliveryCharge || 0) > 0
-                          ? `(Item ₹${newProduct.discountPrice || newProduct.price} + Delivery ₹${newProduct.deliveryCharge})`
-                          : '(Free Delivery)'}
-                      </span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {[0, 5, 12, 18, 28].map(rate => (
+                      <button
+                        key={rate}
+                        type="button"
+                        onClick={() => setNewProduct(prev => ({ ...prev, gstPercent: rate }))}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-extrabold border transition ${
+                          (newProduct.gstPercent || 0) === rate
+                            ? 'bg-blue-600 text-white border-blue-700 shadow'
+                            : 'bg-white text-gray-800 border-gray-300'
+                        }`}
+                      >
+                        {rate}% GST
+                      </button>
+                    ))}
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        placeholder="Custom %"
+                        value={newProduct.gstPercent || ''}
+                        onChange={e =>
+                          setNewProduct({ ...newProduct, gstPercent: Math.max(0, Number(e.target.value || 0)) })
+                        }
+                        className="w-24 p-1.5 text-xs border border-indigo-300 rounded-xl bg-white font-bold outline-none"
+                      />
+                      <span className="text-xs font-bold text-indigo-900">%</span>
                     </div>
                   </div>
-                  {newProduct.price > (newProduct.discountPrice || 0) && (
-                    <span className="bg-red-600 text-white text-xs font-extrabold px-3 py-1 rounded-full shadow">
-                      {Math.round(((newProduct.price - newProduct.discountPrice) / newProduct.price) * 100)}% SPECIAL DISCOUNT
-                    </span>
-                  )}
                 </div>
+
+                {/* Live Auto-Running Total Preview (Offer Price + GST + Delivery) */}
+                {(() => {
+                  const preview = calculateProductTotals(newProduct);
+                  return (
+                    <div className="col-span-1 md:col-span-2 bg-amber-50 p-3.5 rounded-2xl border border-amber-200 flex items-center justify-between gap-2 flex-wrap">
+                      <div>
+                        <span className="text-[11px] font-bold text-amber-900 block">
+                          Live Customer Total (ഓഫർ വില + {preview.gstPercent}% GST + ഡെലിവറി ചാർജ്):
+                        </span>
+                        <div className="flex items-baseline gap-2 mt-1 flex-wrap">
+                          <span className="text-xl font-black text-gray-900">
+                            ₹{preview.finalTotal}
+                          </span>
+                          {preview.originalTotal > preview.finalTotal && (
+                            <span className="text-sm text-gray-400 line-through font-bold">
+                              ₹{preview.originalTotal}
+                            </span>
+                          )}
+                          <span className="text-[11px] font-bold text-emerald-700">
+                            (Item ₹{preview.basePrice}
+                            {preview.gstPercent > 0 ? ` + ${preview.gstPercent}% GST ₹${preview.gstAmount}` : ''}
+                            {preview.deliveryFee > 0 ? ` + Del ₹${preview.deliveryFee}` : ' + Free Del'})
+                          </span>
+                        </div>
+                      </div>
+                      {preview.originalBase > preview.basePrice && (
+                        <span className="bg-red-600 text-white text-xs font-extrabold px-3 py-1 rounded-full shadow">
+                          {Math.round(((preview.originalBase - preview.basePrice) / preview.originalBase) * 100)}% SPECIAL DISCOUNT
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 <div>
                   <label className="block font-bold text-gray-700 mb-1">Stock Quantity (സ്റ്റോക്ക് എണ്ണം)</label>
@@ -1385,18 +1557,14 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
                 </div>
 
                 <div>
-                  <label className="block font-bold text-gray-700 mb-1">GST Tax Rate % (ജിഎസ് ടി - Optional)</label>
-                  <select
-                    value={newProduct.gstPercent || 0}
-                    onChange={e => setNewProduct({ ...newProduct, gstPercent: Number(e.target.value) })}
-                    className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50 font-bold text-blue-900"
+                  <label className="block font-bold text-gray-700 mb-1">Store Pickup Dispatch Status</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowPickupQuickModal(true)}
+                    className="w-full p-3 border border-blue-300 rounded-xl bg-blue-50 text-blue-900 font-bold text-left hover:bg-blue-100 transition"
                   >
-                    <option value={0}>No GST (0% / Tax Included)</option>
-                    <option value={5}>5% GST (Apparel / Garment Rate)</option>
-                    <option value={12}>12% GST</option>
-                    <option value={18}>18% GST (Standard Rate)</option>
-                    <option value={28}>28% GST</option>
-                  </select>
+                    📍 {paymentSettings.pickupAddress ? `Pickup: ${paymentSettings.pickupAddress}` : '+ Add Store Pickup Address'}
+                  </button>
                 </div>
 
                 {/* Main Image Upload & Link */}
@@ -1541,7 +1709,9 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {products.map(p => (
+                {products.map(p => {
+                  const totals = calculateProductTotals(p);
+                  return (
                   <div key={p.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-200 space-y-3 flex flex-col justify-between">
                     <div>
                       <div className="relative w-full h-44 bg-gray-100 rounded-xl overflow-hidden mb-2">
@@ -1553,19 +1723,25 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
                       <h3 className="font-bold text-sm text-gray-900 leading-snug">{p.name}</h3>
                       <div className="flex items-baseline gap-2 mt-1 flex-wrap">
                         <span className="font-extrabold text-blue-700 text-base">
-                          ₹{(p.discountPrice || p.price) + (p.deliveryCharge || 0)}
+                          ₹{totals.finalTotal}
                         </span>
-                        {p.price && p.price > (p.discountPrice || 0) && (
+                        {totals.originalTotal > totals.finalTotal && (
                           <span className="text-xs text-gray-400 line-through">
-                            ₹{p.price + (p.deliveryCharge || 0)}
+                            ₹{totals.originalTotal}
                           </span>
                         )}
                         <span className="text-[10px] font-bold text-emerald-700">
-                          {p.deliveryCharge && p.deliveryCharge > 0
-                            ? `(incl. ₹${p.deliveryCharge} delivery)`
+                          {totals.gstPercent > 0 ? `+${totals.gstPercent}% GST (₹${totals.gstAmount}) ` : ''}
+                          {totals.deliveryFee > 0
+                            ? `• Del ₹${totals.deliveryFee}`
                             : '• Free Delivery'}
                         </span>
                       </div>
+                      {p.estimatedDeliveryDays && (
+                        <p className="text-[10px] font-bold text-amber-700 mt-1">
+                          ⏱️ Est. Delivery: {p.estimatedDeliveryDays}
+                        </p>
+                      )}
                       <p className="text-[11px] text-gray-500 line-clamp-2 mt-1">{p.description}</p>
 
                       {p.galleryImages && p.galleryImages.length > 0 && (
@@ -1598,7 +1774,8 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
                       </button>
                     </div>
                   </div>
-                ))}
+                );
+                })}
               </div>
             )}
           </div>
@@ -1756,6 +1933,85 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
                 className="w-full p-3 text-xs border border-emerald-300 rounded-xl outline-none font-bold bg-white text-emerald-900"
                 placeholder="e.g. 6238113451"
               />
+            </div>
+
+            {/* Pickup Address, GSTIN Number & Default Delivery Days (Appears on all Bills & Shipping Labels) */}
+            <div className="bg-amber-50 p-4 rounded-2xl border border-amber-200 space-y-3">
+              <div>
+                <p className="font-extrabold text-xs text-amber-950 flex items-center gap-1.5">
+                  <span>📍</span> Store Pickup Address, GSTIN & Delivery Days (എല്ലാ ബില്ലിലും വരേണ്ട പിക്കപ്പ് അഡ്രസ്സ് & GST നമ്പർ)
+                </p>
+                <p className="text-[11px] text-amber-800 mt-0.5">
+                  Automatically appears as Sender / Pickup Address on every Shipping Label & Bill.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                <div>
+                  <label className="block font-bold text-amber-900 mb-1">Store / Sender Name</label>
+                  <input
+                    type="text"
+                    value={paymentSettings.pickupName || 'Amal Coolguard'}
+                    onChange={e => setPaymentSettings({ ...paymentSettings, pickupName: e.target.value })}
+                    className="w-full p-2.5 border border-amber-300 rounded-xl bg-white outline-none font-bold"
+                    placeholder="Amal Coolguard"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-amber-900 mb-1">Pickup Mobile Number</label>
+                  <input
+                    type="tel"
+                    value={paymentSettings.pickupPhone || ''}
+                    onChange={e => setPaymentSettings({ ...paymentSettings, pickupPhone: e.target.value })}
+                    className="w-full p-2.5 border border-amber-300 rounded-xl bg-white outline-none font-bold"
+                    placeholder="e.g. 6238113451"
+                  />
+                </div>
+              </div>
+
+              <div className="text-xs">
+                <label className="block font-bold text-amber-900 mb-1">Pickup Full Address (പിക്കപ്പ് അഡ്രസ്സ്)</label>
+                <textarea
+                  rows={2}
+                  value={paymentSettings.pickupAddress || ''}
+                  onChange={e => setPaymentSettings({ ...paymentSettings, pickupAddress: e.target.value })}
+                  className="w-full p-2.5 border border-amber-300 rounded-xl bg-white outline-none"
+                  placeholder="Shop/House Name, Street, Town, District, Kerala"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                <div>
+                  <label className="block font-bold text-amber-900 mb-1">Pickup Pincode</label>
+                  <input
+                    type="text"
+                    value={paymentSettings.pickupPincode || ''}
+                    onChange={e => setPaymentSettings({ ...paymentSettings, pickupPincode: e.target.value })}
+                    className="w-full p-2.5 border border-amber-300 rounded-xl bg-white outline-none font-bold"
+                    placeholder="e.g. 673001"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-amber-900 mb-1">Store GST Number (GSTIN)</label>
+                  <input
+                    type="text"
+                    value={paymentSettings.gstNumber || ''}
+                    onChange={e => setPaymentSettings({ ...paymentSettings, gstNumber: e.target.value.toUpperCase() })}
+                    className="w-full p-2.5 border border-amber-300 rounded-xl bg-white outline-none font-mono uppercase font-bold"
+                    placeholder="e.g. 32AAAAA0000A1Z5"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-amber-900 mb-1">Default Delivery Days</label>
+                  <input
+                    type="text"
+                    value={paymentSettings.defaultDeliveryDays || '3-5 Days'}
+                    onChange={e => setPaymentSettings({ ...paymentSettings, defaultDeliveryDays: e.target.value })}
+                    className="w-full p-2.5 border border-amber-300 rounded-xl bg-white outline-none font-bold"
+                    placeholder="e.g. 3-5 Days"
+                  />
+                </div>
+              </div>
             </div>
 
             {/* Account Page Shortcuts Toggles */}
@@ -2182,67 +2438,98 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
                 </div>
               </div>
 
-              {/* Edit Delivery Charge */}
-              <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-200 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label className="font-bold text-emerald-950">🚚 Delivery Charge ₹ (0 = Free Delivery)</label>
-                  <button
-                    type="button"
-                    onClick={() => setEditingProduct({ ...editingProduct, deliveryCharge: 0 })}
-                    className="text-[10px] font-bold bg-white border border-emerald-300 text-emerald-800 px-2 py-0.5 rounded-md"
-                  >
-                    Set Free (₹0)
-                  </button>
+              {/* Edit Delivery Charge & Estimated Delivery Days */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-emerald-50 p-3 rounded-xl border border-emerald-200">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-bold text-emerald-950">🚚 Delivery Charge ₹</label>
+                    <button
+                      type="button"
+                      onClick={() => setEditingProduct({ ...editingProduct, deliveryCharge: 0 })}
+                      className="text-[10px] font-bold bg-white border border-emerald-300 text-emerald-800 px-2 py-0.5 rounded-md"
+                    >
+                      Free (₹0)
+                    </button>
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="0 for Free Delivery"
+                    value={editingProduct.deliveryCharge || ''}
+                    onChange={e =>
+                      setEditingProduct({
+                        ...editingProduct,
+                        deliveryCharge: Math.max(0, Number(e.target.value || 0)),
+                      })
+                    }
+                    className="w-full p-2.5 border border-emerald-300 rounded-xl outline-none bg-white font-extrabold text-emerald-900"
+                  />
                 </div>
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="0 for Free Delivery"
-                  value={editingProduct.deliveryCharge || ''}
-                  onChange={e =>
-                    setEditingProduct({
-                      ...editingProduct,
-                      deliveryCharge: Math.max(0, Number(e.target.value || 0)),
-                    })
-                  }
-                  className="w-full p-2.5 border border-emerald-300 rounded-xl outline-none bg-white font-extrabold text-emerald-900"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">GST Tax Rate % (Optional)</label>
-                <select
-                  value={editingProduct.gstPercent || 0}
-                  onChange={e => setEditingProduct({ ...editingProduct, gstPercent: Number(e.target.value) })}
-                  className="w-full p-2.5 border rounded-xl outline-none bg-gray-50 font-bold text-blue-900"
-                >
-                  <option value={0}>No GST (0% / Tax Included)</option>
-                  <option value={5}>5% GST (Apparel / Garment Rate)</option>
-                  <option value={12}>12% GST</option>
-                  <option value={18}>18% GST (Standard Rate)</option>
-                  <option value={28}>28% GST</option>
-                </select>
-              </div>
-
-              {/* Edit Live Combined Preview */}
-              <div className="bg-amber-50 p-2.5 rounded-xl border border-amber-200 flex items-center justify-between flex-wrap gap-2">
-                <span className="text-[11px] font-bold text-amber-900">Combined Customer Price Preview:</span>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-sm font-extrabold text-gray-900">
-                    ₹{(editingProduct.discountPrice || editingProduct.price) + (editingProduct.deliveryCharge || 0)}
-                  </span>
-                  {editingProduct.price > (editingProduct.discountPrice || 0) && (
-                    <span className="text-xs text-gray-400 line-through font-bold">
-                      ₹{editingProduct.price + (editingProduct.deliveryCharge || 0)}
-                    </span>
-                  )}
-                  <span className="text-[10px] font-bold text-emerald-700">
-                    {(editingProduct.deliveryCharge || 0) > 0
-                      ? `(incl. ₹${editingProduct.deliveryCharge} delivery)`
-                      : '(Free Delivery)'}
-                  </span>
+                <div>
+                  <label className="block font-bold text-emerald-950 mb-1">⏱️ Estimated Delivery Days</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 3-5 Days"
+                    value={editingProduct.estimatedDeliveryDays || ''}
+                    onChange={e =>
+                      setEditingProduct({ ...editingProduct, estimatedDeliveryDays: e.target.value })
+                    }
+                    className="w-full p-2.5 border border-emerald-300 rounded-xl outline-none bg-white font-bold text-emerald-900"
+                  />
                 </div>
               </div>
+
+              <div className="bg-indigo-50 p-3 rounded-xl border border-indigo-200 space-y-2">
+                <label className="block font-bold text-indigo-950">🧾 GST Tax Rate % (Auto-added to total)</label>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {[0, 5, 12, 18, 28].map(rate => (
+                    <button
+                      key={rate}
+                      type="button"
+                      onClick={() => setEditingProduct({ ...editingProduct, gstPercent: rate })}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold border ${
+                        (editingProduct.gstPercent || 0) === rate
+                          ? 'bg-blue-600 text-white border-blue-700'
+                          : 'bg-white text-gray-800 border-gray-300'
+                      }`}
+                    >
+                      {rate}%
+                    </button>
+                  ))}
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    placeholder="Custom %"
+                    value={editingProduct.gstPercent || ''}
+                    onChange={e =>
+                      setEditingProduct({ ...editingProduct, gstPercent: Math.max(0, Number(e.target.value || 0)) })
+                    }
+                    className="w-20 p-1.5 text-xs border border-indigo-300 rounded-lg bg-white font-bold outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Edit Live Combined Preview (Item + GST + Delivery) */}
+              {(() => {
+                const ep = calculateProductTotals(editingProduct);
+                return (
+                  <div className="bg-amber-50 p-2.5 rounded-xl border border-amber-200 flex items-center justify-between flex-wrap gap-2">
+                    <span className="text-[11px] font-bold text-amber-900">Combined Customer Price Preview:</span>
+                    <div className="flex items-baseline gap-2 flex-wrap">
+                      <span className="text-sm font-extrabold text-gray-900">₹{ep.finalTotal}</span>
+                      {ep.originalTotal > ep.finalTotal && (
+                        <span className="text-xs text-gray-400 line-through font-bold">₹{ep.originalTotal}</span>
+                      )}
+                      <span className="text-[10px] font-bold text-emerald-700">
+                        (Item ₹{ep.basePrice}
+                        {ep.gstPercent > 0 ? ` + ${ep.gstPercent}% GST ₹${ep.gstAmount}` : ''}
+                        {ep.deliveryFee > 0 ? ` + Del ₹${ep.deliveryFee}` : ' + Free Del'})
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Main Image Edit with Preview & Delete */}
               <div className="bg-gray-50 p-3 rounded-xl border space-y-2">
@@ -2445,8 +2732,41 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
               </div>
 
               <div className="space-y-1">
+                <div className="flex items-center justify-between bg-gray-100 px-2 py-1 rounded">
+                  <p className="text-[10px] font-black uppercase text-gray-700">
+                    📍 FROM / PICKUP ADDRESS (SENDER)
+                  </p>
+                  {!paymentSettings.pickupAddress && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPrintLabelOrder(null);
+                        setShowPickupQuickModal(true);
+                      }}
+                      className="text-[10px] font-extrabold text-blue-700 underline print:hidden"
+                    >
+                      + Add Pickup Address
+                    </button>
+                  )}
+                </div>
+                <p><span className="font-bold">FROM:</span> {paymentSettings.pickupName || 'Amal Coolguard'}</p>
+                <p><span className="font-bold">PICKUP PHONE:</span> +91 {paymentSettings.pickupPhone || paymentSettings.whatsappNumber || '6238113451'}</p>
+                {paymentSettings.pickupAddress ? (
+                  <p>
+                    <span className="font-bold">PICKUP ADDRESS:</span> {paymentSettings.pickupAddress}
+                    {paymentSettings.pickupPincode ? `, Pincode: ${paymentSettings.pickupPincode}` : ''}
+                  </p>
+                ) : (
+                  <p className="text-gray-500 italic">Pickup address not added yet.</p>
+                )}
+                {(printLabelOrder.gstNumber || paymentSettings.gstNumber) && (
+                  <p><span className="font-bold">GSTIN:</span> {printLabelOrder.gstNumber || paymentSettings.gstNumber}</p>
+                )}
+              </div>
+
+              <div className="space-y-1">
                 <p className="text-[10px] font-black uppercase bg-gray-100 px-2 py-1 rounded text-gray-700">
-                  📦 SHIP TO / DELIVERY ADDRESS
+                  📦 SHIP TO / CUSTOMER DELIVERY ADDRESS
                 </p>
                 <p><span className="font-bold">CUSTOMER NAME:</span> {printLabelOrder.customerName || 'N/A'}</p>
                 <p><span className="font-bold">PHONE:</span> +91 {printLabelOrder.phoneNumber || 'N/A'}</p>
@@ -2456,16 +2776,24 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
 
               <div className="space-y-1">
                 <p className="text-[10px] font-black uppercase bg-gray-100 px-2 py-1 rounded text-gray-700">
-                  🛒 ORDER DETAILS
+                  🛒 ORDER & BILL BREAKDOWN
                 </p>
                 <p><span className="font-bold">ITEM:</span> {printLabelOrder.productName || 'Amal Coolguard Vest'}</p>
+                {Number(printLabelOrder.gstPercent || 0) > 0 && (
+                  <p>
+                    <span className="font-bold">GST ({printLabelOrder.gstPercent}%):</span> ₹{printLabelOrder.gstAmount || 0}
+                  </p>
+                )}
                 <p>
-                  <span className="font-bold">TOTAL AMOUNT:</span> ₹{printLabelOrder.price || 2499}{' '}
-                  {Number(printLabelOrder.deliveryCharge || 0) > 0
-                    ? `(Includes ₹${printLabelOrder.deliveryCharge} Delivery)`
-                    : '(Free Delivery)'}{' '}
-                  {printLabelOrder.gstPercent ? `(Includes GST ${printLabelOrder.gstPercent}%)` : ''}
+                  <span className="font-bold">DELIVERY CHARGE:</span>{' '}
+                  {Number(printLabelOrder.deliveryCharge || 0) > 0 ? `₹${printLabelOrder.deliveryCharge}` : 'Free Delivery'}
                 </p>
+                <p>
+                  <span className="font-bold">TOTAL AMOUNT:</span> ₹{printLabelOrder.price || 2499}
+                </p>
+                {printLabelOrder.estimatedDeliveryDays && (
+                  <p><span className="font-bold">ESTIMATED DELIVERY:</span> {printLabelOrder.estimatedDeliveryDays}</p>
+                )}
                 {printLabelOrder.trackingId && (
                   <p>
                     <span className="font-bold">TRACKING ID:</span> {printLabelOrder.trackingId}{' '}
@@ -2495,6 +2823,109 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
                 className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-3 rounded-xl text-xs shadow"
               >
                 📋 Copy Address
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* QUICK PICKUP ADDRESS, GSTIN & DELIVERY DAYS MODAL */}
+      {showPickupQuickModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-xs flex items-center justify-center z-[270] p-4">
+          <div className="bg-white rounded-3xl p-6 shadow-2xl max-w-md w-full space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b pb-3">
+              <h3 className="font-extrabold text-base text-gray-900">📍 Pickup Address, GSTIN & Delivery Days</h3>
+              <button
+                type="button"
+                onClick={() => setShowPickupQuickModal(false)}
+                className="text-gray-400 hover:text-gray-700 font-bold text-xl"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block font-bold text-gray-700 mb-1">Store / Sender Name</label>
+                <input
+                  type="text"
+                  value={paymentSettings.pickupName || 'Amal Coolguard'}
+                  onChange={e => setPaymentSettings({ ...paymentSettings, pickupName: e.target.value })}
+                  className="w-full p-2.5 border border-gray-300 rounded-xl bg-gray-50 outline-none font-bold"
+                  placeholder="Amal Coolguard"
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-gray-700 mb-1">Pickup Mobile Number *</label>
+                <input
+                  type="tel"
+                  value={paymentSettings.pickupPhone || ''}
+                  onChange={e => setPaymentSettings({ ...paymentSettings, pickupPhone: e.target.value })}
+                  className="w-full p-2.5 border border-gray-300 rounded-xl bg-gray-50 outline-none font-bold"
+                  placeholder="e.g. 6238113451"
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-gray-700 mb-1">Complete Pickup Address *</label>
+                <textarea
+                  rows={3}
+                  value={paymentSettings.pickupAddress || ''}
+                  onChange={e => setPaymentSettings({ ...paymentSettings, pickupAddress: e.target.value })}
+                  className="w-full p-2.5 border border-gray-300 rounded-xl bg-gray-50 outline-none"
+                  placeholder="Shop/House Name, Street, Town, District, State"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-bold text-gray-700 mb-1">Pickup Pincode</label>
+                  <input
+                    type="text"
+                    value={paymentSettings.pickupPincode || ''}
+                    onChange={e => setPaymentSettings({ ...paymentSettings, pickupPincode: e.target.value })}
+                    className="w-full p-2.5 border border-gray-300 rounded-xl bg-gray-50 outline-none font-bold"
+                    placeholder="673001"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-gray-700 mb-1">Default Delivery Days</label>
+                  <input
+                    type="text"
+                    value={paymentSettings.defaultDeliveryDays || '3-5 Days'}
+                    onChange={e => setPaymentSettings({ ...paymentSettings, defaultDeliveryDays: e.target.value })}
+                    className="w-full p-2.5 border border-gray-300 rounded-xl bg-gray-50 outline-none font-bold"
+                    placeholder="3-5 Days"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block font-bold text-gray-700 mb-1">Store GST Number (GSTIN - Optional)</label>
+                <input
+                  type="text"
+                  value={paymentSettings.gstNumber || ''}
+                  onChange={e => setPaymentSettings({ ...paymentSettings, gstNumber: e.target.value.toUpperCase() })}
+                  className="w-full p-2.5 border border-gray-300 rounded-xl bg-gray-50 outline-none font-mono uppercase font-bold"
+                  placeholder="e.g. 32AAAAA0000A1Z5"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  await savePaymentSettings();
+                  setShowPickupQuickModal(false);
+                }}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-3 rounded-xl text-xs shadow"
+              >
+                💾 Save Pickup Address & GSTIN
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowPickupQuickModal(false)}
+                className="flex-1 bg-gray-200 text-gray-800 font-bold py-3 rounded-xl text-xs"
+              >
+                Cancel
               </button>
             </div>
           </div>

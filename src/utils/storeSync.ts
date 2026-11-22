@@ -32,6 +32,12 @@ export interface StorePaymentSettings {
   merchantUpiId: string;
   whatsappNumber?: string;
   storeBaseUrl?: string;
+  gstNumber?: string;
+  pickupName?: string;
+  pickupPhone?: string;
+  pickupAddress?: string;
+  pickupPincode?: string;
+  defaultDeliveryDays?: string;
   blockAccountOrders?: boolean;
   blockAccountWishlist?: boolean;
   blockAccountCoupons?: boolean;
@@ -45,11 +51,45 @@ export const DEFAULT_PAYMENT_SETTINGS: StorePaymentSettings = {
   merchantUpiId: 'amalcoolguard@upi',
   whatsappNumber: '6238113451',
   storeBaseUrl: 'https://amal-cool-guard.vercel.app',
+  gstNumber: '',
+  pickupName: 'Amal Coolguard',
+  pickupPhone: '6238113451',
+  pickupAddress: '',
+  pickupPincode: '',
+  defaultDeliveryDays: '3-5 Days',
   blockAccountOrders: false,
   blockAccountWishlist: false,
   blockAccountCoupons: false,
   blockAccountHelp: false,
 };
+
+export function calculateProductTotals(input: {
+  price?: number;
+  discountPrice?: number;
+  gstPercent?: number;
+  deliveryCharge?: number;
+}) {
+  const basePrice = Math.max(0, Number(input.discountPrice || input.price || 0));
+  const originalBase = Math.max(basePrice, Number(input.price || basePrice));
+  const gstPercent = Math.max(0, Number(input.gstPercent || 0));
+  const deliveryFee = Math.max(0, Number(input.deliveryCharge || 0));
+
+  const gstAmount = Math.round((basePrice * gstPercent) / 100);
+  const originalGstAmount = Math.round((originalBase * gstPercent) / 100);
+
+  const finalTotal = basePrice + gstAmount + deliveryFee;
+  const originalTotal = originalBase + originalGstAmount + deliveryFee;
+
+  return {
+    basePrice,
+    originalBase,
+    gstPercent,
+    gstAmount,
+    deliveryFee,
+    finalTotal,
+    originalTotal,
+  };
+}
 
 export const DEFAULT_STORE_BASE_URL = 'https://amal-cool-guard.vercel.app';
 

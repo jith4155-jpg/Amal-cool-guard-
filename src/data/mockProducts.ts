@@ -13,6 +13,7 @@ export interface Product {
   galleryImages?: string[];
   gstPercent?: number;
   deliveryCharge?: number;
+  estimatedDeliveryDays?: string;
 }
 
 export const MOCK_PRODUCTS: Product[] = [

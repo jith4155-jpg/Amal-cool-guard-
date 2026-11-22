@@ -168,6 +168,11 @@ export default function OrdersView() {
                     <p className="text-xs text-gray-500 truncate">Customer: {order.customerName}</p>
                     <p className="text-sm font-extrabold text-blue-700 mt-0.5">
                       ₹{order.price || 2499}
+                      {Number(order.gstPercent || 0) > 0 && (
+                        <span className="text-[10px] font-bold text-amber-700 ml-1">
+                          (+{order.gstPercent}% GST)
+                        </span>
+                      )}
                       {Number(order.deliveryCharge || 0) > 0 && (
                         <span className="text-[10px] font-bold text-gray-500 ml-1">
                           (Incl. ₹{order.deliveryCharge} Delivery)
@@ -187,6 +192,18 @@ export default function OrdersView() {
                     </button>
                   )}
                 </div>
+
+                {/* Estimated Delivery Time Banner (Set by Admin) */}
+                {order.estimatedDeliveryDays && (
+                  <div className="bg-emerald-50 border border-emerald-200 px-3.5 py-2.5 rounded-2xl mt-3 flex items-center justify-between gap-2">
+                    <span className="text-xs font-extrabold text-emerald-800 flex items-center gap-1.5">
+                      <span>⏱️</span> Estimated Delivery Time:
+                    </span>
+                    <span className="text-xs font-black text-emerald-900 bg-white px-2.5 py-0.5 rounded-lg border border-emerald-200">
+                      {order.estimatedDeliveryDays}
+                    </span>
+                  </div>
+                )}
 
                 {/* Live Tracking ID Card when added by Admin */}
                 {order.trackingId && (
@@ -245,6 +262,12 @@ export default function OrdersView() {
                   <p><span className="font-bold">Phone:</span> {order.phoneNumber}</p>
                   {order.address && <p><span className="font-bold">Address:</span> {order.address}, {order.pincode}</p>}
                   <p><span className="font-bold">Payment Mode:</span> {order.paymentMethod || 'Cash on Delivery'}</p>
+                  {Number(order.gstPercent || 0) > 0 && (
+                    <p>
+                      <span className="font-bold">GST ({order.gstPercent}%):</span> ₹{order.gstAmount || 0}
+                      {order.gstNumber ? ` • GSTIN: ${order.gstNumber}` : ''}
+                    </p>
+                  )}
                   <p>
                     <span className="font-bold">Delivery Charge:</span>{' '}
                     {Number(order.deliveryCharge || 0) > 0 ? `₹${order.deliveryCharge}` : 'Free Delivery'}
