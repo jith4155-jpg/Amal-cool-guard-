@@ -164,7 +164,7 @@
   color: #6ee7b7;
 }
 
-:root:not([data-theme='light']) :is(.text-purple-900, .text-purple-800, .text-purple-700) {
+:root:not([data-theme='light']) :is(.text-purple-950, .text-purple-900, .text-purple-800, .text-purple-700) {
   color: #d8b4fe;
 }
 

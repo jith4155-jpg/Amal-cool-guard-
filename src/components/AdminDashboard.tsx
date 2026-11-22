@@ -519,6 +519,13 @@ export default function AdminDashboard() {
         console.warn('Firestore update order status err:', err);
       }
     }
+    if (orderId) {
+      try {
+        await updateDoc(doc(db, 'promoter_sales', orderId), { status: newStatus });
+      } catch {
+        // ignore if order wasn't a referral order
+      }
+    }
     showToast(`✓ Order #${orderId} marked as ${newStatus.toUpperCase()}`);
   };
 
@@ -540,6 +547,13 @@ export default function AdminDashboard() {
             await deleteDoc(doc(db, 'bookings', String(firestoreDocId)));
           } catch (err) {
             console.warn('Firestore delete order err:', err);
+          }
+        }
+        if (order.orderId) {
+          try {
+            await deleteDoc(doc(db, 'promoter_sales', String(order.orderId)));
+          } catch {
+            // ignore
           }
         }
       },
@@ -2230,6 +2244,11 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                               <p className="text-xs text-gray-500 mt-0.5">
                                 {prom.channelName || 'Affiliate'} • 📱 +91 {prom.phone}
                               </p>
+                              {prom.email && (
+                                <p className="text-[11px] font-bold text-blue-700 mt-0.5">
+                                  ✉️ {prom.email}
+                                </p>
+                              )}
                               {prom.paymentType === 'bank' ? (
                                 <div className="mt-1 bg-blue-50 p-2 rounded-xl border border-blue-200 text-xs">
                                   <p className="font-bold text-blue-900">🏦 Bank Transfer Details:</p>

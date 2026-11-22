@@ -1,7 +1,12 @@
 import { useNavigate, Link } from 'react-router-dom';
 import { useState, useEffect, useCallback } from 'react';
 import { Product } from '../data/mockProducts';
-import { getCatalogProducts, safeJsonParse } from '../utils/storeSync';
+import {
+  getCatalogProducts,
+  getCleanStoreBaseUrl,
+  getPromoterShareLink,
+  safeJsonParse,
+} from '../utils/storeSync';
 import { ThemeSwitcher } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 
@@ -13,6 +18,8 @@ export default function AccountDashboard() {
     profile,
     myOrders,
     myOrdersCount,
+    myPromoter,
+    myPromoterSales,
     signingIn,
     signInWithGoogle,
     logout,
@@ -23,8 +30,11 @@ export default function AccountDashboard() {
   const [wishlistCount, setWishlistCount] = useState(0);
   const [savedProducts, setSavedProducts] = useState<Product[]>([]);
   const [loginError, setLoginError] = useState('');
+  const [copiedPromLink, setCopiedPromLink] = useState(false);
 
   const wishlistKey = user ? `amal_wishlist_${user.uid}` : '';
+  const cleanStoreBase = getCleanStoreBaseUrl();
+  const promoterPortalDisplayUrl = `${cleanStoreBase.replace(/^https?:\/\//, '')}/promoter`;
 
   const loadWishlistData = useCallback(() => {
     if (!wishlistKey) {
@@ -134,20 +144,20 @@ export default function AccountDashboard() {
           </button>
         </div>
 
-        {/* Generic Promoter / Store Portal Link */}
+        {/* Clean Promoter Page Link ONLY */}
         <div className="max-w-md mx-auto mt-4">
           <Link
             to="/promoter"
-            className="flex items-center justify-between p-4 bg-purple-50 rounded-2xl border border-purple-200 transition text-purple-950 hover:bg-purple-100"
+            className="flex items-center justify-between p-4 bg-purple-50 rounded-2xl border border-purple-200 transition hover:bg-purple-100"
           >
-            <div className="flex items-center gap-3">
-              <span className="text-xl">🤝</span>
-              <div>
-                <p className="font-extrabold text-xs text-purple-950">Promoter / Affiliate Portal</p>
-                <p className="text-[11px] text-purple-800">Earn ₹100 / Sale via your unique referral link</p>
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="text-xl shrink-0">🤝</span>
+              <div className="min-w-0">
+                <p className="font-extrabold text-xs text-purple-900">Promoter Link</p>
+                <p className="text-[11px] font-mono text-purple-700 truncate">{promoterPortalDisplayUrl}</p>
               </div>
             </div>
-            <span className="text-purple-700 font-bold">›</span>
+            <span className="text-purple-700 font-bold shrink-0">›</span>
           </Link>
         </div>
       </div>
@@ -158,6 +168,11 @@ export default function AccountDashboard() {
   const pendingCount = myOrders.filter(
     o => !o.status || o.status === 'pending' || o.status === 'pending_verification'
   ).length;
+
+  const myPromoterShareUrl = myPromoter ? getPromoterShareLink(myPromoter.id, cleanStoreBase) : '';
+  const promConfirmedSales = myPromoterSales.filter(o => o.status === 'confirmed').length;
+  const promRate = myPromoter?.commissionPerSale || 100;
+  const promEarned = promConfirmedSales * promRate;
 
   const allShortcuts = [
     {
@@ -243,6 +258,65 @@ export default function AccountDashboard() {
         </div>
       </div>
 
+      {/* PROMOTER SECTION INSIDE PROFILE:
+          ONLY shown if THIS logged-in Gmail has registered as a Promoter! */}
+      {myPromoter && (
+        <div className="mx-4 mb-4 bg-white p-4 rounded-2xl shadow-sm border border-purple-200 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <span className="text-[10px] font-extrabold text-purple-700 uppercase tracking-wider block">
+                🤝 My Promoter Link & Live Sales
+              </span>
+              <h3 className="font-black text-sm text-gray-900">
+                ID: {myPromoter.id} • {myPromoter.name}
+              </h3>
+            </div>
+            <span className="bg-purple-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full shrink-0">
+              ₹{promRate} / Sale
+            </span>
+          </div>
+
+          <div className="bg-gray-50 p-2.5 rounded-xl border border-gray-200 flex items-center justify-between gap-2">
+            <span className="text-[11px] font-mono font-bold text-blue-700 truncate">
+              {myPromoterShareUrl}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard.writeText(myPromoterShareUrl);
+                setCopiedPromLink(true);
+                setTimeout(() => setCopiedPromLink(false), 2000);
+              }}
+              className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-extrabold px-2.5 py-1.5 rounded-lg shrink-0"
+            >
+              {copiedPromLink ? '✓ Copied' : '📋 Copy'}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="bg-purple-50 p-2 rounded-xl border border-purple-100">
+              <p className="text-[10px] font-bold text-purple-700 uppercase">Products Bought</p>
+              <p className="text-sm font-black text-purple-900">{myPromoterSales.length}</p>
+            </div>
+            <div className="bg-emerald-50 p-2 rounded-xl border border-emerald-100">
+              <p className="text-[10px] font-bold text-emerald-700 uppercase">Approved</p>
+              <p className="text-sm font-black text-emerald-900">{promConfirmedSales}</p>
+            </div>
+            <div className="bg-amber-50 p-2 rounded-xl border border-amber-100">
+              <p className="text-[10px] font-bold text-amber-700 uppercase">Earned</p>
+              <p className="text-sm font-black text-amber-900">₹{promEarned}</p>
+            </div>
+          </div>
+
+          <Link
+            to="/promoter"
+            className="block w-full text-center bg-purple-600 hover:bg-purple-700 text-white font-extrabold py-2.5 rounded-xl text-xs shadow transition"
+          >
+            📊 Open My Promoter Dashboard →
+          </Link>
+        </div>
+      )}
+
       {activeShortcuts.length > 0 ? (
         <div className="grid grid-cols-2 gap-3 px-4 mb-6">
           {activeShortcuts.map(item => (
@@ -310,24 +384,26 @@ export default function AccountDashboard() {
             </div>
           )}
 
-          {/* Promoter & Influencer Portal Entry */}
+          {/* Clean Promoter Link ONLY (Routes straight to /promoter) */}
           <Link
             to="/promoter"
-            className="flex items-center justify-between p-3 bg-purple-50 rounded-xl cursor-pointer border border-purple-200 transition text-purple-950 hover:bg-purple-100"
+            className="flex items-center justify-between p-3 bg-purple-50 rounded-xl cursor-pointer border border-purple-200 transition hover:bg-purple-100"
           >
-            <div className="flex items-center gap-3">
-              <span className="text-xl">🤝</span>
-              <div>
-                <p className="font-extrabold text-purple-950 flex items-center gap-1.5">
-                  <span>Promoter / Affiliate Portal</span>
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="text-xl shrink-0">🤝</span>
+              <div className="min-w-0">
+                <p className="font-extrabold text-purple-900 flex items-center gap-1.5 flex-wrap">
+                  <span>{myPromoter ? 'My Promoter Dashboard' : 'Promoter Link'}</span>
                   <span className="bg-purple-600 text-white text-[9.5px] font-black px-2 py-0.5 rounded-full">
-                    Earn ₹100 / Sale
+                    {myPromoter ? `ID: ${myPromoter.id}` : 'Join & Earn ₹100'}
                   </span>
                 </p>
-                <p className="text-[11px] text-purple-800">YouTubers & Influencers: Get unique link & track commission</p>
+                <p className="text-[11px] font-mono text-purple-700 truncate">
+                  {promoterPortalDisplayUrl}
+                </p>
               </div>
             </div>
-            <span className="text-purple-700 font-bold">›</span>
+            <span className="text-purple-700 font-bold shrink-0">›</span>
           </Link>
         </div>
       </div>

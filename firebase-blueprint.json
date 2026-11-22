@@ -27,6 +27,8 @@
         "paymentScreenshot": { "type": "string", "maxLength": 950000 },
         "referralCode": { "type": "string", "maxLength": 64 },
         "promoterId": { "type": "string", "maxLength": 64 },
+        "promoterUserId": { "type": "string", "maxLength": 128 },
+        "promoterEmail": { "type": "string", "maxLength": 200 },
         "promoterCommission": { "type": "number" },
         "trackingId": { "type": "string", "maxLength": 120 },
         "trackingUrl": { "type": "string", "maxLength": 500 },
@@ -80,10 +82,12 @@
     },
     "promoter": {
       "title": "Promoter",
-      "description": "Affiliate / Promoter profile for commission tracking.",
+      "description": "Affiliate / Promoter profile tied to a verified Gmail account.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 64 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 200 },
         "name": { "type": "string", "maxLength": 120 },
         "phone": { "type": "string", "maxLength": 30 },
         "channelName": { "type": "string", "maxLength": 120 },
@@ -97,7 +101,30 @@
         "paidAmount": { "type": "number" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "name", "phone"]
+      "required": ["id", "userId", "email", "name", "phone"]
+    },
+    "promoterSale": {
+      "title": "PromoterSale",
+      "description": "PII-free referral order summary so promoters see their own referred product counts and earnings securely.",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string", "maxLength": 64 },
+        "bookingDocId": { "type": "string", "maxLength": 128 },
+        "buyerUserId": { "type": "string", "maxLength": 128 },
+        "promoterId": { "type": "string", "maxLength": 64 },
+        "promoterUserId": { "type": "string", "maxLength": 128 },
+        "promoterEmail": { "type": "string", "maxLength": 200 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "productName": { "type": "string", "maxLength": 200 },
+        "price": { "type": "number" },
+        "commission": { "type": "number" },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "pending_verification", "confirmed", "rejected", "cancelled", "completed"]
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderId", "buyerUserId", "promoterId", "productId", "status", "createdAt"]
     },
     "setting": {
       "title": "StoreSetting",
@@ -136,7 +163,11 @@
     },
     "/promoters/{promoterId}": {
       "schema": "promoter",
-      "description": "Promoter & affiliate profiles."
+      "description": "Promoter & affiliate profiles bound to verified Gmail accounts."
+    },
+    "/promoter_sales/{saleId}": {
+      "schema": "promoterSale",
+      "description": "PII-free referral sales summary readable only by the owning promoter or admin."
     },
     "/settings/{settingId}": {
       "schema": "setting",

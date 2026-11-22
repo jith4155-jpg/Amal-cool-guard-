@@ -334,14 +334,28 @@ export default function ProductDetails() {
     // Only attribute promoter if user arrived via a referral link
     const activeRefCode = getActiveReferralCode();
     let commissionAmt = 100;
+    let promoterUserId = '';
+    let promoterEmail = '';
     if (activeRefCode) {
       try {
         const promotersList = safeJsonParse<Record<string, any>>(localStorage.getItem('amal_promoters_list'), {});
-        const foundProm = promotersList[activeRefCode.toUpperCase()];
-        if (foundProm && typeof foundProm.commissionPerSale === 'number') {
-          commissionAmt = foundProm.commissionPerSale;
+        let foundProm = promotersList[activeRefCode.toUpperCase()];
+        if (!foundProm) {
+          const promSnap = await getDoc(doc(db, 'promoters', activeRefCode.toUpperCase()));
+          if (promSnap.exists()) {
+            foundProm = promSnap.data();
+          }
         }
-      } catch {}
+        if (foundProm) {
+          if (typeof foundProm.commissionPerSale === 'number') {
+            commissionAmt = foundProm.commissionPerSale;
+          }
+          promoterUserId = foundProm.userId || '';
+          promoterEmail = foundProm.email || '';
+        }
+      } catch {
+        // fallback cleanly
+      }
     }
 
     let createdDocId: string | null = null;
@@ -368,6 +382,8 @@ export default function ProductDetails() {
         paymentMethod: formData.paymentMethod,
         referralCode: activeRefCode,
         promoterId: activeRefCode,
+        promoterUserId: activeRefCode ? promoterUserId : '',
+        promoterEmail: activeRefCode ? promoterEmail : '',
         promoterCommission: activeRefCode ? commissionAmt : 0,
         status: 'pending_verification',
         paymentScreenshot: screenshotPreview || null,
@@ -376,6 +392,28 @@ export default function ProductDetails() {
       createdDocId = docRef.id;
     } catch (error) {
       console.warn('Saved locally due to offline/permission:', error);
+    }
+
+    // Write PII-free referral sale summary so the owning Promoter sees live cross-device order stats
+    if (activeRefCode) {
+      try {
+        await setDoc(doc(db, 'promoter_sales', orderId), {
+          orderId,
+          bookingDocId: createdDocId || '',
+          buyerUserId: currentUser.uid,
+          promoterId: activeRefCode.toUpperCase(),
+          promoterUserId,
+          promoterEmail,
+          productId: product.id,
+          productName: product.name,
+          price: amount,
+          commission: commissionAmt,
+          status: 'pending_verification',
+          createdAt: serverTimestamp(),
+        });
+      } catch (err) {
+        console.warn('Promoter sale summary sync err:', err);
+      }
     }
 
     const newOrderRecord = {
@@ -403,6 +441,8 @@ export default function ProductDetails() {
       paymentMethod: formData.paymentMethod,
       referralCode: activeRefCode,
       promoterId: activeRefCode,
+      promoterUserId: activeRefCode ? promoterUserId : '',
+      promoterEmail: activeRefCode ? promoterEmail : '',
       promoterCommission: activeRefCode ? commissionAmt : 0,
       status: 'pending_verification',
       screenshot: screenshotPreview || null,

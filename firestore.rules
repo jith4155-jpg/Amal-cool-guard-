@@ -85,7 +85,8 @@ service cloud.firestore {
           'phoneNumber', 'address', 'pincode', 'productId', 'productName', 'productPrice',
           'gstPercent', 'gstAmount', 'gstNumber', 'deliveryCharge', 'estimatedDeliveryDays',
           'price', 'paymentMethod', 'paymentScreenshot', 'referralCode', 'promoterId',
-          'promoterCommission', 'trackingId', 'trackingUrl', 'courierName', 'status', 'createdAt'
+          'promoterUserId', 'promoterEmail', 'promoterCommission', 'trackingId',
+          'trackingUrl', 'courierName', 'status', 'createdAt'
         ]) &&
         data.orderId is string && data.orderId.size() >= 1 && data.orderId.size() <= 64 &&
         data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
@@ -110,6 +111,8 @@ service cloud.firestore {
         isOptString(data, 'paymentScreenshot', 950000) &&
         isOptString(data, 'referralCode', 64) &&
         isOptString(data, 'promoterId', 64) &&
+        isOptString(data, 'promoterUserId', 128) &&
+        isOptString(data, 'promoterEmail', 200) &&
         isOptNumber(data, 'promoterCommission') &&
         isOptString(data, 'trackingId', 120) &&
         isOptString(data, 'trackingUrl', 500) &&
@@ -119,13 +122,15 @@ service cloud.firestore {
     function isValidPromoter(data) {
       return data.keys().hasAll(['id', 'name', 'phone']) &&
         data.keys().hasOnly([
-          'id', 'name', 'phone', 'channelName', 'paymentType', 'upiId', 'bankName',
-          'accountNumber', 'ifscCode', 'accountHolderName', 'password', 'createdAt',
-          'commissionPerSale', 'paidAmount', 'userId'
+          'id', 'name', 'phone', 'email', 'userId', 'channelName', 'paymentType',
+          'upiId', 'bankName', 'accountNumber', 'ifscCode', 'accountHolderName',
+          'password', 'createdAt', 'commissionPerSale', 'paidAmount'
         ]) &&
         data.id is string && data.id.size() >= 1 && data.id.size() <= 64 &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
         data.phone is string && data.phone.size() >= 1 && data.phone.size() <= 30 &&
+        isOptString(data, 'email', 200) &&
+        isOptString(data, 'userId', 128) &&
         isOptString(data, 'channelName', 120) &&
         isOptString(data, 'paymentType', 20) &&
         isOptString(data, 'upiId', 120) &&
@@ -134,9 +139,29 @@ service cloud.firestore {
         isOptString(data, 'ifscCode', 32) &&
         isOptString(data, 'accountHolderName', 120) &&
         isOptString(data, 'password', 120) &&
+        isOptString(data, 'createdAt', 100) &&
         isOptNumber(data, 'commissionPerSale') &&
-        isOptNumber(data, 'paidAmount') &&
-        isOptString(data, 'userId', 128);
+        isOptNumber(data, 'paidAmount');
+    }
+
+    function isValidPromoterSale(data) {
+      return data.keys().hasAll(['orderId', 'buyerUserId', 'promoterId', 'productId', 'status']) &&
+        data.keys().hasOnly([
+          'orderId', 'bookingDocId', 'buyerUserId', 'promoterId', 'promoterUserId',
+          'promoterEmail', 'productId', 'productName', 'price', 'commission',
+          'status', 'createdAt'
+        ]) &&
+        data.orderId is string && data.orderId.size() >= 1 && data.orderId.size() <= 64 &&
+        data.buyerUserId is string && data.buyerUserId.size() >= 1 && data.buyerUserId.size() <= 128 &&
+        data.promoterId is string && data.promoterId.size() >= 1 && data.promoterId.size() <= 64 &&
+        data.productId is string && data.productId.size() >= 1 && data.productId.size() <= 128 &&
+        data.status in ['pending', 'pending_verification', 'confirmed', 'rejected', 'cancelled', 'completed'] &&
+        isOptString(data, 'bookingDocId', 128) &&
+        isOptString(data, 'promoterUserId', 128) &&
+        isOptString(data, 'promoterEmail', 200) &&
+        isOptString(data, 'productName', 200) &&
+        isOptNumber(data, 'price') &&
+        isOptNumber(data, 'commission');
     }
 
     // 4. Collection Rules
@@ -202,9 +227,48 @@ service cloud.firestore {
 
     match /promoters/{promoterId} {
       allow get: if isValidId(promoterId);
-      allow list: if isAdmin();
-      allow create, update: if isValidId(promoterId) && isValidPromoter(incoming()) && (isAdmin() || isVerifiedUser());
+      allow list: if isAdmin() || (isVerifiedUser() && (resource.data.userId == request.auth.uid || resource.data.email == request.auth.token.email));
+      allow create: if isValidId(promoterId) && isVerifiedUser() && isValidPromoter(incoming()) && (
+        isAdmin() ||
+        (incoming().userId == request.auth.uid && incoming().email == request.auth.token.email)
+      );
+      allow update: if isValidId(promoterId) && isVerifiedUser() && isValidPromoter(incoming()) && (
+        isAdmin() ||
+        (existing().userId == request.auth.uid && incoming().userId == existing().userId)
+      );
       allow delete: if isValidId(promoterId) && isAdmin();
+    }
+
+    match /promoter_sales/{saleId} {
+      allow get: if isValidId(saleId) && (
+        isAdmin() ||
+        (isVerifiedUser() && (
+          existing().promoterUserId == request.auth.uid ||
+          existing().promoterEmail == request.auth.token.email ||
+          existing().buyerUserId == request.auth.uid
+        ))
+      );
+      allow list: if isAdmin() || (
+        isVerifiedUser() && (
+          resource.data.promoterUserId == request.auth.uid ||
+          resource.data.promoterEmail == request.auth.token.email
+        )
+      );
+      allow create: if isValidId(saleId) && isVerifiedUser() &&
+        isValidPromoterSale(incoming()) &&
+        incoming().buyerUserId == request.auth.uid &&
+        incoming().status in ['pending', 'pending_verification'];
+      allow update: if isValidId(saleId) && isValidPromoterSale(incoming()) && (
+        isAdmin() ||
+        (
+          isVerifiedUser() &&
+          existing().buyerUserId == request.auth.uid &&
+          incoming().buyerUserId == existing().buyerUserId &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
+          incoming().status == 'cancelled'
+        )
+      );
+      allow delete: if isValidId(saleId) && (isAdmin() || (isVerifiedUser() && existing().buyerUserId == request.auth.uid));
     }
   }
 }
