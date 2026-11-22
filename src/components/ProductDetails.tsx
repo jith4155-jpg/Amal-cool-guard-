@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { db } from '../firebase';
 import { doc, getDoc, collection, addDoc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Product } from '../data/mockProducts';
+import { ThemeSwitcher } from '../context/ThemeContext';
 import {
   getCatalogProducts,
   isProductDeleted,
@@ -12,6 +13,9 @@ import {
   getLocalOrders,
   saveAllOrders,
   restoreDeletedCustomerMobile,
+  getPaymentSettings,
+  savePaymentSettingsSync,
+  StorePaymentSettings,
   safeJsonParse,
 } from '../utils/storeSync';
 
@@ -28,6 +32,7 @@ export default function ProductDetails() {
 
   // Synchronous initial product state lookup from Admin-synced catalog
   const [product, setProduct] = useState<Product | null>(() => findProductFromCatalog(id));
+  const [paymentSettings, setPaymentSettings] = useState<StorePaymentSettings>(() => getPaymentSettings());
   const [loading, setLoading] = useState(false);
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
   const [showOrderModal, setShowOrderModal] = useState(false);
@@ -46,9 +51,17 @@ export default function ProductDetails() {
   const [newRating, setNewRating] = useState(5);
   const [reviewerComment, setReviewerComment] = useState('');
 
+  const resolveDefaultPaymentMethod = (settings: StorePaymentSettings): string => {
+    if (settings.enableUPI !== false) return 'UPI';
+    if (settings.enableCOD !== false) return 'COD';
+    if (settings.enableCard !== false) return 'Card';
+    return '';
+  };
+
   // Customer order form state with auto-fill from logged in session
   const [formData, setFormData] = useState(() => {
     try {
+      const initSettings = getPaymentSettings();
       const session = safeJsonParse<any>(localStorage.getItem('amal_customer_session'), null);
       const savedAddress = localStorage.getItem('amal_saved_address') || '';
       const savedPincode = localStorage.getItem('amal_saved_pincode') || '';
@@ -57,9 +70,9 @@ export default function ProductDetails() {
         phoneNumber: session?.mobile || '',
         address: session?.address || savedAddress || '',
         pincode: session?.pincode || savedPincode || '',
-        paymentMethod: 'UPI',
-        merchantUpiId: 'amalcoolguard@upi',
-        whatsappNumber: '6238113451'
+        paymentMethod: resolveDefaultPaymentMethod(initSettings),
+        merchantUpiId: initSettings.merchantUpiId || 'amalcoolguard@upi',
+        whatsappNumber: initSettings.whatsappNumber || '6238113451',
       };
     } catch {
       return {
@@ -69,7 +82,7 @@ export default function ProductDetails() {
         pincode: '',
         paymentMethod: 'UPI',
         merchantUpiId: 'amalcoolguard@upi',
-        whatsappNumber: '6238113451'
+        whatsappNumber: '6238113451',
       };
     }
   });
@@ -77,27 +90,51 @@ export default function ProductDetails() {
   useEffect(() => {
     let isMounted = true;
 
-    // Preserve/capture promoter query if landing directly on /product/:id?promoter=CODE
     syncReferralFromUrl(false);
 
-    // Load admin payment settings
-    const savedSettings = safeJsonParse<any>(localStorage.getItem('amal_payment_settings'), null);
-    if (savedSettings) {
-      setFormData(prev => ({
-        ...prev,
-        paymentMethod: savedSettings.enableUPI ? 'UPI' : savedSettings.enableCOD ? 'COD' : 'Card',
-        merchantUpiId: savedSettings.merchantUpiId || prev.merchantUpiId,
-        whatsappNumber: savedSettings.whatsappNumber || prev.whatsappNumber || '6238113451'
-      }));
-    }
+    const applySettings = (nextSettings: StorePaymentSettings) => {
+      setPaymentSettings(nextSettings);
+      setFormData(prev => {
+        const isCurrentAllowed =
+          (prev.paymentMethod === 'UPI' && nextSettings.enableUPI !== false) ||
+          (prev.paymentMethod === 'COD' && nextSettings.enableCOD !== false) ||
+          (prev.paymentMethod === 'Card' && nextSettings.enableCard !== false);
+
+        return {
+          ...prev,
+          paymentMethod: isCurrentAllowed ? prev.paymentMethod : resolveDefaultPaymentMethod(nextSettings),
+          merchantUpiId: nextSettings.merchantUpiId || prev.merchantUpiId,
+          whatsappNumber: nextSettings.whatsappNumber || prev.whatsappNumber || '6238113451',
+        };
+      });
+    };
+
+    applySettings(getPaymentSettings());
 
     const handleSync = () => {
       if (isMounted) {
         setProduct(findProductFromCatalog(id));
+        applySettings(getPaymentSettings());
       }
     };
     window.addEventListener('amal_store_updated', handleSync);
     window.addEventListener('storage', handleSync);
+
+    const fetchRemoteSettings = async () => {
+      try {
+        const snap = await Promise.race([
+          getDoc(doc(db, 'settings', 'payment')),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1200)),
+        ]);
+        if (snap.exists() && isMounted) {
+          const remoteSettings = snap.data() as StorePaymentSettings;
+          const synced = savePaymentSettingsSync(remoteSettings);
+          applySettings(synced);
+        }
+      } catch {
+        // Fallback silently to local settings
+      }
+    };
 
     const fetchProduct = async () => {
       if (id && isProductDeleted(id)) {
@@ -105,7 +142,6 @@ export default function ProductDetails() {
         return;
       }
 
-      // First check local catalog so Admin edits show even if Firestore didn't save due to auth
       const localMatch = findProductFromCatalog(id);
       const isCatalogDirty = localStorage.getItem('amal_catalog_dirty') === 'true';
       if (localMatch && isCatalogDirty) {
@@ -130,15 +166,19 @@ export default function ProductDetails() {
               discountPrice: Number(data.discountPrice || data.price) || 1999,
               description: data.description || 'Premium heat protection cooling vest for bike riders.',
               imageUrl: data.imageUrl || 'https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=600',
-              galleryImages: Array.isArray(data.galleryImages) && data.galleryImages.length > 0
-                ? data.galleryImages
-                : (data.imageUrl ? [data.imageUrl] : []),
+              galleryImages:
+                Array.isArray(data.galleryImages) && data.galleryImages.length > 0
+                  ? data.galleryImages
+                  : data.imageUrl
+                  ? [data.imageUrl]
+                  : [],
               category: data.category || 'Coats',
               rating: Number(data.rating) || 4.8,
               reviewsCount: Number(data.reviewsCount) || 120,
-              features: Array.isArray(data.features) ? data.features : ['Heat Reflective', 'UV Protection', 'Water Resistant'],
+              features: Array.isArray(data.features) ? data.features : ['Heat Reflective', 'UV Protection', 'Lightweight & Breathable'],
               stock: typeof data.stock === 'number' ? data.stock : undefined,
               gstPercent: typeof data.gstPercent === 'number' ? data.gstPercent : 0,
+              deliveryCharge: typeof data.deliveryCharge === 'number' ? data.deliveryCharge : 0,
             });
             return;
           }
@@ -152,9 +192,9 @@ export default function ProductDetails() {
       }
     };
 
+    fetchRemoteSettings();
     fetchProduct();
 
-    // Load local reviews for this product
     const localRev = safeJsonParse<any[]>(localStorage.getItem(`amal_reviews_${id}`), []);
     if (localRev.length > 0) {
       setReviewsList(prev => [...localRev, ...prev]);
@@ -251,7 +291,9 @@ export default function ProductDetails() {
     localStorage.setItem('amal_order_sequence_counter', String(nextCounter));
     setDoc(doc(db, 'settings', 'order_counter'), { nextVal: nextCounter }).catch(err => console.warn('Counter sync err:', err));
 
-    const amount = product.discountPrice || product.price;
+    const itemBasePrice = Number(product.discountPrice || product.price || 0);
+    const deliveryFee = Number(product.deliveryCharge || 0);
+    const amount = itemBasePrice + deliveryFee;
 
     // Only attribute promoter if user arrived via a promoter referral link (?promoter=CODE)
     const activeRefCode = getActiveReferralCode();
@@ -272,6 +314,8 @@ export default function ProductDetails() {
         orderId,
         productId: product.id,
         productName: product.name,
+        productPrice: itemBasePrice,
+        deliveryCharge: deliveryFee,
         price: amount,
         customerName: formData.customerName,
         phoneNumber: formData.phoneNumber,
@@ -297,6 +341,8 @@ export default function ProductDetails() {
       productName: product.name,
       imageUrl: product.imageUrl,
       gstPercent: product.gstPercent || 0,
+      productPrice: itemBasePrice,
+      deliveryCharge: deliveryFee,
       price: amount,
       customerName: formData.customerName,
       phoneNumber: formData.phoneNumber,
@@ -335,7 +381,7 @@ export default function ProductDetails() {
     setSubmittedOrderId(orderId);
     setSubmittedDocId(createdDocId);
 
-    if (formData.paymentMethod === 'UPI') {
+    if (formData.paymentMethod === 'UPI' && paymentSettings.enableUPI !== false) {
       setTimeout(() => {
         triggerUpiPayment(orderId, amount);
       }, 400);
@@ -368,6 +414,16 @@ export default function ProductDetails() {
       : [product.imageUrl];
   const safeImgIndex = selectedImageIndex < imagesList.length ? selectedImageIndex : 0;
 
+  const itemBasePrice = Number(product.discountPrice || product.price || 0);
+  const deliveryFee = Number(product.deliveryCharge || 0);
+  const finalTotalPayable = itemBasePrice + deliveryFee;
+
+  const allowedPaymentMethods = [
+    ...(paymentSettings.enableUPI !== false ? [{ id: 'UPI', label: '⚡ UPI / GPay' }] : []),
+    ...(paymentSettings.enableCOD !== false ? [{ id: 'COD', label: '💵 Cash on Delivery' }] : []),
+    ...(paymentSettings.enableCard !== false ? [{ id: 'Card', label: '💳 Card / NetBank' }] : []),
+  ];
+
   const discountPercent = product.price && product.discountPrice
     ? Math.round(((product.price - product.discountPrice) / product.price) * 100)
     : 0;
@@ -375,12 +431,15 @@ export default function ProductDetails() {
   return (
     <div className="min-h-screen bg-gray-100 pb-28">
       {/* Header */}
-      <div className="bg-white px-4 py-3 shadow-sm flex items-center justify-between sticky top-0 z-40">
-        <button onClick={() => navigate(-1)} className="text-gray-700 font-bold text-lg flex items-center gap-1">
+      <div className="bg-white px-4 py-3 shadow-sm flex items-center justify-between gap-2 sticky top-0 z-40">
+        <button onClick={() => navigate(-1)} className="text-gray-700 font-bold text-lg flex items-center gap-1 shrink-0">
           ← Back
         </button>
-        <h1 className="font-bold text-gray-800 text-base truncate max-w-[200px]">{product.name}</h1>
-        <Link to="/" className="text-xl">🏠</Link>
+        <h1 className="font-bold text-gray-800 text-base truncate flex-1 text-center">{product.name}</h1>
+        <div className="flex items-center gap-2 shrink-0">
+          <ThemeSwitcher compact />
+          <Link to="/" className="text-xl">🏠</Link>
+        </div>
       </div>
 
       {/* Main Image Gallery */}
@@ -427,14 +486,25 @@ export default function ProductDetails() {
 
         <h2 className="text-xl font-bold text-gray-900 leading-tight mb-3">{product.name}</h2>
 
-        <div className="flex items-baseline gap-3 mb-4">
-          <span className="text-3xl font-extrabold text-gray-900">₹{product.discountPrice}</span>
-          {product.price && product.price > product.discountPrice && (
-            <span className="text-base text-gray-400 line-through">₹{product.price}</span>
+        <div className="bg-gray-50 p-3.5 rounded-2xl border border-gray-100 mb-4 space-y-1.5">
+          <div className="flex items-baseline gap-3">
+            <span className="text-3xl font-extrabold text-gray-900">₹{finalTotalPayable}</span>
+            {product.price && product.price > itemBasePrice && (
+              <span className="text-base text-gray-400 line-through">₹{product.price + deliveryFee}</span>
+            )}
+            <span className="text-xs font-bold text-green-600 bg-green-50 px-2 py-1 rounded">
+              Inclusive of all taxes
+            </span>
+          </div>
+          {deliveryFee > 0 ? (
+            <p className="text-xs font-bold text-blue-700">
+              📦 Product ₹{itemBasePrice} + Delivery Charge ₹{deliveryFee} = Total ₹{finalTotalPayable}
+            </p>
+          ) : (
+            <p className="text-xs font-extrabold text-emerald-700">
+              🚚 Free Delivery Included
+            </p>
           )}
-          <span className="text-xs font-bold text-green-600 bg-green-50 px-2 py-1 rounded">
-            Inclusive of all taxes
-          </span>
         </div>
 
         <p className="text-sm text-gray-600 leading-relaxed mb-6 bg-gray-50 p-4 rounded-xl border border-gray-100">
@@ -445,7 +515,7 @@ export default function ProductDetails() {
         <div className="mb-6">
           <h3 className="font-bold text-sm text-gray-800 mb-3 uppercase tracking-wider">Product Highlights</h3>
           <div className="grid grid-cols-2 gap-2">
-            {(product.features || ['Heat Reflective Fabric', 'UV Sun Shield', 'Water Resistant', 'Lightweight Design']).map((feature, idx) => (
+            {(product.features || ['Heat Reflective Fabric', 'UV Sun Shield', 'Lightweight & Breathable', 'All-Day Comfort']).map((feature, idx) => (
               <div key={idx} className="flex items-center gap-2 bg-blue-50/60 p-3 rounded-xl border border-blue-100/60 text-xs font-medium text-blue-900">
                 <span className="text-blue-600">✓</span>
                 <span>{feature}</span>
@@ -547,7 +617,7 @@ export default function ProductDetails() {
           className="flex-1 bg-gradient-to-r from-orange-500 to-amber-600 text-white font-extrabold text-base py-3.5 px-4 rounded-xl shadow-lg hover:brightness-110 active:scale-98 transition flex items-center justify-center gap-2"
         >
           <span>🛒</span>
-          <span>ORDER NOW - ₹{product.discountPrice}</span>
+          <span>ORDER NOW - ₹{finalTotalPayable}</span>
         </button>
       </div>
 
@@ -567,7 +637,7 @@ export default function ProductDetails() {
                 
                 <h3 className="text-2xl font-extrabold text-gray-900">Order Submitted (Pending)</h3>
                 <p className="text-xs text-gray-600">
-                  Your order <span className="font-bold">#{submittedOrderId}</span> is recorded in <span className="font-bold text-amber-700">PENDING status</span>. Please upload your payment screenshot below. Admin will verify and confirm your order.
+                  Your order <span className="font-bold">#{submittedOrderId}</span> is recorded in <span className="font-bold text-amber-700">PENDING status</span>. Upload your payment screenshot below (if applicable) for quick Admin verification.
                 </p>
 
                 {/* Upload Payment Screenshot Box */}
@@ -575,6 +645,10 @@ export default function ProductDetails() {
                   <p className="text-xs font-bold text-amber-900 flex items-center gap-1">
                     <span>📷</span> Upload Payment Screenshot (യുപിഐ പേയ്‌മെന്റ് സ്ക്രീൻഷോട്ട്):
                   </p>
+
+                  {uploadingScreenshot && (
+                    <p className="text-xs font-bold text-blue-700">⏳ Compressing & saving screenshot...</p>
+                  )}
                   
                   {screenshotPreview ? (
                     <div className="space-y-2">
@@ -594,15 +668,15 @@ export default function ProductDetails() {
                         className="block w-full text-xs text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-amber-600 file:text-white hover:file:bg-amber-700 cursor-pointer"
                       />
                       <p className="text-[10px] text-amber-800 mt-2">
-                        Take a screenshot of your GPay/PhonePe/Paytm payment and upload here to speed up approval.
+                        Take a screenshot of your payment and upload here to speed up approval.
                       </p>
                     </div>
                   )}
 
-                  {formData.paymentMethod === 'UPI' && (
+                  {formData.paymentMethod === 'UPI' && paymentSettings.enableUPI !== false && (
                     <button
                       type="button"
-                      onClick={() => triggerUpiPayment(submittedOrderId, product.discountPrice || product.price)}
+                      onClick={() => triggerUpiPayment(submittedOrderId, finalTotalPayable)}
                       className="w-full bg-blue-600 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1 shadow-sm mt-2"
                     >
                       <span>📱</span> Re-open UPI App (GPay / PhonePe / Paytm)
@@ -612,7 +686,7 @@ export default function ProductDetails() {
                   {/* Direct WhatsApp Support Contact Button */}
                   <a
                     href={`https://wa.me/91${formData.whatsappNumber || '6238113451'}?text=${encodeURIComponent(
-                      `Hello Amal Coolguard Customer Care,\nI have submitted my order & uploaded payment screenshot!\n\nOrder ID: #${submittedOrderId}\nProduct: ${product.name}\nAmount: ₹${product.discountPrice}\nCustomer: ${formData.customerName}\nPhone: ${formData.phoneNumber}\nAddress: ${formData.address}`
+                      `Hello Amal Coolguard Customer Care,\nI have submitted my order!\n\nOrder ID: #${submittedOrderId}\nProduct: ${product.name}\nTotal Amount: ₹${finalTotalPayable}\nCustomer: ${formData.customerName}\nPhone: ${formData.phoneNumber}\nAddress: ${formData.address}`
                     )}`}
                     target="_blank"
                     rel="noreferrer"
@@ -626,7 +700,9 @@ export default function ProductDetails() {
                 {/* Order Summary Box */}
                 <div className="bg-gray-100 p-4 rounded-2xl text-xs text-gray-800 space-y-1.5 text-left border">
                   <p><span className="font-bold">Order ID:</span> {submittedOrderId}</p>
-                  <p><span className="font-bold">Total Amount:</span> ₹{product.discountPrice}</p>
+                  <p><span className="font-bold">Product Price:</span> ₹{itemBasePrice}</p>
+                  <p><span className="font-bold">Delivery Charge:</span> {deliveryFee > 0 ? `₹${deliveryFee}` : 'Free'}</p>
+                  <p><span className="font-bold">Total Amount:</span> ₹{finalTotalPayable}</p>
                   <p><span className="font-bold">Customer:</span> {formData.customerName}</p>
                   <p><span className="font-bold">Phone:</span> {formData.phoneNumber}</p>
                   <p><span className="font-bold">Delivery Address:</span> {formData.address}, {formData.pincode}</p>
@@ -675,7 +751,10 @@ export default function ProductDetails() {
                   <img src={product.imageUrl} alt={product.name} className="w-12 h-12 rounded-lg object-cover" />
                   <div className="flex-1 min-w-0">
                     <p className="font-bold text-xs text-gray-900 truncate">{product.name}</p>
-                    <p className="text-sm font-extrabold text-blue-700">₹{product.discountPrice}</p>
+                    <p className="text-sm font-extrabold text-blue-700">Total: ₹{finalTotalPayable}</p>
+                    <p className="text-[10px] text-gray-600">
+                      {deliveryFee > 0 ? `Item ₹${itemBasePrice} + Delivery ₹${deliveryFee}` : `Item ₹${itemBasePrice} • Free Delivery`}
+                    </p>
                   </div>
                 </div>
 
@@ -729,44 +808,48 @@ export default function ProductDetails() {
 
                 <div>
                   <label className="block text-xs font-bold text-gray-700 mb-1">Payment Method</label>
-                  <div className="grid grid-cols-3 gap-2 mb-2">
-                    {[
-                      { id: 'UPI', label: '⚡ UPI / GPay' },
-                      { id: 'COD', label: '💵 Cash on Delivery' },
-                      { id: 'Card', label: '💳 Card / NetBank' }
-                    ].map(method => (
-                      <button
-                        type="button"
-                        key={method.id}
-                        onClick={() => setFormData({ ...formData, paymentMethod: method.id })}
-                        className={`p-2 rounded-xl text-xs font-bold border text-center transition ${
-                          formData.paymentMethod === method.id 
-                            ? 'border-blue-600 bg-blue-50 text-blue-700 ring-2 ring-blue-200' 
-                            : 'border-gray-200 text-gray-600 hover:bg-gray-50'
-                        }`}
-                      >
-                        {method.label}
-                      </button>
-                    ))}
-                  </div>
+                  {allowedPaymentMethods.length === 0 ? (
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs font-bold text-red-700 text-center">
+                      All online & COD payment gateways are currently blocked by Admin. Please contact Customer Care on WhatsApp.
+                    </div>
+                  ) : (
+                    <div className={`grid gap-2 mb-2 ${
+                      allowedPaymentMethods.length === 1 ? 'grid-cols-1' :
+                      allowedPaymentMethods.length === 2 ? 'grid-cols-2' : 'grid-cols-3'
+                    }`}>
+                      {allowedPaymentMethods.map(method => (
+                        <button
+                          type="button"
+                          key={method.id}
+                          onClick={() => setFormData({ ...formData, paymentMethod: method.id })}
+                          className={`p-2 rounded-xl text-xs font-bold border text-center transition ${
+                            formData.paymentMethod === method.id 
+                              ? 'border-blue-600 bg-blue-50 text-blue-700 ring-2 ring-blue-200' 
+                              : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                          }`}
+                        >
+                          {method.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
 
-                  {formData.paymentMethod === 'UPI' && (
+                  {formData.paymentMethod === 'UPI' && paymentSettings.enableUPI !== false && (
                     <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 p-3 rounded-xl text-xs space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="font-bold text-blue-900">📲 Mobile UPI Launcher</span>
                         <span className="text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-bold">GPay / PhonePe / Paytm</span>
                       </div>
                       <p className="text-[11px] text-gray-600">
-                        When you submit, your mobile UPI app will open. Upload the payment screenshot on the next screen for Admin approval.
+                        When you submit, your mobile UPI app will open for ₹{finalTotalPayable}. Upload the payment screenshot on the next screen for Admin approval.
                       </p>
                       <div>
                         <label className="block text-[10px] font-bold text-gray-700 mb-0.5">Store / Merchant UPI ID</label>
                         <input 
                           type="text" 
+                          readOnly
                           value={formData.merchantUpiId}
-                          onChange={e => setFormData({ ...formData, merchantUpiId: e.target.value })}
-                          className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none bg-white font-mono"
-                          placeholder="e.g. amalcoolguard@upi"
+                          className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none bg-white font-mono text-gray-700"
                         />
                       </div>
                     </div>
@@ -775,11 +858,11 @@ export default function ProductDetails() {
 
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || allowedPaymentMethods.length === 0}
                   className="w-full bg-gradient-to-r from-amber-600 to-orange-600 text-white font-extrabold py-3.5 rounded-xl shadow-lg hover:brightness-110 active:scale-98 transition mt-2 disabled:opacity-50 text-sm flex items-center justify-center gap-2"
                 >
                   <span>⏳</span>
-                  <span>{submitting ? 'Saving Order...' : `Submit Order (Pending Verification) • ₹${product.discountPrice}`}</span>
+                  <span>{submitting ? 'Saving Order...' : `Submit Order (Pending Verification) • ₹${finalTotalPayable}`}</span>
                 </button>
               </form>
             )}

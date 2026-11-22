@@ -13,6 +13,7 @@ import {
   getDoc,
 } from 'firebase/firestore';
 import { Product } from '../data/mockProducts';
+import { ThemeSwitcher } from '../context/ThemeContext';
 import {
   compressImageFile,
   getCatalogProducts,
@@ -30,23 +31,20 @@ import {
   getPromotersDict,
   deletePromoterLocally,
   getCleanStoreBaseUrl,
+  getPromoterShareLink,
   DEFAULT_STORE_BASE_URL,
   notifyStoreUpdated,
   safeJsonParse,
+  getCategories,
+  saveCategories,
+  addCategory,
+  deleteCategory,
+  getPaymentSettings,
+  savePaymentSettingsSync,
+  StorePaymentSettings,
 } from '../utils/storeSync';
 
-export interface PaymentSettings {
-  enableCOD: boolean;
-  enableUPI: boolean;
-  enableCard: boolean;
-  merchantUpiId: string;
-  whatsappNumber?: string;
-  storeBaseUrl?: string;
-  blockAccountOrders?: boolean;
-  blockAccountWishlist?: boolean;
-  blockAccountCoupons?: boolean;
-  blockAccountHelp?: boolean;
-}
+export type PaymentSettings = StorePaymentSettings;
 
 interface ConfirmDialogState {
   title: string;
@@ -72,10 +70,12 @@ export default function AdminDashboard() {
   // In-app Shipping Label Print Modal (avoids blocked window.open popups)
   const [printLabelOrder, setPrintLabelOrder] = useState<any | null>(null);
 
-  // Unified catalog state
+  // Unified catalog, orders, promoters & dynamic categories state
   const [products, setProducts] = useState<Product[]>(() => getCatalogProducts());
   const [orders, setOrders] = useState<any[]>(() => getLocalOrders());
   const [promotersMap, setPromotersMap] = useState<Record<string, any>>(() => getPromotersDict());
+  const [categories, setCategories] = useState<string[]>(() => getCategories());
+  const [newCategoryInput, setNewCategoryInput] = useState('');
   const [customerRefreshTick, setCustomerRefreshTick] = useState(0);
 
   const [loadingOrders, setLoadingOrders] = useState(false);
@@ -83,31 +83,14 @@ export default function AdminDashboard() {
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [savingProduct, setSavingProduct] = useState(false);
 
-  // Custom commission inputs map
+  // Custom commission inputs & Order Tracking ID drafts
   const [customCommissionInputs, setCustomCommissionInputs] = useState<Record<string, string>>({});
+  const [trackingDrafts, setTrackingDrafts] = useState<
+    Record<string, { trackingId: string; trackingUrl: string; courierName: string }>
+  >({});
 
   // Payment settings state with instant local fallback
-  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(() => {
-    const local = safeJsonParse<PaymentSettings | null>(localStorage.getItem('amal_payment_settings'), null);
-    if (local) {
-      return {
-        storeBaseUrl: DEFAULT_STORE_BASE_URL,
-        ...local,
-      };
-    }
-    return {
-      enableCOD: true,
-      enableUPI: true,
-      enableCard: true,
-      merchantUpiId: 'amalcoolguard@upi',
-      whatsappNumber: '6238113451',
-      storeBaseUrl: DEFAULT_STORE_BASE_URL,
-      blockAccountOrders: false,
-      blockAccountWishlist: false,
-      blockAccountCoupons: false,
-      blockAccountHelp: false,
-    };
-  });
+  const [paymentSettings, setPaymentSettings] = useState<StorePaymentSettings>(() => getPaymentSettings());
   const [settingsSavedMsg, setSettingsSavedMsg] = useState(false);
 
   // Product Creation state
@@ -115,13 +98,14 @@ export default function AdminDashboard() {
     name: '',
     price: 2499,
     discountPrice: 1999,
+    deliveryCharge: 0,
     description: '',
     imageUrl: '',
     galleryImages: [] as string[],
     stock: 25,
-    category: 'Coats',
+    category: getCategories()[0] || 'Coats',
     gstPercent: 0,
-    features: ['Heat Reflective Fabric', 'UV Sun Protection', 'Water Resistant'],
+    features: ['Heat Reflective Fabric', 'UV Sun Protection', 'Lightweight & Breathable'],
   });
   const [newGalleryInput, setNewGalleryInput] = useState('');
 
@@ -134,7 +118,57 @@ export default function AdminDashboard() {
     fetchOrders();
     fetchPaymentSettings();
     fetchPromoters();
+    fetchCategories();
   }, []);
+
+  const fetchCategories = async () => {
+    try {
+      const docRef = doc(db, 'settings', 'categories');
+      const fetchPromise = getDoc(docRef);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Timeout')), 1200)
+      );
+      const docSnap = await Promise.race([fetchPromise, timeoutPromise]);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (Array.isArray(data?.list) && data.list.length > 0) {
+          const synced = saveCategories(data.list);
+          setCategories(synced);
+        }
+      }
+    } catch {
+      // Local categories already initialized
+    }
+  };
+
+  const handleAddCustomCategory = async () => {
+    const trimmed = newCategoryInput.trim();
+    if (!trimmed) return;
+    const next = addCategory(trimmed);
+    setCategories(next);
+    setNewProduct(prev => ({ ...prev, category: trimmed }));
+    setNewCategoryInput('');
+    showToast(`✓ Category "${trimmed}" added to Admin & Storefront!`);
+    try {
+      await setDoc(doc(db, 'settings', 'categories'), { list: next }, { merge: true });
+    } catch (err) {
+      console.warn('Firestore categories sync err:', err);
+    }
+  };
+
+  const handleDeleteCustomCategory = async (catName: string) => {
+    const next = deleteCategory(catName);
+    setCategories(next);
+    if (newProduct.category === catName) {
+      setNewProduct(prev => ({ ...prev, category: next[0] || 'Coats' }));
+    }
+    showToast(`✓ Category "${catName}" removed.`);
+    try {
+      await setDoc(doc(db, 'settings', 'categories'), { list: next }, { merge: true });
+    } catch (err) {
+      console.warn('Firestore categories sync err:', err);
+    }
+  };
 
   const fetchPaymentSettings = async () => {
     try {
@@ -145,26 +179,45 @@ export default function AdminDashboard() {
       );
       const docSnap = await Promise.race([fetchPromise, timeoutPromise]);
       if (docSnap.exists()) {
-        const data = docSnap.data() as PaymentSettings;
-        const merged = { storeBaseUrl: DEFAULT_STORE_BASE_URL, ...data };
+        const data = docSnap.data() as Partial<StorePaymentSettings>;
+        const merged = savePaymentSettingsSync({
+          ...getPaymentSettings(),
+          ...data,
+        });
         setPaymentSettings(merged);
-        localStorage.setItem('amal_payment_settings', JSON.stringify(merged));
       }
     } catch {
       // Local settings already initialized synchronously
     }
   };
 
-  const savePaymentSettings = async () => {
-    const cleanSettings = {
+  const togglePaymentGateway = async (
+    key: 'enableCOD' | 'enableUPI' | 'enableCard',
+    label: string
+  ) => {
+    const updated = savePaymentSettingsSync({
       ...paymentSettings,
-      storeBaseUrl: (paymentSettings.storeBaseUrl || DEFAULT_STORE_BASE_URL).trim().replace(/\/+$/, ''),
-    };
-    setPaymentSettings(cleanSettings);
-    localStorage.setItem('amal_payment_settings', JSON.stringify(cleanSettings));
-    notifyStoreUpdated();
+      [key]: !paymentSettings[key],
+    });
+    setPaymentSettings(updated);
+    const isNowEnabled = updated[key];
+    showToast(
+      isNowEnabled
+        ? `✓ ${label} is now ACTIVE on Storefront!`
+        : `🚫 ${label} is now BLOCKED on Storefront!`
+    );
     try {
-      await setDoc(doc(db, 'settings', 'payment'), cleanSettings);
+      await setDoc(doc(db, 'settings', 'payment'), updated, { merge: true });
+    } catch (err) {
+      console.warn('Firestore payment toggle err:', err);
+    }
+  };
+
+  const savePaymentSettings = async () => {
+    const cleanSettings = savePaymentSettingsSync(paymentSettings);
+    setPaymentSettings(cleanSettings);
+    try {
+      await setDoc(doc(db, 'settings', 'payment'), cleanSettings, { merge: true });
     } catch (err) {
       console.warn('Firestore set settings err:', err);
     }
@@ -311,16 +364,23 @@ export default function AdminDashboard() {
       name: newProduct.name.trim(),
       price: Number(newProduct.price),
       discountPrice: Number(newProduct.discountPrice || newProduct.price),
+      deliveryCharge: Math.max(0, Number(newProduct.deliveryCharge || 0)),
       description: newProduct.description.trim() || 'Premium heat protection cooling coat by Amal Coolguard.',
       imageUrl: finalMainImage,
       galleryImages: finalGallery,
       stock: Number(newProduct.stock || 20),
-      category: newProduct.category || 'Coats',
+      category: newProduct.category || categories[0] || 'Coats',
       gstPercent: Number(newProduct.gstPercent || 0),
       rating: 4.9,
       reviewsCount: 1,
       features: newProduct.features,
     };
+
+    if (prodData.category && !categories.some(c => c.toLowerCase() === prodData.category!.toLowerCase())) {
+      const nextCats = addCategory(prodData.category);
+      setCategories(nextCats);
+      setDoc(doc(db, 'settings', 'categories'), { list: nextCats }, { merge: true }).catch(() => {});
+    }
 
     const localId = 'prod_' + Date.now();
     const localProd: Product = { id: localId, ...prodData };
@@ -345,13 +405,14 @@ export default function AdminDashboard() {
       name: '',
       price: 2499,
       discountPrice: 1999,
+      deliveryCharge: 0,
       description: '',
       imageUrl: '',
       galleryImages: [],
       stock: 25,
-      category: 'Coats',
+      category: categories[0] || 'Coats',
       gstPercent: 0,
-      features: ['Heat Reflective Fabric', 'UV Sun Protection', 'Water Resistant'],
+      features: ['Heat Reflective Fabric', 'UV Sun Protection', 'Lightweight & Breathable'],
     });
     setNewGalleryInput('');
     setSavingProduct(false);
@@ -376,6 +437,7 @@ export default function AdminDashboard() {
       name: editingProduct.name.trim(),
       price: Number(editingProduct.price),
       discountPrice: Number(editingProduct.discountPrice || editingProduct.price),
+      deliveryCharge: Math.max(0, Number(editingProduct.deliveryCharge || 0)),
       stock: Number(editingProduct.stock || 0),
       gstPercent: Number(editingProduct.gstPercent || 0),
       imageUrl: resolvedMainImage,
@@ -394,6 +456,7 @@ export default function AdminDashboard() {
           name: updated.name,
           price: updated.price,
           discountPrice: updated.discountPrice,
+          deliveryCharge: updated.deliveryCharge || 0,
           description: updated.description,
           imageUrl: updated.imageUrl,
           galleryImages: updated.galleryImages,
@@ -473,6 +536,54 @@ export default function AdminDashboard() {
     });
   };
 
+  const handleSaveOrderTracking = async (order: any) => {
+    const orderKey = String(order.orderId || order.id);
+    const draft = trackingDrafts[orderKey] || {
+      trackingId: order.trackingId || '',
+      trackingUrl: order.trackingUrl || '',
+      courierName: order.courierName || '',
+    };
+    const cleanTrackingId = (draft.trackingId || '').trim();
+    const cleanTrackingUrl = (draft.trackingUrl || '').trim();
+    const cleanCourierName = (draft.courierName || '').trim();
+
+    if (!cleanTrackingId) {
+      showToast('Please enter a Tracking ID before saving.', 'error');
+      return;
+    }
+
+    const nextOrders = orders.map(o =>
+      (o.orderId === order.orderId || o.id === order.id)
+        ? {
+            ...o,
+            trackingId: cleanTrackingId,
+            trackingUrl: cleanTrackingUrl || undefined,
+            courierName: cleanCourierName || undefined,
+          }
+        : o
+    );
+    setOrders(nextOrders);
+    saveAllOrders(nextOrders);
+
+    const targetDocId = String(order.docId || order.id || order.orderId || '');
+    if (targetDocId) {
+      try {
+        await setDoc(
+          doc(db, 'bookings', targetDocId),
+          {
+            trackingId: cleanTrackingId,
+            trackingUrl: cleanTrackingUrl || '',
+            courierName: cleanCourierName || '',
+          },
+          { merge: true }
+        );
+      } catch (err) {
+        console.warn('Firestore save tracking err:', err);
+      }
+    }
+    showToast(`✓ Tracking ID "${cleanTrackingId}" sent to Customer's Orders page!`);
+  };
+
   const handleCopyAddressForWhatsApp = (order: any) => {
     const text = `📦 AMAL COOLGUARD COURIER ADDRESS
 Order ID: #${order.orderId || order.id}
@@ -483,7 +594,9 @@ ADDRESS: ${order.address || 'N/A'}
 PINCODE: ${order.pincode || 'N/A'}
 
 ITEM: ${order.productName || 'Amal Coolguard Vest'}
-AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
+AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${
+      order.trackingId ? `\nTRACKING ID: ${order.trackingId}` : ''
+    }`;
 
     navigator.clipboard.writeText(text);
     showToast('✓ Customer address & booking details copied for WhatsApp!');
@@ -587,13 +700,15 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
             Full Control Panel: Products, Multi-Images, Orders, Customers, Promoters & Store Settings
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <ThemeSwitcher />
           <button
             onClick={() => {
               fetchProducts();
               fetchOrders();
               fetchPaymentSettings();
               fetchPromoters();
+              fetchCategories();
               showToast('✓ Storefront data synced!');
             }}
             className="bg-slate-800 hover:bg-slate-700 text-xs font-bold px-3 py-2 rounded-xl text-slate-200 border border-slate-700"
@@ -758,6 +873,13 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                         <p className="font-extrabold text-blue-700 text-sm">
                           ₹{order.price} ({order.paymentMethod || 'UPI'})
                         </p>
+                        {Number(order.deliveryCharge || 0) > 0 ? (
+                          <p className="text-[10px] text-gray-500 font-semibold">
+                            Item ₹{order.productPrice || (Number(order.price) - Number(order.deliveryCharge))} + Delivery ₹{order.deliveryCharge}
+                          </p>
+                        ) : (
+                          <p className="text-[10px] text-emerald-700 font-semibold">Free Delivery</p>
+                        )}
                       </div>
                       {order.referralCode && (
                         <div className="bg-purple-50 border border-purple-200 p-2.5 rounded-xl col-span-2 flex items-center justify-between">
@@ -771,6 +893,85 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                         </div>
                       )}
                     </div>
+
+                    {/* Order Tracking ID Assignment Box (Sends directly to Customer's Orders Page) */}
+                    {(() => {
+                      const orderKey = String(order.orderId || order.id);
+                      const draft = trackingDrafts[orderKey] || {
+                        trackingId: order.trackingId || '',
+                        trackingUrl: order.trackingUrl || '',
+                        courierName: order.courierName || '',
+                      };
+                      const updateDraft = (patch: Partial<typeof draft>) => {
+                        setTrackingDrafts(prev => ({
+                          ...prev,
+                          [orderKey]: { ...draft, ...patch },
+                        }));
+                      };
+                      const browserTrackUrl =
+                        (order.trackingUrl || '').trim() ||
+                        (order.trackingId
+                          ? `https://www.google.com/search?q=${encodeURIComponent(order.trackingId + ' tracking')}`
+                          : '');
+
+                      return (
+                        <div className="bg-blue-50/80 border border-blue-200 p-3.5 rounded-2xl space-y-2.5 mb-3">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <span className="text-xs font-extrabold text-blue-950 flex items-center gap-1.5">
+                              <span>🚚</span> Order Tracking ID (കസ്റ്റമർ ട്രാക്കിംഗ് ഐഡി):
+                            </span>
+                            {order.trackingId ? (
+                              <a
+                                href={browserTrackUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[10px] bg-blue-600 text-white font-bold px-2.5 py-1 rounded-lg hover:bg-blue-700"
+                              >
+                                🌐 Saved: {order.trackingId} ↗
+                              </a>
+                            ) : (
+                              <span className="text-[10px] text-blue-700 font-semibold">
+                                Saved ID auto-appears in customer&apos;s Orders page
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                            <input
+                              type="text"
+                              placeholder="Enter Tracking ID (e.g. DTDC884512)"
+                              value={draft.trackingId}
+                              onChange={e => updateDraft({ trackingId: e.target.value })}
+                              className="w-full p-2.5 border border-blue-300 rounded-xl bg-white outline-none font-mono font-bold text-gray-900"
+                            />
+                            <input
+                              type="text"
+                              placeholder="Courier Name (Optional e.g. DTDC / Speed Post)"
+                              value={draft.courierName}
+                              onChange={e => updateDraft({ courierName: e.target.value })}
+                              className="w-full p-2.5 border border-blue-200 rounded-xl bg-white outline-none font-semibold text-gray-800"
+                            />
+                          </div>
+
+                          <div className="flex flex-col sm:flex-row gap-2 text-xs">
+                            <input
+                              type="url"
+                              placeholder="Custom Tracking URL (Optional - blank opens Google search on customer phone)"
+                              value={draft.trackingUrl}
+                              onChange={e => updateDraft({ trackingUrl: e.target.value })}
+                              className="flex-1 p-2.5 border border-blue-200 rounded-xl bg-white outline-none text-[11px] text-gray-700"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleSaveOrderTracking(order)}
+                              className="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow shrink-0 transition"
+                            >
+                              💾 Save Tracking ID
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* Payment Screenshot Section */}
                     {order.screenshot || order.paymentScreenshot ? (
@@ -982,16 +1183,75 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
         </div>
       )}
 
-      {/* TAB 3: PRODUCTS & MULTI-IMAGES */}
+      {/* TAB 3: PRODUCTS & CATEGORIES */}
       {activeTab === 'products' && (
         <div className="space-y-6">
+          {/* Dynamic Categories Manager */}
+          <div className="bg-white p-5 rounded-3xl shadow-sm border border-gray-200 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-extrabold text-gray-900 flex items-center gap-2">
+                  <span>🗂️</span> Store Categories Manager (പുതിയ കാറ്റഗറികൾ ആഡ് ചെയ്യുക - Electronics, Electrical, Coats...)
+                </h2>
+                <p className="text-xs text-gray-500">
+                  Add unlimited custom categories here. They appear on the top bar of the website & inside Search.
+                </p>
+              </div>
+              <span className="text-[11px] bg-blue-50 text-blue-700 font-bold px-3 py-1 rounded-full self-start sm:self-auto">
+                {categories.length} Active Categories
+              </span>
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Type category name e.g. Electronics, Electrical, Accessories..."
+                value={newCategoryInput}
+                onChange={e => setNewCategoryInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddCustomCategory();
+                  }
+                }}
+                className="flex-1 p-3 text-xs border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50 font-semibold"
+              />
+              <button
+                type="button"
+                onClick={handleAddCustomCategory}
+                className="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs px-5 py-3 rounded-xl shadow shrink-0 transition"
+              >
+                + Add Category
+              </button>
+            </div>
+
+            <div className="flex flex-wrap gap-2 pt-1">
+              {categories.map(cat => (
+                <div
+                  key={cat}
+                  className="inline-flex items-center gap-1.5 bg-slate-100 border border-slate-200 text-slate-800 text-xs font-bold px-3 py-1.5 rounded-full"
+                >
+                  <span>{cat}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteCustomCategory(cat)}
+                    className="text-red-500 hover:text-red-700 font-black text-xs ml-0.5"
+                    title={`Remove ${cat}`}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
           {/* Add Product Form */}
           <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-200">
             <h2 className="text-base font-extrabold text-gray-900 mb-1 flex items-center gap-2">
               <span>➕</span> Add New Amal Coolguard Product (പ്രോഡക്റ്റ് ആഡ് ചെയ്യുക)
             </h2>
             <p className="text-xs text-gray-500 mb-4">
-              Upload one or multiple product photos (automatically compressed for fast saving), set title, offer price, and highlights.
+              Upload one or multiple product photos (automatically compressed for fast saving), choose category, offer price, and optional delivery charge.
             </p>
 
             {uploadingPhoto && (
@@ -1021,10 +1281,11 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                     onChange={e => setNewProduct({ ...newProduct, category: e.target.value })}
                     className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50 font-bold"
                   >
-                    <option value="Coats">Cooling Overcoats (Coats)</option>
-                    <option value="Vests">USB Blower Vests (Vests)</option>
-                    <option value="Rainwear">Rain Protection Ponchos (Rainwear)</option>
-                    <option value="Jackets">Sun Shield Jackets (Jackets)</option>
+                    {categories.map(cat => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -1052,17 +1313,57 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                   />
                 </div>
 
-                {/* Live Price Display Preview */}
-                <div className="col-span-1 md:col-span-2 bg-amber-50 p-3 rounded-2xl border border-amber-200 flex items-center justify-between">
+                {/* Delivery Charge Field (Optional - 0 for Free Delivery) */}
+                <div className="col-span-1 md:col-span-2 bg-emerald-50/70 p-3.5 rounded-2xl border border-emerald-200 space-y-2">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <label className="font-bold text-emerald-950">
+                      🚚 Delivery Charge ₹ (ഡെലിവറി ചാർജ് - ഒന്നും കൊടുത്തില്ലെങ്കിൽ Free Delivery):
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setNewProduct(prev => ({ ...prev, deliveryCharge: 0 }))}
+                      className={`text-[11px] font-extrabold px-2.5 py-1 rounded-lg border ${
+                        (newProduct.deliveryCharge || 0) === 0
+                          ? 'bg-emerald-600 text-white border-emerald-700'
+                          : 'bg-white text-emerald-700 border-emerald-300'
+                      }`}
+                    >
+                      Free Delivery (₹0)
+                    </button>
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="0 (Leave 0 for Free Delivery, or enter e.g. 60)"
+                    value={newProduct.deliveryCharge || ''}
+                    onChange={e => setNewProduct({ ...newProduct, deliveryCharge: Math.max(0, Number(e.target.value || 0)) })}
+                    className="w-full p-3 border border-emerald-300 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-white font-extrabold text-emerald-900"
+                  />
+                  <p className="text-[11px] text-emerald-800">
+                    If you enter a delivery charge, it is automatically added/mixed into the final customer price on the website!
+                  </p>
+                </div>
+
+                {/* Live Price + Delivery Combined Preview */}
+                <div className="col-span-1 md:col-span-2 bg-amber-50 p-3.5 rounded-2xl border border-amber-200 flex items-center justify-between gap-2 flex-wrap">
                   <div>
                     <span className="text-[11px] font-bold text-amber-900 block">
-                      Price Display Preview on Website (വെബ്‌സൈറ്റിൽ കാണുന്ന ഓഫർ വില):
+                      Combined Customer Price Preview (പ്രൊഫൈലിൽ കസ്റ്റമർ കാണുന്ന ആകെ വില):
                     </span>
-                    <div className="flex items-baseline gap-2 mt-1">
-                      <span className="text-lg font-black text-gray-900">₹{newProduct.discountPrice || newProduct.price}</span>
+                    <div className="flex items-baseline gap-2 mt-1 flex-wrap">
+                      <span className="text-lg font-black text-gray-900">
+                        ₹{(newProduct.discountPrice || newProduct.price || 0) + (newProduct.deliveryCharge || 0)}
+                      </span>
                       {newProduct.price > (newProduct.discountPrice || 0) && (
-                        <span className="text-sm text-gray-400 line-through font-bold">₹{newProduct.price}</span>
+                        <span className="text-sm text-gray-400 line-through font-bold">
+                          ₹{newProduct.price + (newProduct.deliveryCharge || 0)}
+                        </span>
                       )}
+                      <span className="text-[11px] font-bold text-emerald-700">
+                        {(newProduct.deliveryCharge || 0) > 0
+                          ? `(Item ₹${newProduct.discountPrice || newProduct.price} + Delivery ₹${newProduct.deliveryCharge})`
+                          : '(Free Delivery)'}
+                      </span>
                     </div>
                   </div>
                   {newProduct.price > (newProduct.discountPrice || 0) && (
@@ -1250,11 +1551,20 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                         </span>
                       </div>
                       <h3 className="font-bold text-sm text-gray-900 leading-snug">{p.name}</h3>
-                      <div className="flex items-baseline gap-2 mt-1">
-                        <span className="font-extrabold text-blue-700 text-base">₹{p.discountPrice || p.price}</span>
+                      <div className="flex items-baseline gap-2 mt-1 flex-wrap">
+                        <span className="font-extrabold text-blue-700 text-base">
+                          ₹{(p.discountPrice || p.price) + (p.deliveryCharge || 0)}
+                        </span>
                         {p.price && p.price > (p.discountPrice || 0) && (
-                          <span className="text-xs text-gray-400 line-through">₹{p.price}</span>
+                          <span className="text-xs text-gray-400 line-through">
+                            ₹{p.price + (p.deliveryCharge || 0)}
+                          </span>
                         )}
+                        <span className="text-[10px] font-bold text-emerald-700">
+                          {p.deliveryCharge && p.deliveryCharge > 0
+                            ? `(incl. ₹${p.deliveryCharge} delivery)`
+                            : '• Free Delivery'}
+                        </span>
                       </div>
                       <p className="text-[11px] text-gray-500 line-clamp-2 mt-1">{p.description}</p>
 
@@ -1327,22 +1637,31 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                 placeholder="https://amal-cool-guard.vercel.app"
               />
               <p className="text-[11px] text-indigo-800">
-                All promoter referral links will use this clean domain (e.g.{' '}
-                <span className="font-mono font-bold">{cleanShareDomain}/?promoter=L01N</span>).
+                All shareable links will use this clean domain (e.g.{' '}
+                <span className="font-mono font-bold">{cleanShareDomain}/?L01N</span>).
               </p>
             </div>
 
             {/* COD Toggle */}
             <div className="flex items-center justify-between bg-gray-50 p-4 rounded-2xl border border-gray-200">
               <div>
-                <p className="font-extrabold text-sm text-gray-900">💵 Cash on Delivery (COD)</p>
-                <p className="text-xs text-gray-500">Allow customers to order with cash payment on delivery.</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-extrabold text-sm text-gray-900">💵 Cash on Delivery (COD)</p>
+                  <span
+                    className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                      paymentSettings.enableCOD ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-700'
+                    }`}
+                  >
+                    {paymentSettings.enableCOD ? 'ACTIVE ✓' : 'BLOCKED 🚫'}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500">Toggle off to immediately block & hide Cash on Delivery from website checkout.</p>
               </div>
               <button
                 type="button"
-                onClick={() => setPaymentSettings(prev => ({ ...prev, enableCOD: !prev.enableCOD }))}
-                className={`w-14 h-8 rounded-full p-1 transition duration-200 ease-in-out ${
-                  paymentSettings.enableCOD ? 'bg-green-600' : 'bg-gray-300'
+                onClick={() => togglePaymentGateway('enableCOD', 'Cash on Delivery (COD)')}
+                className={`w-14 h-8 rounded-full p-1 transition duration-200 ease-in-out shrink-0 ${
+                  paymentSettings.enableCOD ? 'bg-green-600' : 'bg-red-500'
                 }`}
               >
                 <div
@@ -1356,19 +1675,58 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
             {/* UPI Toggle */}
             <div className="flex items-center justify-between bg-gray-50 p-4 rounded-2xl border border-gray-200">
               <div>
-                <p className="font-extrabold text-sm text-gray-900">⚡ Mobile UPI Deep-Linking (GPay/PhonePe)</p>
-                <p className="text-xs text-gray-500">Allow customers to launch UPI apps directly from phone.</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-extrabold text-sm text-gray-900">⚡ UPI Payment (GPay / PhonePe / Paytm)</p>
+                  <span
+                    className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                      paymentSettings.enableUPI ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-700'
+                    }`}
+                  >
+                    {paymentSettings.enableUPI ? 'ACTIVE ✓' : 'BLOCKED 🚫'}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500">Toggle off to immediately block & hide UPI payments from website checkout.</p>
               </div>
               <button
                 type="button"
-                onClick={() => setPaymentSettings(prev => ({ ...prev, enableUPI: !prev.enableUPI }))}
-                className={`w-14 h-8 rounded-full p-1 transition duration-200 ease-in-out ${
-                  paymentSettings.enableUPI ? 'bg-green-600' : 'bg-gray-300'
+                onClick={() => togglePaymentGateway('enableUPI', 'UPI Payment')}
+                className={`w-14 h-8 rounded-full p-1 transition duration-200 ease-in-out shrink-0 ${
+                  paymentSettings.enableUPI ? 'bg-green-600' : 'bg-red-500'
                 }`}
               >
                 <div
                   className={`w-6 h-6 bg-white rounded-full shadow-md transform transition duration-200 ease-in-out ${
                     paymentSettings.enableUPI ? 'translate-x-6' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Card / NetBanking Toggle */}
+            <div className="flex items-center justify-between bg-gray-50 p-4 rounded-2xl border border-gray-200">
+              <div>
+                <div className="flex items-center gap-2">
+                  <p className="font-extrabold text-sm text-gray-900">💳 Credit / Debit Card & NetBanking</p>
+                  <span
+                    className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                      paymentSettings.enableCard ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-700'
+                    }`}
+                  >
+                    {paymentSettings.enableCard ? 'ACTIVE ✓' : 'BLOCKED 🚫'}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500">Toggle off to immediately block & hide Card payments from website checkout.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => togglePaymentGateway('enableCard', 'Credit / Debit Card')}
+                className={`w-14 h-8 rounded-full p-1 transition duration-200 ease-in-out shrink-0 ${
+                  paymentSettings.enableCard ? 'bg-green-600' : 'bg-red-500'
+                }`}
+              >
+                <div
+                  className={`w-6 h-6 bg-white rounded-full shadow-md transform transition duration-200 ease-in-out ${
+                    paymentSettings.enableCard ? 'translate-x-6' : 'translate-x-0'
                   }`}
                 />
               </button>
@@ -1567,7 +1925,7 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                 ) : (
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     {promoterStatsList.map((prom, idx) => {
-                      const promLink = `${cleanShareDomain}/?promoter=${encodeURIComponent(prom.id)}`;
+                      const promLink = getPromoterShareLink(prom.id, cleanShareDomain);
                       return (
                         <div key={prom.id || idx} className="bg-white p-5 rounded-3xl shadow-sm border border-gray-200 space-y-3">
                           <div className="flex items-start justify-between border-b pb-3 gap-2">
@@ -1777,14 +2135,17 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                 <div>
                   <label className="block font-bold text-gray-700 mb-1">Category</label>
                   <select
-                    value={editingProduct.category || 'Coats'}
+                    value={editingProduct.category || categories[0] || 'Coats'}
                     onChange={e => setEditingProduct({ ...editingProduct, category: e.target.value })}
                     className="w-full p-2.5 border rounded-xl outline-none bg-gray-50 font-bold"
                   >
-                    <option value="Coats">Coats</option>
-                    <option value="Vests">Vests</option>
-                    <option value="Rainwear">Rainwear</option>
-                    <option value="Jackets">Jackets</option>
+                    {Array.from(
+                      new Set([...categories, editingProduct.category].filter(Boolean) as string[])
+                    ).map(cat => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -1821,6 +2182,33 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                 </div>
               </div>
 
+              {/* Edit Delivery Charge */}
+              <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-200 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="font-bold text-emerald-950">🚚 Delivery Charge ₹ (0 = Free Delivery)</label>
+                  <button
+                    type="button"
+                    onClick={() => setEditingProduct({ ...editingProduct, deliveryCharge: 0 })}
+                    className="text-[10px] font-bold bg-white border border-emerald-300 text-emerald-800 px-2 py-0.5 rounded-md"
+                  >
+                    Set Free (₹0)
+                  </button>
+                </div>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="0 for Free Delivery"
+                  value={editingProduct.deliveryCharge || ''}
+                  onChange={e =>
+                    setEditingProduct({
+                      ...editingProduct,
+                      deliveryCharge: Math.max(0, Number(e.target.value || 0)),
+                    })
+                  }
+                  className="w-full p-2.5 border border-emerald-300 rounded-xl outline-none bg-white font-extrabold text-emerald-900"
+                />
+              </div>
+
               <div>
                 <label className="block font-bold text-gray-700 mb-1">GST Tax Rate % (Optional)</label>
                 <select
@@ -1836,16 +2224,23 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                 </select>
               </div>
 
-              {/* Edit Live Preview */}
-              <div className="bg-amber-50 p-2.5 rounded-xl border border-amber-200 flex items-center justify-between">
-                <span className="text-[11px] font-bold text-amber-900">Storefront Price Preview:</span>
+              {/* Edit Live Combined Preview */}
+              <div className="bg-amber-50 p-2.5 rounded-xl border border-amber-200 flex items-center justify-between flex-wrap gap-2">
+                <span className="text-[11px] font-bold text-amber-900">Combined Customer Price Preview:</span>
                 <div className="flex items-baseline gap-2">
                   <span className="text-sm font-extrabold text-gray-900">
-                    ₹{editingProduct.discountPrice || editingProduct.price}
+                    ₹{(editingProduct.discountPrice || editingProduct.price) + (editingProduct.deliveryCharge || 0)}
                   </span>
                   {editingProduct.price > (editingProduct.discountPrice || 0) && (
-                    <span className="text-xs text-gray-400 line-through font-bold">₹{editingProduct.price}</span>
+                    <span className="text-xs text-gray-400 line-through font-bold">
+                      ₹{editingProduct.price + (editingProduct.deliveryCharge || 0)}
+                    </span>
                   )}
+                  <span className="text-[10px] font-bold text-emerald-700">
+                    {(editingProduct.deliveryCharge || 0) > 0
+                      ? `(incl. ₹${editingProduct.deliveryCharge} delivery)`
+                      : '(Free Delivery)'}
+                  </span>
                 </div>
               </div>
 
@@ -2041,7 +2436,7 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
               </button>
             </div>
 
-            <div className="border-2 border-slate-900 p-5 rounded-2xl space-y-4 text-xs text-gray-900 bg-white">
+            <div className="print-label-sheet border-2 border-slate-900 p-5 rounded-2xl space-y-4 text-xs text-gray-900 bg-white">
               <div className="text-center border-b-2 border-dashed border-gray-300 pb-3">
                 <h2 className="text-lg font-black uppercase tracking-wide">AMAL COOLGUARD VESTS</h2>
                 <p className="text-[11px] font-bold text-gray-600">
@@ -2066,8 +2461,17 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})`;
                 <p><span className="font-bold">ITEM:</span> {printLabelOrder.productName || 'Amal Coolguard Vest'}</p>
                 <p>
                   <span className="font-bold">TOTAL AMOUNT:</span> ₹{printLabelOrder.price || 2499}{' '}
+                  {Number(printLabelOrder.deliveryCharge || 0) > 0
+                    ? `(Includes ₹${printLabelOrder.deliveryCharge} Delivery)`
+                    : '(Free Delivery)'}{' '}
                   {printLabelOrder.gstPercent ? `(Includes GST ${printLabelOrder.gstPercent}%)` : ''}
                 </p>
+                {printLabelOrder.trackingId && (
+                  <p>
+                    <span className="font-bold">TRACKING ID:</span> {printLabelOrder.trackingId}{' '}
+                    {printLabelOrder.courierName ? `(${printLabelOrder.courierName})` : ''}
+                  </p>
+                )}
                 <p><span className="font-bold">PAYMENT MODE:</span> {printLabelOrder.paymentMethod || 'UPI'}</p>
                 <p><span className="font-bold">STATUS:</span> {(printLabelOrder.status || 'pending').toUpperCase()}</p>
               </div>

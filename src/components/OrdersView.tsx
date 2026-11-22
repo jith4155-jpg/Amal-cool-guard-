@@ -3,18 +3,24 @@ import { db } from '../firebase';
 import { collection, getDocs, query, orderBy, doc, updateDoc } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
 import { getLocalOrders, saveAllOrders, getDeletedOrderIds } from '../utils/storeSync';
+import { ThemeSwitcher } from '../context/ThemeContext';
 
 export default function OrdersView() {
   const [orders, setOrders] = useState<any[]>(() => getLocalOrders());
   const [loading, setLoading] = useState(false);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [confirmCancelModal, setConfirmCancelModal] = useState<any | null>(null);
+  const [copiedTrackingId, setCopiedTrackingId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchOrders();
     const onSync = () => setOrders(getLocalOrders());
     window.addEventListener('amal_store_updated', onSync);
-    return () => window.removeEventListener('amal_store_updated', onSync);
+    window.addEventListener('storage', onSync);
+    return () => {
+      window.removeEventListener('amal_store_updated', onSync);
+      window.removeEventListener('storage', onSync);
+    };
   }, []);
 
   const fetchOrders = async () => {
@@ -102,11 +108,14 @@ export default function OrdersView() {
   return (
     <div className="min-h-screen bg-gray-100 pb-20">
       {/* Header */}
-      <div className="bg-white p-4 shadow-sm sticky top-0 z-40 flex items-center justify-between">
+      <div className="bg-white p-4 shadow-sm sticky top-0 z-40 flex items-center justify-between gap-2">
         <h1 className="text-xl font-bold text-gray-900">My Orders</h1>
-        <span className="text-xs bg-blue-50 text-blue-700 px-3 py-1 rounded-full font-bold">
-          {orders.length} Orders
-        </span>
+        <div className="flex items-center gap-2">
+          <ThemeSwitcher compact />
+          <span className="text-xs bg-blue-50 text-blue-700 px-3 py-1 rounded-full font-bold">
+            {orders.length} Orders
+          </span>
+        </div>
       </div>
 
       <div className="p-4 space-y-4">
@@ -157,7 +166,14 @@ export default function OrdersView() {
                   <div className="flex-1 min-w-0 pr-2">
                     <h4 className="font-bold text-sm text-gray-900 truncate">{order.productName || 'Amal Coolguard Vest'}</h4>
                     <p className="text-xs text-gray-500 truncate">Customer: {order.customerName}</p>
-                    <p className="text-sm font-extrabold text-blue-700 mt-0.5">₹{order.price || 2499}</p>
+                    <p className="text-sm font-extrabold text-blue-700 mt-0.5">
+                      ₹{order.price || 2499}
+                      {Number(order.deliveryCharge || 0) > 0 && (
+                        <span className="text-[10px] font-bold text-gray-500 ml-1">
+                          (Incl. ₹{order.deliveryCharge} Delivery)
+                        </span>
+                      )}
+                    </p>
                   </div>
 
                   {/* Cancel Order Action Button */}
@@ -172,11 +188,67 @@ export default function OrdersView() {
                   )}
                 </div>
 
+                {/* Live Tracking ID Card when added by Admin */}
+                {order.trackingId && (
+                  <div className="bg-blue-50 border border-blue-200 p-3.5 rounded-2xl mt-3 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="text-[10px] font-extrabold text-blue-800 uppercase tracking-wider">
+                          🚚 Order Tracking ID {order.courierName ? `(${order.courierName})` : ''}
+                        </p>
+                        <a
+                          href={
+                            order.trackingUrl?.trim()
+                              ? order.trackingUrl
+                              : `https://www.google.com/search?q=${encodeURIComponent(`${order.trackingId} tracking`)}`
+                          }
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-mono font-black text-sm text-blue-700 underline hover:text-blue-900 inline-flex items-center gap-1 mt-0.5"
+                        >
+                          <span>{order.trackingId}</span>
+                          <span className="text-xs">↗</span>
+                        </a>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(String(order.trackingId));
+                          setCopiedTrackingId(targetId);
+                          setTimeout(() => setCopiedTrackingId(prev => (prev === targetId ? null : prev)), 2500);
+                        }}
+                        className="bg-white hover:bg-blue-100 text-blue-800 border border-blue-300 font-extrabold text-[11px] px-3 py-1.5 rounded-xl shadow-xs shrink-0 transition"
+                      >
+                        {copiedTrackingId === targetId ? '✓ Copied!' : '📋 Copy ID'}
+                      </button>
+                    </div>
+
+                    <a
+                      href={
+                        order.trackingUrl?.trim()
+                          ? order.trackingUrl
+                          : `https://www.google.com/search?q=${encodeURIComponent(`${order.trackingId} tracking`)}`
+                      }
+                      target="_blank"
+                      rel="noreferrer"
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-2 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-xs transition"
+                    >
+                      <span>🌐</span>
+                      <span>Track Order in Google / Browser</span>
+                    </a>
+                  </div>
+                )}
+
                 {/* Address & Payment Info */}
                 <div className="bg-gray-50 p-3 rounded-xl text-xs text-gray-600 space-y-1 mt-3">
                   <p><span className="font-bold">Phone:</span> {order.phoneNumber}</p>
                   {order.address && <p><span className="font-bold">Address:</span> {order.address}, {order.pincode}</p>}
                   <p><span className="font-bold">Payment Mode:</span> {order.paymentMethod || 'Cash on Delivery'}</p>
+                  <p>
+                    <span className="font-bold">Delivery Charge:</span>{' '}
+                    {Number(order.deliveryCharge || 0) > 0 ? `₹${order.deliveryCharge}` : 'Free Delivery'}
+                  </p>
                 </div>
 
                 {/* Payment Screenshot Preview if present */}

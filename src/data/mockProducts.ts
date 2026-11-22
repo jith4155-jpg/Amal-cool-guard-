@@ -12,6 +12,7 @@ export interface Product {
   stock?: number;
   galleryImages?: string[];
   gstPercent?: number;
+  deliveryCharge?: number;
 }
 
 export const MOCK_PRODUCTS: Product[] = [
@@ -25,20 +26,20 @@ export const MOCK_PRODUCTS: Product[] = [
     category: 'Coats',
     rating: 4.8,
     reviewsCount: 124,
-    features: ['Heat Reflective Fabric', 'UV Sun Protection', 'Lightweight & Breathable', 'Water-Resistant Finish'],
+    features: ['Heat Reflective Fabric', 'UV Sun Protection', 'Lightweight & Breathable', 'All-Day Comfort'],
     stock: 25
   },
   {
     id: '2',
-    name: 'Amal Waterproof Cooling Poncho',
+    name: 'Amal Sun Shield Cooling Poncho',
     price: 1499,
     discountPrice: 1299,
-    description: 'Heavy duty waterproof poncho with heat ventilation channels. Ideal for monsoon and hot summer bike riding in Kerala.',
+    description: 'Ventilated cooling poncho designed for harsh sunlight and hot summer bike riding in Kerala.',
     imageUrl: 'https://images.unsplash.com/photo-1523381210434-271e8be1952b?w=600',
-    category: 'Rainwear',
+    category: 'Coats',
     rating: 4.6,
     reviewsCount: 89,
-    features: ['100% Waterproof', 'Ventilated Cooling Back', 'Reflective Safety Strips', 'Compact Carrying Pouch'],
+    features: ['Sun Reflective Fabric', 'Ventilated Cooling Back', 'Reflective Safety Strips', 'Compact Carrying Pouch'],
     stock: 40
   },
   {

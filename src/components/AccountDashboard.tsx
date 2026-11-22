@@ -2,6 +2,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { Product } from '../data/mockProducts';
 import { getCatalogProducts, safeJsonParse } from '../utils/storeSync';
+import { ThemeSwitcher } from '../context/ThemeContext';
 
 export default function AccountDashboard() {
   const navigate = useNavigate();
@@ -63,27 +64,28 @@ export default function AccountDashboard() {
           </p>
         </div>
 
-        {/* Customer Sign In / Sign Up Header Button */}
-        {session ? (
-          <button
-            onClick={() => {
-              localStorage.removeItem('amal_customer_session');
-              window.location.reload();
-            }}
-            className="bg-red-50 text-red-600 border border-red-200 text-xs font-extrabold px-3.5 py-2 rounded-xl shadow-xs"
-          >
-            Logout 🚪
-          </button>
-        ) : (
-          <div className="flex gap-2">
+        {/* Customer Sign In / Sign Up & Theme Switcher */}
+        <div className="flex items-center gap-2">
+          <ThemeSwitcher compact />
+          {session ? (
+            <button
+              onClick={() => {
+                localStorage.removeItem('amal_customer_session');
+                window.location.reload();
+              }}
+              className="bg-red-50 text-red-600 border border-red-200 text-xs font-extrabold px-3.5 py-2 rounded-xl shadow-xs"
+            >
+              Logout 🚪
+            </button>
+          ) : (
             <button
               onClick={() => navigate('/login')}
               className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold px-3.5 py-2 rounded-xl shadow transition"
             >
               Sign In / Sign Up 👤
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {activeShortcuts.length > 0 ? (

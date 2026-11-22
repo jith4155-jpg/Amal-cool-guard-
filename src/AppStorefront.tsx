@@ -1,14 +1,16 @@
 import { useState, useEffect } from 'react';
 import { db } from './firebase';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
 import { Product } from './data/mockProducts';
 import { useLanguage, LanguageSelector } from './context/LanguageContext';
+import { ThemeSwitcher } from './context/ThemeContext';
 import {
   getCatalogProducts,
   mergeRemoteCatalogProducts,
   syncReferralFromUrl,
-  clearActiveReferralCode,
+  getCategories,
+  saveCategories,
   safeJsonParse,
 } from './utils/storeSync';
 
@@ -17,7 +19,7 @@ export default function AppStorefront() {
 
   // Instant initialization from unified Admin-synced catalog
   const [products, setProducts] = useState<Product[]>(() => getCatalogProducts());
-  const [activePromoter, setActivePromoter] = useState<string | null>(() => syncReferralFromUrl(true));
+  const [customCategories, setCustomCategories] = useState<string[]>(() => getCategories());
 
   const [wishlist, setWishlist] = useState<Record<string, boolean>>(() => {
     try {
@@ -33,16 +35,32 @@ export default function AppStorefront() {
   useEffect(() => {
     let isMounted = true;
 
-    // Re-check URL query on route changes
-    setActivePromoter(syncReferralFromUrl(true));
+    // Silently record referral ID from URL (?L01N) without showing any promotion UI
+    syncReferralFromUrl(true);
 
     const handleStoreSync = () => {
       if (isMounted) {
         setProducts(getCatalogProducts());
+        setCustomCategories(getCategories());
       }
     };
     window.addEventListener('amal_store_updated', handleStoreSync);
     window.addEventListener('storage', handleStoreSync);
+
+    const fetchCategoriesRemote = async () => {
+      try {
+        const snap = await Promise.race([
+          getDoc(doc(db, 'settings', 'categories')),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1200)),
+        ]);
+        if (snap.exists() && Array.isArray(snap.data().list) && isMounted) {
+          const synced = saveCategories(snap.data().list);
+          setCustomCategories(synced);
+        }
+      } catch {
+        // local categories already loaded
+      }
+    };
 
     const fetchProducts = async () => {
       try {
@@ -69,6 +87,7 @@ export default function AppStorefront() {
               features: Array.isArray(data.features) ? data.features : undefined,
               stock: typeof data.stock === 'number' ? data.stock : undefined,
               gstPercent: typeof data.gstPercent === 'number' ? data.gstPercent : 0,
+              deliveryCharge: typeof data.deliveryCharge === 'number' ? data.deliveryCharge : 0,
             };
           });
           const merged = mergeRemoteCatalogProducts(fetched);
@@ -84,6 +103,7 @@ export default function AppStorefront() {
       }
     };
 
+    fetchCategoriesRemote();
     fetchProducts();
     return () => {
       isMounted = false;
@@ -107,13 +127,16 @@ export default function AppStorefront() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
 
-  // Dynamic category chips matching current active products
-  const categories = [
-    'All',
-    ...Array.from(new Set(products.map(p => p.category).filter(Boolean))),
-  ];
+  // Top Category bar displays ONLY the categories configured/added in Admin
+  const allCustomCategoryNames = Array.from(new Set(customCategories.map(c => c.trim()).filter(Boolean)));
+  const categories = ['All', ...allCustomCategoryNames];
 
-  // Filter products by search and category
+  // Categories matching current search input so typing a category name highlights & selects it easily
+  const matchingSearchedCategories = searchQuery.trim()
+    ? allCustomCategoryNames.filter(c => c.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+    : [];
+
+  // Filter products by search and selected category
   const filteredProducts = products.filter(p => {
     const matchesCategory =
       selectedCategory === 'All' || p.category?.toLowerCase() === selectedCategory.toLowerCase();
@@ -143,17 +166,16 @@ export default function AppStorefront() {
             }}
           />
           <div className="leading-tight">
-            <span className="text-sm font-black text-gray-900 tracking-tight flex items-center gap-1">
-              <span>{t('brandName')}</span>
-              <span className="text-[10px] text-blue-600 font-extrabold bg-blue-50 px-1 py-0.2 rounded border border-blue-100">
-                {t('brandSubtitle')}
-              </span>
+            <span className="text-sm font-black text-gray-900 tracking-tight">
+              Amal Coolguard
             </span>
-            <p className="text-[9.5px] text-gray-500 font-medium">{t('tagline')}</p>
           </div>
         </div>
 
         <div className="flex items-center gap-1.5">
+          {/* Eye-Comfort Theme Switcher (5 Colors) */}
+          <ThemeSwitcher compact />
+
           {/* Prominent Language Switcher at the top */}
           <LanguageSelector />
 
@@ -208,7 +230,7 @@ export default function AppStorefront() {
         </div>
       </div>
 
-      {/* Category Filter Chips */}
+      {/* Category Filter Chips at top of screen */}
       <div className="flex gap-2 px-4 pt-2.5 overflow-x-auto no-scrollbar">
         {categories.map(cat => (
           <button
@@ -225,69 +247,67 @@ export default function AppStorefront() {
         ))}
       </div>
 
-      {/* Active Promoter Referral Welcome Ribbon - ONLY shown when visited via a Promoter Link (?promoter=...) */}
-      {activePromoter && (
-        <div className="mx-4 mt-3 bg-gradient-to-r from-purple-700 via-indigo-700 to-purple-800 text-white p-3.5 rounded-2xl shadow-md border border-purple-500/40 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <span className="text-2xl shrink-0">🤝</span>
-            <div className="min-w-0">
-              <p className="text-xs font-black flex items-center gap-1.5 flex-wrap">
-                <span>Referred by Creator:</span>
-                <span className="bg-amber-400 text-slate-950 font-black px-2 py-0.5 rounded-md font-mono text-[11px]">
-                  {activePromoter}
-                </span>
-              </p>
-              <p className="text-[10px] text-purple-200 truncate">Official Amal Coolguard Partner Storefront</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="hidden sm:inline-block text-[10px] bg-white/20 text-white font-extrabold px-2.5 py-1 rounded-full uppercase">
-              Special Offer Active
-            </span>
+      {/* Matching Categories Quick-Jump when searching */}
+      {matchingSearchedCategories.length > 0 && (
+        <div className="px-4 pt-2 flex items-center gap-2 overflow-x-auto no-scrollbar">
+          <span className="text-[10px] font-bold text-gray-500 whitespace-nowrap">Categories:</span>
+          {matchingSearchedCategories.map(cat => (
             <button
-              type="button"
+              key={cat}
               onClick={() => {
-                clearActiveReferralCode();
-                setActivePromoter(null);
+                setSelectedCategory(cat);
+                setSearchQuery('');
               }}
-              aria-label="Dismiss referral banner"
-              className="w-6 h-6 rounded-full bg-white/15 hover:bg-white/30 text-white text-xs font-bold flex items-center justify-center"
+              className="bg-indigo-50 text-indigo-700 border border-indigo-200 text-[11px] font-extrabold px-3 py-1 rounded-full whitespace-nowrap hover:bg-indigo-100 transition"
             >
-              ✕
+              📂 {cat}
             </button>
-          </div>
+          ))}
         </div>
       )}
 
-      {/* Hero Banner */}
+      {/* Clean Hero Banner: Amal Coolguard + English Sun Protection Cooling line only */}
       <div className="bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-500 text-white p-5 mx-4 mt-3 rounded-2xl shadow-md">
-        <span className="bg-white/20 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full uppercase tracking-wider mb-2 inline-block">
-          {t('heroBadge')}
-        </span>
-        <h2 className="text-xl font-extrabold leading-tight mb-1">{t('heroTitle')}</h2>
-        <p className="text-xs text-blue-100 mb-3">{t('heroDesc')}</p>
-        <div className="flex gap-2">
-          <span className="text-[11px] bg-white text-blue-800 font-bold px-3 py-1 rounded-lg">{t('heatBlock')}</span>
-          <span className="text-[11px] bg-white text-blue-800 font-bold px-3 py-1 rounded-lg">{t('waterproof')}</span>
-        </div>
+        <h2 className="text-xl font-extrabold leading-tight">Amal Coolguard</h2>
+        <p className="text-xs text-blue-100 font-semibold mt-1">
+          Sun Protection Cooling Gear
+        </p>
       </div>
 
       {/* Products Section */}
       <main className="p-4">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="font-extrabold text-base text-gray-900">{t('featuredTitle')}</h3>
+          <h3 className="font-extrabold text-base text-gray-900">
+            {selectedCategory === 'All' ? t('featuredTitle') : selectedCategory}
+          </h3>
           <span className="text-xs text-gray-500 font-medium">
             {filteredProducts.length} {t('productsCount')}
           </span>
         </div>
 
         {filteredProducts.length === 0 ? (
-          <div className="p-10 bg-white rounded-2xl text-center text-xs text-gray-500 border border-dashed border-gray-300">
-            {searchQuery ? `No products found matching "${searchQuery}".` : 'No products currently available in store.'}
+          <div className="p-10 bg-white rounded-2xl text-center text-xs text-gray-500 border border-dashed border-gray-300 space-y-2">
+            <p>
+              {searchQuery
+                ? `No products found matching "${searchQuery}".`
+                : `No products found in "${selectedCategory}" category yet.`}
+            </p>
+            {selectedCategory !== 'All' && (
+              <button
+                onClick={() => setSelectedCategory('All')}
+                className="bg-blue-600 text-white text-xs font-bold px-4 py-2 rounded-xl"
+              >
+                Show All Products
+              </button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-3.5">
             {filteredProducts.map(product => {
+              const basePrice = Number(product.discountPrice || product.price || 0);
+              const deliveryFee = Number(product.deliveryCharge || 0);
+              const totalWithDelivery = basePrice + deliveryFee;
+
               const discountPercent =
                 product.price && product.discountPrice && product.price > product.discountPrice
                   ? Math.round(((product.price - product.discountPrice) / product.price) * 100)
@@ -340,12 +360,22 @@ export default function AppStorefront() {
 
                     <div className="flex items-baseline gap-1.5 mt-2">
                       <span className="text-sm font-extrabold text-gray-900">
-                        ₹{product.discountPrice || product.price}
+                        ₹{totalWithDelivery}
                       </span>
-                      {product.price && product.price > (product.discountPrice || 0) && (
-                        <span className="text-[11px] text-gray-400 line-through">₹{product.price}</span>
+                      {product.price && product.price > basePrice && (
+                        <span className="text-[11px] text-gray-400 line-through">₹{product.price + deliveryFee}</span>
                       )}
                     </div>
+
+                    {deliveryFee > 0 ? (
+                      <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded inline-block mt-1">
+                        🚚 Includes ₹{deliveryFee} Delivery
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded inline-block mt-1">
+                        🚚 Free Delivery
+                      </span>
+                    )}
 
                     {discountPercent > 0 && (
                       <span className="text-[10px] font-bold text-green-700 block mt-0.5">

@@ -19,6 +19,36 @@ export const STORAGE_KEYS = {
   WISHLIST: 'amal_wishlist',
   SESSION_REFERRAL: 'amal_session_referral_code',
   LEGACY_REFERRAL: 'amal_active_referral_code',
+  CATEGORIES: 'amal_custom_categories',
+  CATEGORIES_INITIALIZED: 'amal_categories_initialized',
+};
+
+export const DEFAULT_CATEGORIES = ['Coats', 'Vests', 'Jackets'];
+
+export interface StorePaymentSettings {
+  enableCOD: boolean;
+  enableUPI: boolean;
+  enableCard: boolean;
+  merchantUpiId: string;
+  whatsappNumber?: string;
+  storeBaseUrl?: string;
+  blockAccountOrders?: boolean;
+  blockAccountWishlist?: boolean;
+  blockAccountCoupons?: boolean;
+  blockAccountHelp?: boolean;
+}
+
+export const DEFAULT_PAYMENT_SETTINGS: StorePaymentSettings = {
+  enableCOD: true,
+  enableUPI: true,
+  enableCard: true,
+  merchantUpiId: 'amalcoolguard@upi',
+  whatsappNumber: '6238113451',
+  storeBaseUrl: 'https://amal-cool-guard.vercel.app',
+  blockAccountOrders: false,
+  blockAccountWishlist: false,
+  blockAccountCoupons: false,
+  blockAccountHelp: false,
 };
 
 export const DEFAULT_STORE_BASE_URL = 'https://amal-cool-guard.vercel.app';
@@ -397,15 +427,69 @@ export function getCleanStoreBaseUrl(): string {
   return DEFAULT_STORE_BASE_URL;
 }
 
+export function getPromoterShareLink(promoterId: string, baseUrl?: string): string {
+  const cleanBase = (baseUrl || getCleanStoreBaseUrl()).trim().replace(/\/+$/, '');
+  return `${cleanBase}/?${encodeURIComponent(promoterId)}`;
+}
+
+const IGNORED_QUERY_KEYS = new Set([
+  'fbclid',
+  'gclid',
+  'msclkid',
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_content',
+  'utm_term',
+  'utm_id',
+  'q',
+  's',
+  'search',
+  'category',
+  'lang',
+  'mode',
+  'v',
+]);
+
+function extractReferralCodeFromSearch(search: string): string | null {
+  try {
+    const urlParams = new URLSearchParams(search);
+    const explicit = (
+      urlParams.get('id') ||
+      urlParams.get('code') ||
+      urlParams.get('promoter') ||
+      urlParams.get('ref') ||
+      ''
+    )
+      .trim()
+      .toUpperCase();
+    if (explicit) return explicit;
+
+    // Support clean links like https://www.amalcoolguard.in/?L01N
+    for (const [key, value] of urlParams.entries()) {
+      const cleanKey = key.trim();
+      if (
+        !value &&
+        cleanKey &&
+        !IGNORED_QUERY_KEYS.has(cleanKey.toLowerCase()) &&
+        /^[A-Z0-9_-]{2,20}$/i.test(cleanKey)
+      ) {
+        return cleanKey.toUpperCase();
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Handles ?promoter=... / ?ref=... tracking strictly for promoter link visits.
- * Normal website visits & Google Search visits (without ?promoter= / ?ref=)
- * clear any lingering referral code so the "Referred by Creator" banner NEVER shows uninvited.
+ * Handles ?<ID> (e.g. ?L01N) / ?id=... / ?promoter=... / ?ref=... silently in the background.
+ * Normal website visits & Google Search visits clear any lingering referral code.
  */
 export function syncReferralFromUrl(isStoreHomeEntry = true): string | null {
   try {
-    const urlParams = new URLSearchParams(window.location.search);
-    const paramCode = (urlParams.get('promoter') || urlParams.get('ref') || '').trim().toUpperCase();
+    const paramCode = extractReferralCodeFromSearch(window.location.search);
 
     if (paramCode) {
       sessionStorage.setItem(STORAGE_KEYS.SESSION_REFERRAL, paramCode);
@@ -414,7 +498,7 @@ export function syncReferralFromUrl(isStoreHomeEntry = true): string | null {
       return paramCode;
     }
 
-    // If the user opened the homepage on a fresh entry (e.g. direct URL or Google Search) without ?promoter=
+    // If the user opened the homepage on a fresh entry (e.g. direct URL or Google Search) without any ID param
     if (isStoreHomeEntry && !hasHandledInitialReferralEntry) {
       sessionStorage.removeItem(STORAGE_KEYS.SESSION_REFERRAL);
       localStorage.removeItem(STORAGE_KEYS.LEGACY_REFERRAL);
@@ -431,8 +515,7 @@ export function syncReferralFromUrl(isStoreHomeEntry = true): string | null {
 
 export function getActiveReferralCode(): string | null {
   try {
-    const urlParams = new URLSearchParams(window.location.search);
-    const paramCode = (urlParams.get('promoter') || urlParams.get('ref') || '').trim().toUpperCase();
+    const paramCode = extractReferralCodeFromSearch(window.location.search);
     if (paramCode) return paramCode;
     return sessionStorage.getItem(STORAGE_KEYS.SESSION_REFERRAL);
   } catch {
@@ -448,3 +531,84 @@ export function clearActiveReferralCode() {
     // ignore
   }
 }
+
+// ---------------- DYNAMIC CATEGORIES MANAGEMENT ----------------
+
+export function getCategories(): string[] {
+  const raw = localStorage.getItem(STORAGE_KEYS.CATEGORIES);
+  const initialized = localStorage.getItem(STORAGE_KEYS.CATEGORIES_INITIALIZED) === 'true';
+
+  if (raw !== null) {
+    const parsed = safeJsonParse<string[]>(raw, []);
+    if (Array.isArray(parsed)) {
+      return parsed.map(c => String(c).trim()).filter(Boolean);
+    }
+  }
+
+  if (initialized) {
+    return [];
+  }
+
+  // First-time clean starter list
+  const list = [...DEFAULT_CATEGORIES];
+  safeSetStorage(STORAGE_KEYS.CATEGORIES, JSON.stringify(list));
+  safeSetStorage(STORAGE_KEYS.CATEGORIES_INITIALIZED, 'true');
+  return list;
+}
+
+export function saveCategories(categories: string[]): string[] {
+  const seenLower = new Set<string>();
+  const clean: string[] = [];
+  for (const cat of categories) {
+    const trimmed = String(cat).trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (!seenLower.has(key)) {
+      seenLower.add(key);
+      clean.push(trimmed);
+    }
+  }
+  safeSetStorage(STORAGE_KEYS.CATEGORIES, JSON.stringify(clean));
+  safeSetStorage(STORAGE_KEYS.CATEGORIES_INITIALIZED, 'true');
+  notifyStoreUpdated();
+  return clean;
+}
+
+export function addCategory(name: string): string[] {
+  const trimmed = name.trim();
+  if (!trimmed) return getCategories();
+  const current = getCategories();
+  return saveCategories([...current, trimmed]);
+}
+
+export function deleteCategory(name: string): string[] {
+  const target = name.trim().toLowerCase();
+  const current = getCategories();
+  return saveCategories(current.filter(c => c.trim().toLowerCase() !== target));
+}
+
+// ---------------- LIVE PAYMENT & STORE SETTINGS ----------------
+
+export function getPaymentSettings(): StorePaymentSettings {
+  const saved = safeJsonParse<Partial<StorePaymentSettings> | null>(
+    localStorage.getItem(STORAGE_KEYS.PAYMENT_SETTINGS),
+    null
+  );
+  return {
+    ...DEFAULT_PAYMENT_SETTINGS,
+    ...(saved || {}),
+    storeBaseUrl: saved?.storeBaseUrl || DEFAULT_PAYMENT_SETTINGS.storeBaseUrl,
+  };
+}
+
+export function savePaymentSettingsSync(next: StorePaymentSettings): StorePaymentSettings {
+  const clean: StorePaymentSettings = {
+    ...DEFAULT_PAYMENT_SETTINGS,
+    ...next,
+    storeBaseUrl: (next.storeBaseUrl || DEFAULT_STORE_BASE_URL).trim().replace(/\/+$/, ''),
+  };
+  safeSetStorage(STORAGE_KEYS.PAYMENT_SETTINGS, JSON.stringify(clean));
+  notifyStoreUpdated();
+  return clean;
+}
+

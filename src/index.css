@@ -1,1 +1,212 @@
 @import "tailwindcss";
+
+/* ==========================================================================
+   AMAL COOLGUARD 5-THEME ENGINE (Dark Night default, White, Midnight, Forest, Warm Night)
+   ========================================================================== */
+
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg-page: #090d16;
+  --bg-card: #121826;
+  --bg-alt: #1b2334;
+  --bg-pill: #232d42;
+  --text-primary: #f1f5f9;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --border-subtle: rgba(148, 163, 184, 0.22);
+  --bg-tint-blue: rgba(37, 99, 235, 0.16);
+  --bg-tint-amber: rgba(217, 119, 6, 0.16);
+  --bg-tint-green: rgba(16, 185, 129, 0.16);
+  --bg-tint-purple: rgba(147, 51, 234, 0.18);
+  --bg-tint-indigo: rgba(79, 70, 229, 0.18);
+  --bg-tint-red: rgba(239, 68, 68, 0.16);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+:root[data-theme='midnight'] {
+  color-scheme: dark;
+  --bg-page: #050e1d;
+  --bg-card: #0c1b33;
+  --bg-alt: #13284a;
+  --bg-pill: #1a355e;
+  --text-primary: #eff6ff;
+  --text-secondary: #bfdbfe;
+  --text-muted: #93c5fd;
+  --border-subtle: rgba(96, 165, 250, 0.24);
+  --bg-tint-blue: rgba(56, 189, 248, 0.16);
+  --bg-tint-amber: rgba(245, 158, 11, 0.16);
+  --bg-tint-green: rgba(20, 184, 166, 0.16);
+  --bg-tint-purple: rgba(139, 92, 246, 0.18);
+  --bg-tint-indigo: rgba(99, 102, 241, 0.2);
+  --bg-tint-red: rgba(248, 113, 113, 0.18);
+}
+
+:root[data-theme='forest'] {
+  color-scheme: dark;
+  --bg-page: #061411;
+  --bg-card: #0d221d;
+  --bg-alt: #14322b;
+  --bg-pill: #1b4239;
+  --text-primary: #ecfdf5;
+  --text-secondary: #a7f3d0;
+  --text-muted: #6ee7b7;
+  --border-subtle: rgba(52, 211, 153, 0.22);
+  --bg-tint-blue: rgba(45, 212, 191, 0.15);
+  --bg-tint-amber: rgba(245, 158, 11, 0.16);
+  --bg-tint-green: rgba(16, 185, 129, 0.2);
+  --bg-tint-purple: rgba(168, 85, 247, 0.16);
+  --bg-tint-indigo: rgba(99, 102, 241, 0.16);
+  --bg-tint-red: rgba(248, 113, 113, 0.18);
+}
+
+:root[data-theme='warm'] {
+  color-scheme: dark;
+  --bg-page: #140f0b;
+  --bg-card: #201812;
+  --bg-alt: #2b2018;
+  --bg-pill: #382a20;
+  --text-primary: #f7ede2;
+  --text-secondary: #e2cbb5;
+  --text-muted: #b89b82;
+  --border-subtle: rgba(245, 158, 11, 0.22);
+  --bg-tint-blue: rgba(217, 119, 6, 0.15);
+  --bg-tint-amber: rgba(245, 158, 11, 0.2);
+  --bg-tint-green: rgba(16, 185, 129, 0.16);
+  --bg-tint-purple: rgba(192, 132, 252, 0.15);
+  --bg-tint-indigo: rgba(245, 158, 11, 0.14);
+  --bg-tint-red: rgba(248, 113, 113, 0.18);
+}
+
+:root:not([data-theme='light']) body {
+  background-color: var(--bg-page);
+  color: var(--text-primary);
+}
+
+/* Surfaces & Backgrounds */
+:root:not([data-theme='light']) .bg-gray-100,
+:root:not([data-theme='light']) .bg-slate-100 {
+  background-color: var(--bg-page);
+}
+
+:root:not([data-theme='light']) .bg-white {
+  background-color: var(--bg-card);
+}
+
+:root:not([data-theme='light']) .bg-white\/90 {
+  background-color: var(--bg-alt);
+}
+
+:root:not([data-theme='light']) .bg-gray-50,
+:root:not([data-theme='light']) .bg-slate-50 {
+  background-color: var(--bg-alt);
+}
+
+:root:not([data-theme='light']) .bg-gray-200 {
+  background-color: var(--bg-pill);
+}
+
+/* Tinted pastel boxes adapted for night eyes */
+:root:not([data-theme='light']) :is(.bg-blue-50, .bg-blue-50\/60, .bg-blue-50\/70, .bg-blue-50\/80, .bg-blue-100) {
+  background-color: var(--bg-tint-blue);
+}
+
+:root:not([data-theme='light']) :is(.bg-amber-50, .bg-amber-50\/40, .bg-amber-50\/70, .bg-amber-100, .bg-amber-200) {
+  background-color: var(--bg-tint-amber);
+}
+
+:root:not([data-theme='light']) :is(.bg-emerald-50, .bg-emerald-50\/70, .bg-emerald-100, .bg-green-50, .bg-green-50\/40, .bg-green-100) {
+  background-color: var(--bg-tint-green);
+}
+
+:root:not([data-theme='light']) :is(.bg-purple-50, .bg-purple-50\/30, .bg-purple-50\/60, .bg-purple-50\/70, .bg-purple-100) {
+  background-color: var(--bg-tint-purple);
+}
+
+:root:not([data-theme='light']) :is(.bg-indigo-50, .bg-indigo-100) {
+  background-color: var(--bg-tint-indigo);
+}
+
+:root:not([data-theme='light']) :is(.bg-red-50, .bg-red-100) {
+  background-color: var(--bg-tint-red);
+}
+
+/* Text colors adapted for night legibility */
+:root:not([data-theme='light']) :is(.text-gray-900, .text-slate-900, .text-gray-800, .text-slate-800) {
+  color: var(--text-primary);
+}
+
+:root:not([data-theme='light']) :is(.text-gray-700, .text-slate-700, .text-gray-600, .text-slate-600) {
+  color: var(--text-secondary);
+}
+
+:root:not([data-theme='light']) :is(.text-gray-500, .text-gray-400, .text-slate-500, .text-slate-400) {
+  color: var(--text-muted);
+}
+
+/* Brighten dark colored text utilities on dark surfaces (preserving text-white buttons) */
+:root:not([data-theme='light']) :is(.text-blue-950, .text-blue-900, .text-blue-800, .text-blue-700, .text-blue-600) {
+  color: #7dd3fc;
+}
+
+:root:not([data-theme='light']) :is(.text-indigo-950, .text-indigo-900, .text-indigo-800, .text-indigo-700) {
+  color: #a5b4fc;
+}
+
+:root:not([data-theme='light']) :is(.text-amber-900, .text-amber-800, .text-amber-700) {
+  color: #fcd34d;
+}
+
+:root:not([data-theme='light']) :is(.text-emerald-950, .text-emerald-900, .text-emerald-800, .text-emerald-700, .text-green-900, .text-green-800, .text-green-700, .text-green-600) {
+  color: #6ee7b7;
+}
+
+:root:not([data-theme='light']) :is(.text-purple-900, .text-purple-800, .text-purple-700) {
+  color: #d8b4fe;
+}
+
+:root:not([data-theme='light']) :is(.text-red-800, .text-red-700, .text-red-600, .text-red-500) {
+  color: #fca5a5;
+}
+
+/* Preserve white text on solid buttons/badges */
+:root:not([data-theme='light']) .text-white {
+  color: #ffffff;
+}
+
+/* Borders */
+:root:not([data-theme='light']) :is(.border-gray-100, .border-gray-200, .border-gray-300, .border-slate-200, .border-blue-100, .border-blue-200, .border-blue-300, .border-amber-200, .border-amber-300, .border-emerald-200, .border-emerald-300, .border-green-200, .border-purple-100, .border-purple-200, .border-purple-300, .border-indigo-200, .border-indigo-300, .border-red-200, .border-t, .border-b, .border) {
+  border-color: var(--border-subtle);
+}
+
+/* Inputs, Selects & Textareas */
+:root:not([data-theme='light']) :is(input, textarea, select) {
+  color: var(--text-primary);
+  background-color: var(--bg-alt);
+  border-color: var(--border-subtle);
+}
+
+:root:not([data-theme='light']) :is(input, textarea)::placeholder {
+  color: var(--text-muted);
+}
+
+:root:not([data-theme='light']) select option {
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+}
+
+/* Hover states on dark */
+:root:not([data-theme='light']) :is(.hover\:bg-gray-50, .hover\:bg-gray-100, .hover\:bg-gray-200):hover {
+  background-color: var(--bg-pill);
+}
+
+/* Keep courier shipping label crisp white-paper style */
+:root:not([data-theme='light']) .print-label-sheet,
+:root:not([data-theme='light']) .print-label-sheet * {
+  background-color: #ffffff;
+  color: #111827;
+  border-color: #1e293b;
+}

@@ -4,11 +4,13 @@ import { db } from '../firebase';
 import { collection, getDocs, doc, setDoc, query } from 'firebase/firestore';
 import {
   getCleanStoreBaseUrl,
+  getPromoterShareLink,
   getPromotersDict,
   getLocalOrders,
   getDeletedOrderIds,
   safeJsonParse,
 } from '../utils/storeSync';
+import { ThemeSwitcher } from '../context/ThemeContext';
 
 export interface PromoterProfile {
   id: string; // Auto-generated code e.g. L01N (First Letter + Counter + Last Letter)
@@ -217,13 +219,9 @@ export default function PromoterPortal() {
   };
 
   const storeBaseUrl = getCleanStoreBaseUrl();
-  const fullReferralLink = promoter ? `${storeBaseUrl}/?promoter=${encodeURIComponent(promoter.id)}` : '';
+  const fullReferralLink = promoter ? getPromoterShareLink(promoter.id, storeBaseUrl) : '';
   const whatsappShareUrl = promoter
-    ? `https://wa.me/?text=${encodeURIComponent(
-        `🛡️ Amal Coolguard - Kerala's Best Sun Protection Vest & Coat!\n` +
-          `Beat the summer heat while riding. Get genuine discounts using my special promoter link:\n👉 ${fullReferralLink}\n` +
-          `Promoter Code: ${promoter.id}`
-      )}`
+    ? `https://wa.me/?text=${encodeURIComponent(fullReferralLink)}`
     : '#';
 
   const copyReferralLink = () => {
@@ -260,14 +258,17 @@ export default function PromoterPortal() {
           </span>
         </div>
 
-        {promoter && (
-          <button 
-            onClick={handleLogout}
-            className="text-[11px] font-extrabold text-red-400 hover:text-red-300 bg-red-950/50 border border-red-800/60 px-3 py-1.5 rounded-xl transition"
-          >
-            Logout 🚪
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          <ThemeSwitcher compact />
+          {promoter && (
+            <button 
+              onClick={handleLogout}
+              className="text-[11px] font-extrabold text-red-400 hover:text-red-300 bg-red-950/50 border border-red-800/60 px-3 py-1.5 rounded-xl transition"
+            >
+              Logout 🚪
+            </button>
+          )}
+        </div>
       </header>
 
       {/* Main Content */}
@@ -542,10 +543,10 @@ export default function PromoterPortal() {
             <div className="bg-blue-950/40 border border-blue-800/60 p-5 rounded-3xl space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-black text-blue-300 uppercase tracking-wider flex items-center gap-1.5">
-                  <span>🔗</span> Your Dedicated Referral Link
+                  <span>🔗</span> Your Shareable Store Link
                 </span>
                 <span className="text-xs font-mono font-black text-amber-400 bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-800">
-                  CODE: {promoter.id}
+                  ID: {promoter.id}
                 </span>
               </div>
 
@@ -563,7 +564,7 @@ export default function PromoterPortal() {
               </div>
 
               <p className="text-[11px] text-slate-400">
-                Share this link in your YouTube video descriptions, Instagram bio, or WhatsApp groups. When buyers click your link and open the storefront to order a coat, your promoter code ({promoter.id}) is automatically recorded with their delivery address!
+                Share this clean link on YouTube, Instagram, or WhatsApp. Customers only see the normal Amal Coolguard store (zero promotion labels), and orders placed via your link are silently credited to your ID ({promoter.id}).
               </p>
 
               <div className="flex gap-2 pt-1">
