@@ -381,12 +381,9 @@ export default function AppStorefront() {
               </div>
               {!searchQuery && (
                 <div className="pt-2">
-                  <Link
-                    to="/admin"
-                    className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs px-5 py-2.5 rounded-xl shadow-xs transition"
-                  >
-                    <span>➕</span> അഡ്മിൻ പാനൽ തുറക്കുക (Open Admin)
-                  </Link>
+                  <p className="text-[11px] text-gray-400 font-medium">
+                    ഉടൻ തന്നെ പുതിയ ഉൽപ്പന്നങ്ങൾ ഇവിടെ ലഭ്യമാകുന്നതാണ്.
+                  </p>
                 </div>
               )}
               {selectedCategory !== 'All' && searchQuery && (

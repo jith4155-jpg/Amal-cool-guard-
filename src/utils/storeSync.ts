@@ -426,35 +426,10 @@ export function mergeRemoteCatalogProducts(remoteProducts: Product[]): Product[]
   const deletedSet = new Set(getDeletedProductIds());
   const filteredRemote = remoteProducts.filter(p => p && p.id && !deletedSet.has(p.id));
 
-  // Preserve local custom/newly-added products that haven't been pushed to remote yet
-  const customLocal = safeJsonParse<Product[]>(localStorage.getItem(STORAGE_KEYS.CUSTOM_PRODUCTS), []);
-  const validCustom = customLocal.filter(p => p && p.id && !deletedSet.has(p.id));
-
-  const remoteIdSet = new Set(filteredRemote.map(p => p.id));
-  const unpushedCustom = validCustom.filter(p => !remoteIdSet.has(p.id));
-
-  // If local catalog is marked dirty (user just edited a product locally), keep local version
-  const currentLocal = getCatalogProducts();
-  const localById = new Map<string, Product>();
-  for (const lp of currentLocal) {
-    if (lp && lp.id && !deletedSet.has(lp.id)) {
-      localById.set(lp.id, lp);
-    }
-  }
-
-  const isDirty = localStorage.getItem(STORAGE_KEYS.CATALOG_DIRTY) === 'true';
-  const mergedProducts = filteredRemote.map(rp => {
-    if (isDirty && localById.has(rp.id)) {
-      return localById.get(rp.id)!;
-    }
-    return rp;
-  });
-
-  const merged = [...mergedProducts, ...unpushedCustom];
-
-  if (merged.length > 0) {
-    saveCatalogProducts(merged, false);
-    return merged;
+  // Authoritative remote Firestore catalog always takes precedence across all devices/browsers
+  if (filteredRemote.length > 0) {
+    saveCatalogProducts(filteredRemote, false);
+    return filteredRemote;
   }
 
   return getCatalogProducts();
