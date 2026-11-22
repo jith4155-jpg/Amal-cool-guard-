@@ -6,6 +6,8 @@ import {
   signInWithPopup,
   signOut,
   onAuthStateChanged,
+  handleFirestoreError,
+  OperationType,
   type User,
 } from '../firebase';
 import {
@@ -18,10 +20,12 @@ import {
   getDocs,
   updateDoc,
   deleteDoc,
+  onSnapshot,
 } from 'firebase/firestore';
 import {
   getLocalOrders,
   saveAllOrders,
+  mergeRemoteUserOrdersIntoLocal,
   deleteOrderLocally,
   getDeletedOrderIds,
   getPromotersDict,
@@ -176,7 +180,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const userDocRef = doc(db, 'users', firebaseUser.uid);
         const snap = await Promise.race([
           getDoc(userDocRef),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1800)),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 6000)),
         ]);
         if (snap.exists()) {
           remoteData = snap.data() as Partial<UserProfile>;
@@ -218,56 +222,105 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [syncLocalProfileCache]
   );
 
-  const loadUserOrders = useCallback(async (targetUser: User | null): Promise<any[]> => {
-    if (!targetUser) {
-      setMyOrders([]);
-      setLoadingOrders(false);
-      return [];
-    }
+  const applyRemoteUserOrders = useCallback(
+    (targetUser: User, remoteDocs: any[]): any[] => {
+      const deletedSet = new Set(getDeletedOrderIds());
+      const combinedMap = new Map<string, any>();
 
-    setLoadingOrders(true);
-    const deletedSet = new Set(getDeletedOrderIds());
-    const combinedMap = new Map<string, any>();
-
-    try {
-      const q = query(collection(db, 'bookings'), where('userId', '==', targetUser.uid));
-      const snapshot = await Promise.race([
-        getDocs(q),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000)),
-      ]);
-
-      snapshot.docs.forEach(d => {
-        const data = { id: d.id, docId: d.id, ...d.data() } as any;
-        const oid = String(data.orderId || '');
-        const did = String(data.id || '');
-        if (deletedSet.has(oid) || deletedSet.has(did)) return;
+      const cleanRemote: any[] = [];
+      for (const d of remoteDocs) {
+        const oid = String(d.orderId || '');
+        const did = String(d.docId || d.id || '');
+        if (deletedSet.has(oid) || deletedSet.has(did)) continue;
+        cleanRemote.push(d);
         const key = oid || did;
-        if (key) combinedMap.set(key, data);
-      });
-    } catch (err) {
-      console.warn('Firestore user bookings query fallback:', err);
-    }
-
-    const localOrders = getLocalOrders();
-    for (const loc of localOrders) {
-      if (!belongsToUser(loc, targetUser)) continue;
-      const oid = String(loc.orderId || '');
-      const did = String(loc.id || '');
-      if (deletedSet.has(oid) || deletedSet.has(did)) continue;
-      const key = oid || did;
-      if (key && !combinedMap.has(key)) {
-        combinedMap.set(key, loc);
+        if (key) combinedMap.set(key, d);
       }
-    }
 
-    const sorted = Array.from(combinedMap.values()).sort(
-      (a, b) => getTimestampMs(b.createdAt) - getTimestampMs(a.createdAt)
-    );
+      mergeRemoteUserOrdersIntoLocal(targetUser.uid, targetUser.email || '', cleanRemote);
 
-    setMyOrders(sorted);
-    setLoadingOrders(false);
-    return sorted;
-  }, []);
+      const localOrders = getLocalOrders();
+      for (const loc of localOrders) {
+        if (!belongsToUser(loc, targetUser)) continue;
+        const oid = String(loc.orderId || '');
+        const did = String(loc.id || '');
+        if (deletedSet.has(oid) || deletedSet.has(did)) continue;
+        const key = oid || did;
+        if (key && !combinedMap.has(key)) {
+          combinedMap.set(key, loc);
+        }
+      }
+
+      const sorted = Array.from(combinedMap.values()).sort(
+        (a, b) => getTimestampMs(b.createdAt) - getTimestampMs(a.createdAt)
+      );
+
+      setMyOrders(sorted);
+      setLoadingOrders(false);
+      return sorted;
+    },
+    []
+  );
+
+  const loadUserOrders = useCallback(
+    async (targetUser: User | null): Promise<any[]> => {
+      if (!targetUser) {
+        setMyOrders([]);
+        setLoadingOrders(false);
+        return [];
+      }
+
+      setLoadingOrders(true);
+      const deletedSet = new Set(getDeletedOrderIds());
+      const remoteDocs: any[] = [];
+      let fetchSucceeded = false;
+
+      try {
+        const q = query(collection(db, 'bookings'), where('userId', '==', targetUser.uid));
+        const snapshot = await Promise.race([
+          getDocs(q),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 8000)),
+        ]);
+
+        fetchSucceeded = true;
+        snapshot.docs.forEach(d => {
+          const data = { id: d.id, docId: d.id, ...d.data() } as any;
+          const oid = String(data.orderId || '');
+          const did = String(data.id || '');
+          if (deletedSet.has(oid) || deletedSet.has(did)) return;
+          remoteDocs.push(data);
+        });
+      } catch (err) {
+        console.warn('Firestore user bookings query fallback:', err);
+      }
+
+      if (fetchSucceeded) {
+        return applyRemoteUserOrders(targetUser, remoteDocs);
+      }
+
+      const combinedMap = new Map<string, any>();
+      const localOrders = getLocalOrders();
+      for (const loc of localOrders) {
+        if (!belongsToUser(loc, targetUser)) continue;
+        const oid = String(loc.orderId || '');
+        const did = String(loc.id || '');
+        if (deletedSet.has(oid) || deletedSet.has(did)) continue;
+        const key = oid || did;
+        if (key && !combinedMap.has(key)) {
+          combinedMap.set(key, loc);
+        }
+      }
+
+      const sorted = Array.from(combinedMap.values()).sort(
+        (a, b) => getTimestampMs(b.createdAt) - getTimestampMs(a.createdAt)
+      );
+
+      setMyOrders(sorted);
+      setLoadingOrders(false);
+      return sorted;
+    },
+    [applyRemoteUserOrders]
+  );
 
   const loadPromoterSales = useCallback(
     async (targetUser: User, prom: PromoterRecord | null) => {
@@ -444,6 +497,56 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => unsubscribe();
   }, [loadOrCreateProfile, loadUserOrders, loadUserPromoter]);
+
+  // Real-time Firestore listener so Admin order approval / tracking / ETA syncs live to Customer Profile & Orders
+  useEffect(() => {
+    if (!user) return;
+    const bookingsQuery = query(collection(db, 'bookings'), where('userId', '==', user.uid));
+    const unsubscribeBookings = onSnapshot(
+      bookingsQuery,
+      snapshot => {
+        const remoteDocs = snapshot.docs.map(d => ({
+          id: d.id,
+          docId: d.id,
+          ...d.data(),
+        }));
+        applyRemoteUserOrders(user, remoteDocs);
+      },
+      err => {
+        try {
+          handleFirestoreError(err, OperationType.GET, 'bookings');
+        } catch {
+          // Structured error logged silently; fallback orders remain visible
+        }
+      }
+    );
+
+    return () => unsubscribeBookings();
+  }, [user, applyRemoteUserOrders]);
+
+  // Real-time Firestore listener for Promoter sales status updates (Pending -> Approved)
+  useEffect(() => {
+    if (!user || !myPromoter) return;
+    const salesQuery = query(
+      collection(db, 'promoter_sales'),
+      where('promoterUserId', '==', user.uid)
+    );
+    const unsubscribeSales = onSnapshot(
+      salesQuery,
+      () => {
+        loadPromoterSales(user, myPromoter);
+      },
+      err => {
+        try {
+          handleFirestoreError(err, OperationType.GET, 'promoter_sales');
+        } catch {
+          // Structured error logged silently
+        }
+      }
+    );
+
+    return () => unsubscribeSales();
+  }, [user, myPromoter, loadPromoterSales]);
 
   useEffect(() => {
     const onStoreSync = () => {

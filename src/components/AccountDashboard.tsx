@@ -26,6 +26,7 @@ export default function AccountDashboard() {
     signInWithGoogle,
     logout,
     updateUserProfile,
+    refreshMyOrders,
   } = useAuth();
 
   const [activeModal, setActiveModal] = useState<string | null>(null);
@@ -55,6 +56,12 @@ export default function AccountDashboard() {
   useEffect(() => {
     loadWishlistData();
   }, [loadWishlistData]);
+
+  useEffect(() => {
+    if (authReady && user) {
+      refreshMyOrders();
+    }
+  }, [authReady, user, refreshMyOrders]);
 
   const removeFromWishlist = (productId: string) => {
     if (!wishlistKey) return;
@@ -168,7 +175,9 @@ export default function AccountDashboard() {
     );
   }
 
-  const confirmedCount = myOrders.filter(o => o.status?.toLowerCase() === 'confirmed').length;
+  const confirmedCount = myOrders.filter(
+    o => o.status?.toLowerCase() === 'confirmed' || o.status?.toLowerCase() === 'approved'
+  ).length;
   const pendingCount = myOrders.filter(
     o => !o.status || o.status === 'pending' || o.status === 'pending_verification'
   ).length;
@@ -249,18 +258,30 @@ export default function AccountDashboard() {
 
         {/* Exact Order Count Stats for this Gmail */}
         <div className="grid grid-cols-3 gap-2 pt-2 border-t text-center">
-          <div className="bg-blue-50 p-2 rounded-xl border border-blue-100">
+          <button
+            type="button"
+            onClick={() => navigate('/orders')}
+            className="bg-blue-50 hover:bg-blue-100 p-2 rounded-xl border border-blue-100 transition cursor-pointer"
+          >
             <p className="text-[10px] font-bold text-blue-700 uppercase">Total Orders</p>
             <p className="text-base font-black text-blue-900">{myOrdersCount}</p>
-          </div>
-          <div className="bg-amber-50 p-2 rounded-xl border border-amber-100">
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('/orders')}
+            className="bg-amber-50 hover:bg-amber-100 p-2 rounded-xl border border-amber-100 transition cursor-pointer"
+          >
             <p className="text-[10px] font-bold text-amber-700 uppercase">Pending</p>
             <p className="text-base font-black text-amber-900">{pendingCount}</p>
-          </div>
-          <div className="bg-emerald-50 p-2 rounded-xl border border-emerald-100">
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('/orders')}
+            className="bg-emerald-50 hover:bg-emerald-100 p-2 rounded-xl border border-emerald-100 transition cursor-pointer"
+          >
             <p className="text-[10px] font-bold text-emerald-700 uppercase">Approved</p>
             <p className="text-base font-black text-emerald-900">{confirmedCount}</p>
-          </div>
+          </button>
         </div>
       </div>
 

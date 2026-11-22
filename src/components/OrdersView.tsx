@@ -135,7 +135,9 @@ export default function OrdersView() {
     }
   };
 
-  const approvedCount = myOrders.filter(o => o.status?.toLowerCase() === 'confirmed').length;
+  const approvedCount = myOrders.filter(
+    o => o.status?.toLowerCase() === 'confirmed' || o.status?.toLowerCase() === 'approved'
+  ).length;
   const pendingCount = myOrders.filter(
     o => !o.status || o.status === 'pending' || o.status === 'pending_verification'
   ).length;
@@ -150,6 +152,14 @@ export default function OrdersView() {
             <p className="text-[11px] font-semibold text-blue-700 truncate">{user.email}</p>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => refreshMyOrders()}
+              className="h-9 px-2.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-[11px] font-extrabold transition"
+              title="Refresh Order Status"
+            >
+              🔄 Refresh
+            </button>
             <ThemeSwitcher compact />
             <LanguageSelector />
           </div>
@@ -342,7 +352,7 @@ export default function OrdersView() {
                   </div>
                 )}
 
-                {order.status === 'pending_verification' && (
+                {(!order.status || order.status === 'pending' || order.status === 'pending_verification') && (
                   <div className="p-2.5 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-900 text-center mt-3">
                     <p className="font-bold">⏳ Verification Pending</p>
                     <p className="text-[11px] text-amber-800">Admin is verifying your order & payment screenshot.</p>

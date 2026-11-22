@@ -456,6 +456,62 @@ export function saveAllOrders(orders: any[]) {
   return clean;
 }
 
+export function mergeRemoteUserOrdersIntoLocal(
+  userId: string,
+  userEmail: string,
+  remoteOrders: any[]
+) {
+  const deletedSet = new Set(getDeletedOrderIds());
+  const remoteByKey = new Map<string, any>();
+  for (const r of remoteOrders) {
+    const oid = String(r.orderId || '');
+    const did = String(r.docId || r.id || '');
+    if (deletedSet.has(oid) || deletedSet.has(did)) continue;
+    if (oid) remoteByKey.set(oid, r);
+    if (did) remoteByKey.set(did, r);
+  }
+
+  const normalizedEmail = (userEmail || '').trim().toLowerCase();
+  const matchesTargetUser = (o: any) => {
+    if (!o) return false;
+    if (o.userId && o.userId === userId) return true;
+    if (o.userEmail && normalizedEmail && String(o.userEmail).trim().toLowerCase() === normalizedEmail) {
+      return true;
+    }
+    return false;
+  };
+
+  const existingLocal = getLocalOrders();
+  const nextOrders: any[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const r of remoteOrders) {
+    const oid = String(r.orderId || '');
+    const did = String(r.docId || r.id || '');
+    if (deletedSet.has(oid) || deletedSet.has(did)) continue;
+    nextOrders.push(r);
+    if (oid) seenKeys.add(oid);
+    if (did) seenKeys.add(did);
+  }
+
+  for (const loc of existingLocal) {
+    const oid = String(loc.orderId || '');
+    const did = String(loc.docId || loc.id || '');
+    if (seenKeys.has(oid) || seenKeys.has(did)) continue;
+
+    // If a synced order (has docId) belongs to this user and is no longer returned by Firestore query,
+    // it was deleted remotely by Admin/User — do not keep a ghost copy.
+    if (matchesTargetUser(loc) && loc.docId) {
+      continue;
+    }
+    nextOrders.push(loc);
+  }
+
+  const serialized = JSON.stringify(nextOrders);
+  safeSetStorage(STORAGE_KEYS.ORDERS, serialized);
+  safeSetStorage(STORAGE_KEYS.CACHED_ORDERS, serialized);
+}
+
 export function deleteOrderLocally(orderId: string, docId?: string): any[] {
   const idsToDelete = [orderId, docId].filter(Boolean).map(String);
   const deleted = Array.from(new Set([...getDeletedOrderIds(), ...idsToDelete]));

@@ -1,7 +1,7 @@
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
-import { db, auth } from '../firebase';
-import { doc, getDoc, collection, addDoc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { db, auth, handleFirestoreError, OperationType } from '../firebase';
+import { doc, getDoc, getDocFromServer, collection, addDoc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Product } from '../data/mockProducts';
 import { ThemeSwitcher } from '../context/ThemeContext';
 import { useLanguage, LanguageSelector } from '../context/LanguageContext';
@@ -312,7 +312,9 @@ export default function ProductDetails() {
     // Generate sequential Order ID starting with 'A' + 6 digit counter (A000001, A000002...)
     let currentCounter = 1;
     try {
-      const counterDoc = await getDoc(doc(db, 'settings', 'order_counter'));
+      const counterDoc = await getDocFromServer(doc(db, 'settings', 'order_counter')).catch(() =>
+        getDoc(doc(db, 'settings', 'order_counter'))
+      );
       if (counterDoc.exists()) {
         currentCounter = counterDoc.data().nextVal || 1;
       } else {
@@ -362,40 +364,51 @@ export default function ProductDetails() {
       }
     }
 
+    const cleanCustomerName = (formData.customerName || 'Customer').trim().slice(0, 120) || 'Customer';
+    const cleanPhone = (formData.phoneNumber || '0000000000').trim().slice(0, 30) || '0000000000';
+    const cleanAddress = (formData.address || '').trim().slice(0, 500);
+    const cleanPincode = (formData.pincode || '').trim().slice(0, 20);
+    const safeScreenshot =
+      screenshotPreview && screenshotPreview.length <= 950000 ? screenshotPreview : null;
+
     let createdDocId: string | null = null;
     try {
       const docRef = await addDoc(collection(db, 'bookings'), {
         orderId,
         userId: currentUser.uid,
-        userEmail: currentUser.email || '',
-        userName: currentUser.displayName || formData.customerName,
-        userPhoto: currentUser.photoURL || '',
-        productId: product.id,
-        productName: product.name,
+        userEmail: (currentUser.email || '').slice(0, 200),
+        userName: (currentUser.displayName || cleanCustomerName).slice(0, 120),
+        userPhoto: (currentUser.photoURL || '').slice(0, 1000),
+        productId: String(product.id).slice(0, 128),
+        productName: (product.name || '').slice(0, 200),
         productPrice: totals.basePrice,
         gstPercent: totals.gstPercent,
         gstAmount: totals.gstAmount,
-        gstNumber: paymentSettings.gstNumber || '',
+        gstNumber: (paymentSettings.gstNumber || '').slice(0, 64),
         deliveryCharge: totals.deliveryFee,
-        estimatedDeliveryDays: estDelivery,
+        estimatedDeliveryDays: estDelivery.slice(0, 100),
         price: amount,
-        customerName: formData.customerName,
-        phoneNumber: formData.phoneNumber,
-        address: formData.address,
-        pincode: formData.pincode,
-        paymentMethod: formData.paymentMethod,
-        referralCode: activeRefCode,
-        promoterId: activeRefCode,
-        promoterUserId: activeRefCode ? promoterUserId : '',
-        promoterEmail: activeRefCode ? promoterEmail : '',
+        customerName: cleanCustomerName,
+        phoneNumber: cleanPhone,
+        address: cleanAddress,
+        pincode: cleanPincode,
+        paymentMethod: (formData.paymentMethod || 'UPI').slice(0, 50),
+        referralCode: activeRefCode ? activeRefCode.slice(0, 64) : null,
+        promoterId: activeRefCode ? activeRefCode.slice(0, 64) : null,
+        promoterUserId: activeRefCode ? promoterUserId.slice(0, 128) : '',
+        promoterEmail: activeRefCode ? promoterEmail.slice(0, 200) : '',
         promoterCommission: activeRefCode ? commissionAmt : 0,
         status: 'pending_verification',
-        paymentScreenshot: screenshotPreview || null,
+        paymentScreenshot: safeScreenshot,
         createdAt: serverTimestamp(),
       });
       createdDocId = docRef.id;
     } catch (error) {
-      console.warn('Saved locally due to offline/permission:', error);
+      try {
+        handleFirestoreError(error, OperationType.CREATE, 'bookings');
+      } catch {
+        // Fallback saved locally cleanly while logging structured error
+      }
     }
 
     // Write PII-free referral sale summary so the owning Promoter sees live cross-device order stats

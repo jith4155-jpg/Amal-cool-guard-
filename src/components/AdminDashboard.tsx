@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { db } from '../firebase';
+import { useState, useEffect, useCallback } from 'react';
+import { db, auth, handleFirestoreError, OperationType } from '../firebase';
 import {
   collection,
   getDocs,
@@ -8,9 +8,11 @@ import {
   deleteDoc,
   doc,
   query,
+  where,
   orderBy,
   setDoc,
   getDoc,
+  onSnapshot,
 } from 'firebase/firestore';
 import { Product } from '../data/mockProducts';
 import { ThemeSwitcher } from '../context/ThemeContext';
@@ -57,16 +59,26 @@ interface ConfirmDialogState {
   onConfirm: () => void | Promise<void>;
 }
 
+const ADMIN_EMAIL = 'libinvincent310@gmail.com';
+
 export default function AdminDashboard() {
-  const { user: authUser, signInWithGoogle } = useAuth();
+  const { user: authUser, signInWithGoogle, signingIn } = useAuth();
+  const isAdminGmailConnected = authUser?.email?.toLowerCase() === ADMIN_EMAIL;
   const [activeTab, setActiveTab] = useState<'orders' | 'customers' | 'products' | 'payments' | 'promoters'>('orders');
 
   // Toast feedback state (replaces blocked window.alert)
   const [toast, setToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
     setToast({ text, type });
-    setTimeout(() => setToast(prev => (prev?.text === text ? null : prev)), 3500);
+    setTimeout(() => setToast(prev => (prev?.text === text ? null : prev)), 4500);
   };
+
+  // Queued action when Admin tries to Approve / Save Tracking while not connected with Admin Gmail
+  const [pendingCloudAction, setPendingCloudAction] = useState<{
+    label: string;
+    run: () => Promise<void>;
+  } | null>(null);
+  const [updatingOrderKey, setUpdatingOrderKey] = useState<string | null>(null);
 
   // In-app Confirm Modal (replaces blocked window.confirm)
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
@@ -120,20 +132,74 @@ export default function AdminDashboard() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editGalleryInput, setEditGalleryInput] = useState('');
 
+  const applyFetchedOrders = useCallback((remoteList: any[]) => {
+    const deletedOrderIds = new Set(getDeletedOrderIds());
+    const cleanRemote = remoteList.filter(
+      (o: any) => !deletedOrderIds.has(String(o.orderId || '')) && !deletedOrderIds.has(String(o.id || ''))
+    );
+
+    const combined: any[] = [...cleanRemote];
+    const seenIds = new Set<string>();
+    for (const o of cleanRemote) {
+      if (o.orderId) seenIds.add(String(o.orderId));
+      if (o.id) seenIds.add(String(o.id));
+    }
+
+    const localOrders = getLocalOrders();
+    for (const loc of localOrders) {
+      const oid = String(loc.orderId || '');
+      const lid = String(loc.id || '');
+      if (deletedOrderIds.has(oid) || deletedOrderIds.has(lid)) continue;
+      if ((oid && seenIds.has(oid)) || (lid && seenIds.has(lid))) continue;
+      // Keep unsynced local-only orders without overriding live Firestore orders
+      combined.push(loc);
+    }
+
+    const cleaned = saveAllOrders(combined);
+    setOrders(cleaned);
+  }, []);
+
   useEffect(() => {
     fetchProducts();
-    fetchOrders();
     fetchPaymentSettings();
     fetchPromoters();
     fetchCategories();
   }, []);
+
+  useEffect(() => {
+    fetchOrders();
+    if (!isAdminGmailConnected) return;
+
+    const q = query(collection(db, 'bookings'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(
+      q,
+      snapshot => {
+        const remote = snapshot.docs.map(docSnap => ({
+          id: docSnap.id,
+          docId: docSnap.id,
+          ...docSnap.data(),
+        }));
+        applyFetchedOrders(remote);
+        setLoadingOrders(false);
+      },
+      err => {
+        try {
+          handleFirestoreError(err, OperationType.GET, 'bookings');
+        } catch {
+          // Structured error logged cleanly
+        }
+      }
+    );
+
+    return () => unsubscribe();
+  }, [authUser?.uid, isAdminGmailConnected, applyFetchedOrders]);
 
   const fetchCategories = async () => {
     try {
       const docRef = doc(db, 'settings', 'categories');
       const fetchPromise = getDoc(docRef);
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout')), 1200)
+        setTimeout(() => reject(new Error('Timeout')), 5000)
       );
       const docSnap = await Promise.race([fetchPromise, timeoutPromise]);
       if (docSnap.exists()) {
@@ -182,7 +248,7 @@ export default function AdminDashboard() {
       const docRef = doc(db, 'settings', 'payment');
       const fetchPromise = getDoc(docRef);
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout')), 1200)
+        setTimeout(() => reject(new Error('Timeout')), 5000)
       );
       const docSnap = await Promise.race([fetchPromise, timeoutPromise]);
       if (docSnap.exists()) {
@@ -238,7 +304,7 @@ export default function AdminDashboard() {
     try {
       const fetchPromise = getDocs(collection(db, 'products'));
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout')), 1200)
+        setTimeout(() => reject(new Error('Timeout')), 5000)
       );
       const snapshot = await Promise.race([fetchPromise, timeoutPromise]);
       if (!snapshot.empty) {
@@ -258,32 +324,26 @@ export default function AdminDashboard() {
 
   const fetchOrders = async () => {
     setLoadingOrders(true);
-    const deletedOrderIds = new Set(getDeletedOrderIds());
-    let combined: any[] = [];
     try {
       const q = query(collection(db, 'bookings'), orderBy('createdAt', 'desc'));
       const fetchPromise = getDocs(q);
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout')), 1200)
+        setTimeout(() => reject(new Error('Timeout')), 8000)
       );
       const snapshot = await Promise.race([fetchPromise, timeoutPromise]);
-      combined = snapshot.docs
-        .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
-        .filter((o: any) => !deletedOrderIds.has(String(o.orderId || '')) && !deletedOrderIds.has(String(o.id || '')));
+      const remote = snapshot.docs.map(docSnap => ({
+        id: docSnap.id,
+        docId: docSnap.id,
+        ...docSnap.data(),
+      }));
+      applyFetchedOrders(remote);
+      setLoadingOrders(false);
+      return;
     } catch {
-      // Fallback
+      // Fallback to local orders if offline or Admin Gmail not connected yet
     }
 
-    const localOrders = getLocalOrders();
-    const seenIds = new Set(combined.map(o => o.orderId || o.id));
-    for (const loc of localOrders) {
-      if (!seenIds.has(loc.orderId || loc.id)) {
-        combined.push(loc);
-      }
-    }
-
-    const cleaned = saveAllOrders(combined);
-    setOrders(cleaned);
+    setOrders(getLocalOrders());
     setLoadingOrders(false);
   };
 
@@ -509,27 +569,134 @@ export default function AdminDashboard() {
     });
   };
 
-  const updateOrderStatus = async (orderId: string, docId: string | null, newStatus: 'confirmed' | 'rejected' | 'cancelled') => {
-    const nextOrders = orders.map(o => (o.orderId === orderId || o.id === orderId ? { ...o, status: newStatus } : o));
-    setOrders(nextOrders);
-    saveAllOrders(nextOrders);
+  const findBookingDocIds = async (orderId?: string, knownDocId?: string | null): Promise<string[]> => {
+    const ids = new Set<string>();
+    const cleanOrderId = (orderId || '').trim();
+    const cleanKnownDocId = (knownDocId || '').trim();
 
-    const targetDocId = docId || orderId;
-    if (targetDocId) {
+    if (cleanKnownDocId && cleanKnownDocId !== cleanOrderId) {
+      ids.add(cleanKnownDocId);
+    }
+
+    if (cleanOrderId) {
       try {
-        await updateDoc(doc(db, 'bookings', targetDocId), { status: newStatus });
+        const snap = await getDocs(query(collection(db, 'bookings'), where('orderId', '==', cleanOrderId)));
+        snap.docs.forEach(d => ids.add(d.id));
       } catch (err) {
-        console.warn('Firestore update order status err:', err);
+        // Re-throw permission errors so caller prompts Admin Gmail connection
+        const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+        if (msg.includes('permission') || msg.includes('insufficient')) {
+          throw err;
+        }
       }
     }
-    if (orderId) {
+
+    if (ids.size === 0 && cleanKnownDocId) {
       try {
-        await updateDoc(doc(db, 'promoter_sales', orderId), { status: newStatus });
+        const directSnap = await getDoc(doc(db, 'bookings', cleanKnownDocId));
+        if (directSnap.exists()) ids.add(directSnap.id);
       } catch {
-        // ignore if order wasn't a referral order
+        // ignore
       }
     }
-    showToast(`✓ Order #${orderId} marked as ${newStatus.toUpperCase()}`);
+
+    return Array.from(ids);
+  };
+
+  const handleConnectAdminGmail = async (retryPending = false) => {
+    const res = await signInWithGoogle();
+    if (res.user?.email?.toLowerCase() === ADMIN_EMAIL) {
+      showToast('✓ Admin Gmail connected! Syncing Cloud Firestore...');
+      if (retryPending && pendingCloudAction) {
+        const actionToRun = pendingCloudAction.run;
+        setPendingCloudAction(null);
+        await actionToRun();
+      }
+      fetchOrders();
+      fetchProducts();
+      fetchPromoters();
+    } else if (res.user) {
+      showToast(
+        `Signed in as ${res.user.email}. Please select Admin Gmail (${ADMIN_EMAIL}) for Cloud Sync.`,
+        'error'
+      );
+    } else if (res.error) {
+      showToast(res.error, 'error');
+    }
+  };
+
+  const updateOrderStatus = async (orderId: string, docId: string | null, newStatus: 'confirmed' | 'rejected' | 'cancelled') => {
+    const runCloudUpdate = async () => {
+      setUpdatingOrderKey(orderId);
+      try {
+        const bookingIds = await findBookingDocIds(orderId, docId);
+        if (bookingIds.length === 0) {
+          showToast(
+            `❌ Order #${orderId} was not found in Cloud Firestore. Ask the customer to refresh or re-book while signed in.`,
+            'error'
+          );
+          return;
+        }
+
+        await Promise.all(
+          bookingIds.map(id => updateDoc(doc(db, 'bookings', id), { status: newStatus }))
+        );
+
+        if (orderId) {
+          try {
+            const saleSnap = await getDoc(doc(db, 'promoter_sales', orderId));
+            if (saleSnap.exists()) {
+              await updateDoc(doc(db, 'promoter_sales', orderId), { status: newStatus });
+            }
+          } catch {
+            // ignore if order wasn't a referral order
+          }
+        }
+
+        const nextOrders = orders.map(o =>
+          o.orderId === orderId || o.id === orderId || (docId && o.id === docId)
+            ? { ...o, docId: bookingIds[0], status: newStatus }
+            : o
+        );
+        setOrders(nextOrders);
+        saveAllOrders(nextOrders);
+        showToast(
+          `✓ Order #${orderId} ${newStatus === 'confirmed' ? 'APPROVED' : newStatus.toUpperCase()} & synced live to Customer!`
+        );
+      } catch (err) {
+        try {
+          handleFirestoreError(err, OperationType.UPDATE, `bookings/${docId || orderId}`);
+        } catch {
+          // structured error logged
+        }
+        const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+        if (msg.includes('permission') || msg.includes('insufficient')) {
+          setPendingCloudAction({
+            label: `${newStatus === 'confirmed' ? 'Approve' : 'Update'} Order #${orderId}`,
+            run: () => updateOrderStatus(orderId, docId, newStatus),
+          });
+          showToast(
+            `❌ Cloud permission required! Connect Admin Gmail (${ADMIN_EMAIL}) to approve live.`,
+            'error'
+          );
+        } else {
+          showToast(`❌ Failed to update Order #${orderId} in Cloud Firestore. Please try again.`, 'error');
+        }
+      } finally {
+        setUpdatingOrderKey(null);
+      }
+    };
+
+    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+    if (currentEmail !== ADMIN_EMAIL) {
+      setPendingCloudAction({
+        label: `${newStatus === 'confirmed' ? 'Approve' : 'Update'} Order #${orderId}`,
+        run: runCloudUpdate,
+      });
+      return;
+    }
+
+    await runCloudUpdate();
   };
 
   const requestDeleteOrder = (order: any) => {
@@ -540,24 +707,44 @@ export default function AdminDashboard() {
       confirmLabel: '🗑️ Delete Order',
       danger: true,
       onConfirm: async () => {
-        const nextOrders = deleteOrderLocally(targetId, order.id ? String(order.id) : undefined);
-        setOrders(nextOrders);
-        setConfirmDialog(null);
-        showToast(`✓ Order #${targetId} deleted!`);
-        const firestoreDocId = order.docId || order.id;
-        if (firestoreDocId) {
-          try {
-            await deleteDoc(doc(db, 'bookings', String(firestoreDocId)));
-          } catch (err) {
-            console.warn('Firestore delete order err:', err);
-          }
+        const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+        if (currentEmail !== ADMIN_EMAIL) {
+          setConfirmDialog(null);
+          setPendingCloudAction({
+            label: `Delete Order #${targetId}`,
+            run: async () => {
+              const bookingIds = await findBookingDocIds(order.orderId, order.docId || order.id);
+              await Promise.all(bookingIds.map(id => deleteDoc(doc(db, 'bookings', id))));
+              if (order.orderId) {
+                try {
+                  await deleteDoc(doc(db, 'promoter_sales', String(order.orderId)));
+                } catch {}
+              }
+              const nextOrders = deleteOrderLocally(targetId, order.id ? String(order.id) : undefined);
+              setOrders(nextOrders);
+              showToast(`✓ Order #${targetId} deleted from Cloud & Admin!`);
+            },
+          });
+          return;
         }
-        if (order.orderId) {
-          try {
-            await deleteDoc(doc(db, 'promoter_sales', String(order.orderId)));
-          } catch {
-            // ignore
+
+        try {
+          const bookingIds = await findBookingDocIds(order.orderId, order.docId || order.id);
+          await Promise.all(bookingIds.map(id => deleteDoc(doc(db, 'bookings', id))));
+          if (order.orderId) {
+            try {
+              await deleteDoc(doc(db, 'promoter_sales', String(order.orderId)));
+            } catch {
+              // ignore
+            }
           }
+          const nextOrders = deleteOrderLocally(targetId, order.id ? String(order.id) : undefined);
+          setOrders(nextOrders);
+          setConfirmDialog(null);
+          showToast(`✓ Order #${targetId} deleted permanently!`);
+        } catch (err) {
+          setConfirmDialog(null);
+          showToast(`❌ Could not delete from Cloud: check Admin Gmail connection.`, 'error');
         }
       },
     });
@@ -570,45 +757,75 @@ export default function AdminDashboard() {
       trackingUrl: order.trackingUrl || '',
       courierName: order.courierName || '',
     };
-    const cleanTrackingId = (draft.trackingId || '').trim();
-    const cleanTrackingUrl = (draft.trackingUrl || '').trim();
-    const cleanCourierName = (draft.courierName || '').trim();
+    const cleanTrackingId = (draft.trackingId || '').trim().slice(0, 120);
+    const cleanTrackingUrl = (draft.trackingUrl || '').trim().slice(0, 500);
+    const cleanCourierName = (draft.courierName || '').trim().slice(0, 100);
 
     if (!cleanTrackingId) {
       showToast('Please enter a Tracking ID before saving.', 'error');
       return;
     }
 
-    const nextOrders = orders.map(o =>
-      (o.orderId === order.orderId || o.id === order.id)
-        ? {
-            ...o,
-            trackingId: cleanTrackingId,
-            trackingUrl: cleanTrackingUrl || undefined,
-            courierName: cleanCourierName || undefined,
-          }
-        : o
-    );
-    setOrders(nextOrders);
-    saveAllOrders(nextOrders);
-
-    const targetDocId = String(order.docId || order.id || order.orderId || '');
-    if (targetDocId) {
+    const runCloudTracking = async () => {
+      setUpdatingOrderKey(orderKey);
       try {
-        await setDoc(
-          doc(db, 'bookings', targetDocId),
-          {
-            trackingId: cleanTrackingId,
-            trackingUrl: cleanTrackingUrl || '',
-            courierName: cleanCourierName || '',
-          },
-          { merge: true }
+        const bookingIds = await findBookingDocIds(order.orderId, order.docId || order.id);
+        if (bookingIds.length === 0) {
+          showToast(`❌ Order #${orderKey} not found in Cloud Firestore.`, 'error');
+          return;
+        }
+
+        await Promise.all(
+          bookingIds.map(id =>
+            updateDoc(doc(db, 'bookings', id), {
+              trackingId: cleanTrackingId,
+              trackingUrl: cleanTrackingUrl || '',
+              courierName: cleanCourierName || '',
+            })
+          )
         );
+
+        const nextOrders = orders.map(o =>
+          o.orderId === order.orderId || o.id === order.id
+            ? {
+                ...o,
+                docId: bookingIds[0],
+                trackingId: cleanTrackingId,
+                trackingUrl: cleanTrackingUrl || undefined,
+                courierName: cleanCourierName || undefined,
+              }
+            : o
+        );
+        setOrders(nextOrders);
+        saveAllOrders(nextOrders);
+        showToast(`✓ Tracking ID "${cleanTrackingId}" synced live to Customer's Orders page!`);
       } catch (err) {
-        console.warn('Firestore save tracking err:', err);
+        try {
+          handleFirestoreError(err, OperationType.UPDATE, `bookings/${order.docId || order.id}`);
+        } catch {}
+        const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+        if (msg.includes('permission') || msg.includes('insufficient')) {
+          setPendingCloudAction({
+            label: `Save Tracking ID for Order #${orderKey}`,
+            run: () => handleSaveOrderTracking(order),
+          });
+        }
+        showToast('❌ Tracking ID failed to save in Cloud. Connect Admin Gmail first.', 'error');
+      } finally {
+        setUpdatingOrderKey(null);
       }
+    };
+
+    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+    if (currentEmail !== ADMIN_EMAIL) {
+      setPendingCloudAction({
+        label: `Save Tracking ID for Order #${orderKey}`,
+        run: runCloudTracking,
+      });
+      return;
     }
-    showToast(`✓ Tracking ID "${cleanTrackingId}" sent to Customer's Orders page!`);
+
+    await runCloudTracking();
   };
 
   const handleSaveOrderDeliveryDays = async (order: any) => {
@@ -618,34 +835,65 @@ export default function AdminDashboard() {
       order.estimatedDeliveryDays ??
       paymentSettings.defaultDeliveryDays ??
       ''
-    ).trim();
+    )
+      .trim()
+      .slice(0, 100);
 
     if (!cleanDays) {
       showToast('Please enter estimated delivery days (e.g. 3-5 Days).', 'error');
       return;
     }
 
-    const nextOrders = orders.map(o =>
-      o.orderId === order.orderId || o.id === order.id
-        ? { ...o, estimatedDeliveryDays: cleanDays }
-        : o
-    );
-    setOrders(nextOrders);
-    saveAllOrders(nextOrders);
-
-    const targetDocId = String(order.docId || order.id || order.orderId || '');
-    if (targetDocId) {
+    const runCloudEta = async () => {
+      setUpdatingOrderKey(orderKey);
       try {
-        await setDoc(
-          doc(db, 'bookings', targetDocId),
-          { estimatedDeliveryDays: cleanDays },
-          { merge: true }
+        const bookingIds = await findBookingDocIds(order.orderId, order.docId || order.id);
+        if (bookingIds.length === 0) {
+          showToast(`❌ Order #${orderKey} not found in Cloud Firestore.`, 'error');
+          return;
+        }
+
+        await Promise.all(
+          bookingIds.map(id =>
+            updateDoc(doc(db, 'bookings', id), { estimatedDeliveryDays: cleanDays })
+          )
         );
+
+        const nextOrders = orders.map(o =>
+          o.orderId === order.orderId || o.id === order.id
+            ? { ...o, docId: bookingIds[0], estimatedDeliveryDays: cleanDays }
+            : o
+        );
+        setOrders(nextOrders);
+        saveAllOrders(nextOrders);
+        showToast(`✓ Delivery time "${cleanDays}" synced live to Customer!`);
       } catch (err) {
-        console.warn('Firestore save delivery days err:', err);
+        try {
+          handleFirestoreError(err, OperationType.UPDATE, `bookings/${order.docId || order.id}`);
+        } catch {}
+        const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+        if (msg.includes('permission') || msg.includes('insufficient')) {
+          setPendingCloudAction({
+            label: `Apply ETA for Order #${orderKey}`,
+            run: () => handleSaveOrderDeliveryDays(order),
+          });
+        }
+        showToast('❌ Could not sync delivery ETA. Connect Admin Gmail first.', 'error');
+      } finally {
+        setUpdatingOrderKey(null);
       }
+    };
+
+    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+    if (currentEmail !== ADMIN_EMAIL) {
+      setPendingCloudAction({
+        label: `Apply ETA for Order #${orderKey}`,
+        run: runCloudEta,
+      });
+      return;
     }
-    showToast(`✓ Delivery time "${cleanDays}" applied for Customer!`);
+
+    await runCloudEta();
   };
 
   const handleCopyAddressForWhatsApp = (order: any) => {
@@ -778,26 +1026,18 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <ThemeSwitcher />
-          {authUser?.email !== 'libinvincent310@gmail.com' ? (
+          {!isAdminGmailConnected ? (
             <button
               type="button"
-              onClick={async () => {
-                const res = await signInWithGoogle();
-                if (res.user?.email === 'libinvincent310@gmail.com') {
-                  showToast('✓ Admin Gmail synced for Cloud Firestore!');
-                  fetchOrders();
-                  fetchProducts();
-                } else if (res.user) {
-                  showToast(`Signed in as ${res.user.email}. Admin email is libinvincent310@gmail.com.`, 'error');
-                }
-              }}
-              className="bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold px-3 py-2 rounded-xl shadow"
+              onClick={() => handleConnectAdminGmail(false)}
+              disabled={signingIn}
+              className="bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold px-3 py-2 rounded-xl shadow disabled:opacity-60"
             >
-              🔐 Connect Admin Gmail
+              {signingIn ? 'Connecting...' : '🔐 Connect Admin Gmail'}
             </button>
           ) : (
             <span className="bg-emerald-900/60 border border-emerald-500/40 text-emerald-300 text-[11px] font-bold px-2.5 py-1.5 rounded-xl">
-              ✓ {authUser.email}
+              ✓ Cloud Live: {authUser?.email}
             </span>
           )}
           <button
@@ -818,6 +1058,31 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
           </a>
         </div>
       </header>
+
+      {/* High-Visibility Cloud Sync Warning Banner when Admin Gmail is not connected */}
+      {!isAdminGmailConnected && (
+        <div className="mb-6 bg-amber-50 border-2 border-amber-400 rounded-2xl p-4 shadow-md flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div className="space-y-1">
+            <p className="text-xs sm:text-sm font-black text-amber-950 flex items-center gap-1.5">
+              <span>⚠️</span>
+              <span>Cloud Order Sync Disconnected! (കസ്റ്റമർ വെബ്സൈറ്റിലേക്ക് അപ്പ്രൂവൽ സിങ്ക് ആകാൻ Admin Gmail കണക്റ്റ് ചെയ്യുക)</span>
+            </p>
+            <p className="text-[11px] text-amber-900 font-semibold">
+              {authUser?.email
+                ? `Currently signed in as "${authUser.email}". Customer Profile & Orders will ONLY update from Admin Gmail (${ADMIN_EMAIL}).`
+                : `Sign in with Admin Gmail (${ADMIN_EMAIL}) so order approvals, ETA & Tracking IDs reflect live on customer phones.`}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => handleConnectAdminGmail(false)}
+            disabled={signingIn}
+            className="w-full sm:w-auto shrink-0 bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow transition disabled:opacity-60"
+          >
+            {signingIn ? 'Connecting...' : '🔐 Connect Admin Gmail Now'}
+          </button>
+        </div>
+      )}
 
       {/* Analytics Summary Bar */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
@@ -1172,15 +1437,15 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                     {/* Admin Action Buttons (Approve, Reject, Delete) */}
                     <div className="flex gap-2 pt-2 border-t">
                       <button
-                        onClick={() => updateOrderStatus(order.orderId || order.id, order.id, 'confirmed')}
-                        disabled={order.status === 'confirmed'}
+                        onClick={() => updateOrderStatus(order.orderId || order.id, order.docId || order.id, 'confirmed')}
+                        disabled={order.status === 'confirmed' || updatingOrderKey === (order.orderId || order.id)}
                         className="flex-1 bg-green-600 hover:bg-green-700 text-white font-extrabold text-xs py-2.5 rounded-xl shadow disabled:opacity-40 transition"
                       >
-                        ✓ Approve
+                        {updatingOrderKey === (order.orderId || order.id) ? 'Syncing...' : '✓ Approve'}
                       </button>
                       <button
-                        onClick={() => updateOrderStatus(order.orderId || order.id, order.id, 'rejected')}
-                        disabled={order.status === 'rejected'}
+                        onClick={() => updateOrderStatus(order.orderId || order.id, order.docId || order.id, 'rejected')}
+                        disabled={order.status === 'rejected' || updatingOrderKey === (order.orderId || order.id)}
                         className="flex-1 bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs py-2.5 rounded-xl shadow disabled:opacity-40 transition"
                       >
                         ✕ Reject
@@ -2988,6 +3253,48 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                 type="button"
                 onClick={() => setShowPickupQuickModal(false)}
                 className="flex-1 bg-gray-200 text-gray-800 font-bold py-3 rounded-xl text-xs"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN GMAIL REQUIRED MODAL (Prevents silent local-only approvals) */}
+      {pendingCloudAction && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-xs flex items-center justify-center z-[290] p-4">
+          <div className="bg-white rounded-3xl p-6 shadow-2xl max-w-sm w-full space-y-4 text-center border-2 border-amber-400">
+            <div className="w-14 h-14 bg-amber-100 text-amber-700 text-2xl rounded-full flex items-center justify-center mx-auto">
+              🔐
+            </div>
+            <div className="space-y-1.5">
+              <h3 className="text-lg font-black text-gray-900">
+                Connect Admin Gmail for Live Sync
+              </h3>
+              <p className="text-xs text-gray-600 leading-relaxed">
+                Action paused: <span className="font-bold text-gray-900">{pendingCloudAction.label}</span>
+              </p>
+              <p className="text-[11px] text-amber-900 bg-amber-50 border border-amber-200 p-2.5 rounded-xl font-semibold">
+                {authUser?.email
+                  ? `You are currently signed in as "${authUser.email}". Sign in with "${ADMIN_EMAIL}" so Customer Orders & Profile update immediately.`
+                  : `Sign in with "${ADMIN_EMAIL}" so this change reaches the Customer's phone immediately.`}
+              </p>
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <button
+                type="button"
+                onClick={() => handleConnectAdminGmail(true)}
+                disabled={signingIn}
+                className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold py-3 rounded-xl text-xs shadow transition disabled:opacity-60"
+              >
+                {signingIn ? 'Connecting Google...' : `🔐 Connect ${ADMIN_EMAIL} & Apply`}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPendingCloudAction(null)}
+                className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 rounded-xl text-xs"
               >
                 Cancel
               </button>
