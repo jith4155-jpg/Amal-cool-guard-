@@ -2440,7 +2440,7 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                 value={paymentSettings.storeBaseUrl || DEFAULT_STORE_BASE_URL}
                 onChange={e => setPaymentSettings({ ...paymentSettings, storeBaseUrl: e.target.value })}
                 className="w-full p-3 text-xs border border-indigo-300 rounded-xl outline-none font-mono bg-white font-bold text-indigo-950"
-                placeholder="https://amal-cool-guard.vercel.app"
+                placeholder="https://amalcoolguard.in"
               />
               <p className="text-[11px] text-indigo-800">
                 All shareable links will use this clean domain (e.g.{' '}
