@@ -4,6 +4,7 @@ import AdminLogin from './components/AdminLogin';
 import AdminDashboard from './components/AdminDashboard';
 import CustomerLogin from './components/CustomerLogin';
 import AccountDashboard from './components/AccountDashboard';
+import CategoriesView from './components/CategoriesView';
 import ProductDetails from './components/ProductDetails';
 import OrdersView from './components/OrdersView';
 import PromoterPortal from './components/PromoterPortal';
@@ -29,6 +30,7 @@ export default function App() {
               {/* Customer Storefront routes with Layout */}
               <Route element={<Layout />}>
                 <Route path="/" element={<AppStorefront />} />
+                <Route path="/categories" element={<CategoriesView />} />
                 <Route path="/account" element={<AccountDashboard />} />
                 <Route path="/orders" element={<OrdersView />} />
                 <Route path="/product/:id" element={<ProductDetails />} />

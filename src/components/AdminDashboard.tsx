@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   collection,
   deleteDoc,
@@ -26,7 +27,6 @@ import {
 } from '../firebase';
 import { Product } from '../data/mockProducts';
 import { ThemeSwitcher } from '../context/ThemeContext';
-import { useAuth } from '../context/AuthContext';
 import {
   compressProductImageToRange,
   estimateDataUrlKB,
@@ -76,8 +76,6 @@ interface ConfirmDialogState {
   onConfirm: () => void | Promise<void>;
 }
 
-const ADMIN_EMAIL = 'libinvincent310@gmail.com';
-
 function buildPaymentSettingsPayload(settings: StorePaymentSettings) {
   return {
     enableCOD: Boolean(settings.enableCOD),
@@ -101,17 +99,14 @@ function buildPaymentSettingsPayload(settings: StorePaymentSettings) {
 }
 
 export default function AdminDashboard() {
-  const { user: authUser, authReady, signInWithGoogle, signingIn } = useAuth();
-  const isAdminGmailConnected = Boolean(
-    authUser?.email?.toLowerCase() === ADMIN_EMAIL && authUser.emailVerified
-  );
-  const getCurrentAdminEmail = async (): Promise<string> => {
-    const fbUser = auth.currentUser;
-    if (fbUser?.email && fbUser.emailVerified) {
-      return fbUser.email.toLowerCase();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (localStorage.getItem('amal_admin_auth') !== 'true') {
+      navigate('/admin');
     }
-    return isAdminGmailConnected && authUser?.email ? authUser.email.toLowerCase() : '';
-  };
+  }, [navigate]);
+
   const [activeTab, setActiveTab] = useState<'orders' | 'customers' | 'products' | 'payments' | 'promoters'>('orders');
 
   // Toast feedback state (replaces blocked window.alert)
@@ -121,11 +116,6 @@ export default function AdminDashboard() {
     setTimeout(() => setToast(prev => (prev?.text === text ? null : prev)), 4500);
   };
 
-  // Queued action when Admin tries to Approve / Save Tracking while not connected with Admin Gmail
-  const [pendingCloudAction, setPendingCloudAction] = useState<{
-    label: string;
-    run: () => Promise<void>;
-  } | null>(null);
   const [updatingOrderKey, setUpdatingOrderKey] = useState<string | null>(null);
   const [brokenAdminOrderThumbs, setBrokenAdminOrderThumbs] = useState<Record<string, boolean>>({});
 
@@ -252,15 +242,12 @@ export default function AdminDashboard() {
   }, []);
 
   useEffect(() => {
-    if (!authReady) return;
-    if (!isAdminGmailConnected) {
-      setOrders(getLocalOrders());
-      setPromotersMap(getPromotersDict());
-      return;
-    }
-
     fetchOrders();
+    fetchProducts();
     fetchPromoters();
+    fetchCategories();
+    fetchPaymentSettings();
+
     if (localStorage.getItem('amal_catalog_dirty') === 'true') {
       syncCatalogToCloud();
     }
@@ -302,7 +289,7 @@ export default function AdminDashboard() {
       unsubBookings();
       unsubPromoters();
     };
-  }, [authReady, authUser?.uid, isAdminGmailConnected, applyFetchedOrders]);
+  }, [applyFetchedOrders]);
 
   const fetchCategories = async () => {
     try {
@@ -326,25 +313,14 @@ export default function AdminDashboard() {
     setNewCategoryInput('');
     showToast(`✓ Category "${trimmed}" added to Admin & Storefront!`);
 
-    const syncCategories = async () => {
-      try {
-        await setDoc(doc(db, 'settings', 'categories'), {
-          list: next,
-          updatedAt: new Date().toISOString(),
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, 'settings/categories');
-      }
-    };
-
-    if ((await getCurrentAdminEmail()) !== ADMIN_EMAIL) {
-      setPendingCloudAction({
-        label: `Sync Category "${trimmed}" to Firestore`,
-        run: syncCategories,
+    try {
+      await setDoc(doc(db, 'settings', 'categories'), {
+        list: next,
+        updatedAt: new Date().toISOString(),
       });
-      return;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/categories');
     }
-    await syncCategories();
   };
 
   const handleDeleteCustomCategory = async (catName: string) => {
@@ -368,25 +344,14 @@ export default function AdminDashboard() {
     }
     showToast(`✓ Category "${catName}" removed.`);
 
-    const syncDeleteCat = async () => {
-      try {
-        await setDoc(doc(db, 'settings', 'categories'), {
-          list: next,
-          updatedAt: new Date().toISOString(),
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, 'settings/categories');
-      }
-    };
-
-    if ((await getCurrentAdminEmail()) !== ADMIN_EMAIL) {
-      setPendingCloudAction({
-        label: `Sync Removed Category "${catName}" to Firestore`,
-        run: syncDeleteCat,
+    try {
+      await setDoc(doc(db, 'settings', 'categories'), {
+        list: next,
+        updatedAt: new Date().toISOString(),
       });
-      return;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/categories');
     }
-    await syncDeleteCat();
   };
 
   const handleClearAllCategories = async () => {
@@ -399,25 +364,14 @@ export default function AdminDashboard() {
     setProducts(updatedProducts);
     showToast('✓ All categories removed & hidden from Storefront!');
 
-    const syncClearCats = async () => {
-      try {
-        await setDoc(doc(db, 'settings', 'categories'), {
-          list: [],
-          updatedAt: new Date().toISOString(),
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, 'settings/categories');
-      }
-    };
-
-    if ((await getCurrentAdminEmail()) !== ADMIN_EMAIL) {
-      setPendingCloudAction({
-        label: 'Clear All Categories on Firestore',
-        run: syncClearCats,
+    try {
+      await setDoc(doc(db, 'settings', 'categories'), {
+        list: [],
+        updatedAt: new Date().toISOString(),
       });
-      return;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/categories');
     }
-    await syncClearCats();
   };
 
   const fetchPaymentSettings = async () => {
@@ -451,59 +405,29 @@ export default function AdminDashboard() {
         : `🚫 ${label} is now BLOCKED on Storefront!`
     );
 
-    const syncPayment = async () => {
-      try {
-        await setDoc(doc(db, 'settings', 'payment'), buildPaymentSettingsPayload(updated));
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, 'settings/payment');
-      }
-    };
-
-    if ((await getCurrentAdminEmail()) !== ADMIN_EMAIL) {
-      setPendingCloudAction({
-        label: `Update ${label} Payment Setting`,
-        run: syncPayment,
-      });
-      return;
+    try {
+      await setDoc(doc(db, 'settings', 'payment'), buildPaymentSettingsPayload(updated));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/payment');
     }
-    await syncPayment();
   };
 
   const savePaymentSettings = async () => {
     const cleanSettings = savePaymentSettingsSync(paymentSettings);
     setPaymentSettings(cleanSettings);
 
-    const syncPayment = async () => {
-      try {
-        await setDoc(doc(db, 'settings', 'payment'), buildPaymentSettingsPayload(cleanSettings));
-        setSettingsSavedMsg(true);
-        showToast('✓ Store & payment settings saved to Firebase!');
-        setTimeout(() => setSettingsSavedMsg(false), 3000);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, 'settings/payment');
-      }
-    };
-
-    if ((await getCurrentAdminEmail()) !== ADMIN_EMAIL) {
-      setPendingCloudAction({
-        label: 'Save Store & Payment Settings to Firestore',
-        run: syncPayment,
-      });
-      return;
+    try {
+      await setDoc(doc(db, 'settings', 'payment'), buildPaymentSettingsPayload(cleanSettings));
+      setSettingsSavedMsg(true);
+      showToast('✓ Store & payment settings saved to Firebase!');
+      setTimeout(() => setSettingsSavedMsg(false), 3000);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/payment');
     }
-
-    await syncPayment();
   };
 
   const syncCatalogToCloud = async (customList?: Product[]) => {
     const listToSync = (customList || products).filter(p => !isProductDeleted(p.id));
-    if (!isAdminGmailConnected) {
-      setPendingCloudAction({
-        label: `Sync ${listToSync.length} Products to Firestore`,
-        run: () => syncCatalogToCloud(customList),
-      });
-      return;
-    }
 
     setSyncingCloudCatalog(true);
     try {
@@ -544,7 +468,7 @@ export default function AdminDashboard() {
         setProducts(merged);
         setLoadingProducts(false);
         return;
-      } else if (isAdminGmailConnected && getCatalogProducts().length > 0) {
+      } else if (getCatalogProducts().length > 0) {
         syncCatalogToCloud(getCatalogProducts());
       }
     } catch {
@@ -557,12 +481,6 @@ export default function AdminDashboard() {
 
   const fetchOrders = async () => {
     setLoadingOrders(true);
-    if (!isAdminGmailConnected) {
-      setOrders(getLocalOrders());
-      setLoadingOrders(false);
-      return;
-    }
-
     try {
       const snap = await getDocs(collection(db, 'bookings'));
       const remote = snap.docs.map(d => mapBookingFromDb(d.data(), d.id));
@@ -583,7 +501,6 @@ export default function AdminDashboard() {
   const fetchPromoters = async () => {
     const localDict = getPromotersDict();
     setPromotersMap(localDict);
-    if (!isAdminGmailConnected) return;
 
     try {
       const snap = await getDocs(collection(db, 'promoters'));
@@ -702,12 +619,10 @@ export default function AdminDashboard() {
     if (newLocalProd.category && !categories.some(c => c.toLowerCase() === newLocalProd.category!.toLowerCase())) {
       const nextCats = addCategory(newLocalProd.category);
       setCategories(nextCats);
-      if (isAdminGmailConnected) {
-        setDoc(doc(db, 'settings', 'categories'), {
-          list: nextCats,
-          updatedAt: new Date().toISOString(),
-        }).catch(() => {});
-      }
+      setDoc(doc(db, 'settings', 'categories'), {
+        list: nextCats,
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {});
     }
 
     setNewProduct({
@@ -727,7 +642,6 @@ export default function AdminDashboard() {
     setNewGalleryInput('');
     showToast('✓ New Product & photo published live to Storefront & Orders!');
 
-    const currentEmail = await getCurrentAdminEmail();
     const publishToCloud = async () => {
       setSavingProduct(true);
       try {
@@ -776,14 +690,6 @@ export default function AdminDashboard() {
       }
     };
 
-    if (currentEmail !== ADMIN_EMAIL) {
-      setPendingCloudAction({
-        label: `Publish Product "${newLocalProd.name}" to Firestore`,
-        run: publishToCloud,
-      });
-      return;
-    }
-
     await publishToCloud();
   };
 
@@ -822,7 +728,6 @@ export default function AdminDashboard() {
     showToast('✓ Product photo & details saved live on Storefront!');
 
     // 2. Firestore Cloud sync & Firebase Storage upload
-    const currentEmail = await getCurrentAdminEmail();
     const saveToCloud = async () => {
       setSavingProduct(true);
       try {
@@ -869,14 +774,6 @@ export default function AdminDashboard() {
       }
     };
 
-    if (currentEmail !== ADMIN_EMAIL) {
-      setPendingCloudAction({
-        label: `Save Changes to "${updated.name}" on Firestore`,
-        run: saveToCloud,
-      });
-      return;
-    }
-
     await saveToCloud();
   };
 
@@ -892,7 +789,6 @@ export default function AdminDashboard() {
         setConfirmDialog(null);
         showToast(`✓ "${prod.name}" deleted from Storefront & Catalog!`);
 
-        const currentEmail = await getCurrentAdminEmail();
         const deleteFromCloud = async () => {
           try {
             const batch = writeBatch(db);
@@ -909,14 +805,6 @@ export default function AdminDashboard() {
             console.warn('Firestore delete warning:', err);
           }
         };
-
-        if (currentEmail !== ADMIN_EMAIL) {
-          setPendingCloudAction({
-            label: `Delete Product "${prod.name}" from Firestore`,
-            run: deleteFromCloud,
-          });
-          return;
-        }
 
         await deleteFromCloud();
       },
@@ -935,7 +823,6 @@ export default function AdminDashboard() {
         setConfirmDialog(null);
         showToast('✓ All demo products & photos removed! Ready for your products.');
 
-        const currentEmail = await getCurrentAdminEmail();
         const deleteFromCloud = async () => {
           try {
             const batch = writeBatch(db);
@@ -953,107 +840,52 @@ export default function AdminDashboard() {
           }
         };
 
-        if (currentEmail !== ADMIN_EMAIL) {
-          setPendingCloudAction({
-            label: 'Clear All Products from Firestore',
-            run: deleteFromCloud,
-          });
-          return;
-        }
-
         await deleteFromCloud();
       },
     });
   };
 
-  const handleConnectAdminGmail = async (retryPending = false) => {
-    const res = await signInWithGoogle();
-    if (res.user?.email?.toLowerCase() === ADMIN_EMAIL) {
-      showToast('✓ Admin account connected! Syncing Firestore...');
-      if (retryPending && pendingCloudAction) {
-        const actionToRun = pendingCloudAction.run;
-        setPendingCloudAction(null);
-        await actionToRun();
-      }
-      fetchOrders();
-      fetchProducts();
-      fetchPromoters();
-    } else if (res.user) {
-      showToast(
-        `Signed in as ${res.user.email}. Please select Admin account (${ADMIN_EMAIL}) for Cloud Sync.`,
-        'error'
-      );
-    } else if (res.error) {
-      showToast(res.error, 'error');
-    }
-  };
-
   const updateOrderStatus = async (orderId: string, docId: string | null, newStatus: 'confirmed' | 'rejected' | 'cancelled') => {
-    const runCloudUpdate = async () => {
-      setUpdatingOrderKey(orderId);
-      try {
-        const docIds = await resolveBookingDocIds(orderId, docId);
-        if (docIds.length === 0) {
-          showToast(
-            `❌ Order #${orderId} was not found in Firestore. Ask the customer to refresh or re-book while signed in.`,
-            'error'
-          );
-          return;
-        }
-
-        await Promise.all(
-          docIds.map(id => updateDoc(doc(db, 'bookings', id), { status: newStatus }))
-        );
-
-        try {
-          const saleRef = doc(db, 'promoter_sales', orderId);
-          const saleSnap = await getDoc(saleRef);
-          if (saleSnap.exists()) {
-            await updateDoc(saleRef, { status: newStatus });
-          }
-        } catch {
-          // ignore if not a referral order
-        }
-
-        const nextOrders = orders.map(o =>
-          o.orderId === orderId || o.id === orderId || (docId && o.id === docId)
-            ? { ...o, docId: docIds[0], status: newStatus }
-            : o
-        );
-        setOrders(nextOrders);
-        saveAllOrders(nextOrders);
+    setUpdatingOrderKey(orderId);
+    try {
+      const docIds = await resolveBookingDocIds(orderId, docId);
+      if (docIds.length === 0) {
         showToast(
-          `✓ Order #${orderId} ${newStatus === 'confirmed' ? 'APPROVED' : newStatus.toUpperCase()} & synced live to Customer!`
+          `❌ Order #${orderId} was not found in Firestore.`,
+          'error'
         );
-      } catch (err: any) {
-        const msg = String(err?.message || err).toLowerCase();
-        if (msg.includes('permission') || msg.includes('denied')) {
-          setPendingCloudAction({
-            label: `${newStatus === 'confirmed' ? 'Approve' : 'Update'} Order #${orderId}`,
-            run: () => updateOrderStatus(orderId, docId, newStatus),
-          });
-          showToast(
-            `❌ Cloud permission required! Connect Admin Gmail (${ADMIN_EMAIL}) to approve live.`,
-            'error'
-          );
-        } else {
-          showToast(`❌ Failed to update Order #${orderId} in Firestore. Please try again.`, 'error');
-        }
-      } finally {
-        setUpdatingOrderKey(null);
+        return;
       }
-    };
 
-    const currentEmail = await getCurrentAdminEmail();
-    if (currentEmail !== ADMIN_EMAIL) {
-      setPendingCloudAction({
-        label: `${newStatus === 'confirmed' ? 'Approve' : 'Update'} Order #${orderId}`,
-        run: runCloudUpdate,
-      });
-      return;
+      await Promise.all(
+        docIds.map(id => updateDoc(doc(db, 'bookings', id), { status: newStatus }))
+      );
+
+      try {
+        const saleRef = doc(db, 'promoter_sales', orderId);
+        const saleSnap = await getDoc(saleRef);
+        if (saleSnap.exists()) {
+          await updateDoc(saleRef, { status: newStatus });
+        }
+      } catch {
+        // ignore if not a referral order
+      }
+
+      const nextOrders = orders.map(o =>
+        o.orderId === orderId || o.id === orderId || (docId && o.id === docId)
+          ? { ...o, docId: docIds[0], status: newStatus }
+          : o
+      );
+      setOrders(nextOrders);
+      saveAllOrders(nextOrders);
+      showToast(
+        `✓ Order #${orderId} ${newStatus === 'confirmed' ? 'APPROVED' : newStatus.toUpperCase()} & synced live to Customer!`
+      );
+    } catch {
+      showToast(`❌ Failed to update Order #${orderId} in Firestore. Please try again.`, 'error');
+    } finally {
+      setUpdatingOrderKey(null);
     }
-
-    await runCloudUpdate();
   };
 
   const requestDeleteOrder = (order: any) => {
@@ -1064,8 +896,7 @@ export default function AdminDashboard() {
       confirmLabel: '🗑️ Delete Order',
       danger: true,
       onConfirm: async () => {
-        const currentEmail = await getCurrentAdminEmail();
-        const runDelete = async () => {
+        try {
           const docIds = await resolveBookingDocIds(order.orderId, order.docId || order.id);
           await Promise.all(docIds.map(id => deleteDoc(doc(db, 'bookings', id))));
           if (order.orderId) {
@@ -1077,27 +908,11 @@ export default function AdminDashboard() {
           }
           const nextOrders = deleteOrderLocally(targetId, order.id ? String(order.id) : undefined);
           setOrders(nextOrders);
-        };
-
-        if (currentEmail !== ADMIN_EMAIL) {
-          setConfirmDialog(null);
-          setPendingCloudAction({
-            label: `Delete Order #${targetId}`,
-            run: async () => {
-              await runDelete();
-              showToast(`✓ Order #${targetId} deleted from Firestore & Admin!`);
-            },
-          });
-          return;
-        }
-
-        try {
-          await runDelete();
           setConfirmDialog(null);
           showToast(`✓ Order #${targetId} deleted permanently!`);
         } catch {
           setConfirmDialog(null);
-          showToast('❌ Could not delete from Firestore: check Admin Gmail connection.', 'error');
+          showToast('❌ Could not delete order from Firestore.', 'error');
         }
       },
     });
@@ -1119,79 +934,59 @@ export default function AdminDashboard() {
       return;
     }
 
-    const runCloudTracking = async () => {
-      setUpdatingOrderKey(orderKey);
-      try {
-        const cleanOrderId = String(order.orderId || order.id || '').trim();
-        const docIds = await resolveBookingDocIds(cleanOrderId, order.docId || order.id);
-        if (docIds.length === 0) {
-          showToast(`❌ Order #${orderKey} not found in Firestore.`, 'error');
-          return;
-        }
-
-        await Promise.all(
-          docIds.map(id =>
-            updateDoc(doc(db, 'bookings', id), {
-              trackingId: cleanTrackingId,
-              trackingUrl: cleanTrackingUrl || '',
-              courierName: cleanCourierName || '',
-            })
-          )
-        );
-
-        if (cleanOrderId) {
-          try {
-            const saleRef = doc(db, 'promoter_sales', cleanOrderId);
-            const saleSnap = await getDoc(saleRef);
-            if (saleSnap.exists()) {
-              await updateDoc(saleRef, {
-                trackingId: cleanTrackingId,
-                courierName: cleanCourierName || '',
-              });
-            }
-          } catch {
-            // ignore if not a referral order
-          }
-        }
-
-        const nextOrders = orders.map(o =>
-          o.orderId === order.orderId || o.id === order.id
-            ? {
-                ...o,
-                docId: docIds[0],
-                trackingId: cleanTrackingId,
-                trackingUrl: cleanTrackingUrl || undefined,
-                courierName: cleanCourierName || undefined,
-              }
-            : o
-        );
-        setOrders(nextOrders);
-        saveAllOrders(nextOrders);
-        showToast(`✓ Tracking ID "${cleanTrackingId}" synced live to Customer & Promoter!`);
-      } catch (err: any) {
-        const msg = String(err?.message || err).toLowerCase();
-        if (msg.includes('permission') || msg.includes('denied')) {
-          setPendingCloudAction({
-            label: `Save Tracking ID for Order #${orderKey}`,
-            run: () => handleSaveOrderTracking(order),
-          });
-        }
-        showToast('❌ Tracking ID failed to save in Firestore. Connect Admin Gmail first.', 'error');
-      } finally {
-        setUpdatingOrderKey(null);
+    setUpdatingOrderKey(orderKey);
+    try {
+      const cleanOrderId = String(order.orderId || order.id || '').trim();
+      const docIds = await resolveBookingDocIds(cleanOrderId, order.docId || order.id);
+      if (docIds.length === 0) {
+        showToast(`❌ Order #${orderKey} not found in Firestore.`, 'error');
+        return;
       }
-    };
 
-    const currentEmail = await getCurrentAdminEmail();
-    if (currentEmail !== ADMIN_EMAIL) {
-      setPendingCloudAction({
-        label: `Save Tracking ID for Order #${orderKey}`,
-        run: runCloudTracking,
-      });
-      return;
+      await Promise.all(
+        docIds.map(id =>
+          updateDoc(doc(db, 'bookings', id), {
+            trackingId: cleanTrackingId,
+            trackingUrl: cleanTrackingUrl || '',
+            courierName: cleanCourierName || '',
+          })
+        )
+      );
+
+      if (cleanOrderId) {
+        try {
+          const saleRef = doc(db, 'promoter_sales', cleanOrderId);
+          const saleSnap = await getDoc(saleRef);
+          if (saleSnap.exists()) {
+            await updateDoc(saleRef, {
+              trackingId: cleanTrackingId,
+              courierName: cleanCourierName || '',
+            });
+          }
+        } catch {
+          // ignore if not a referral order
+        }
+      }
+
+      const nextOrders = orders.map(o =>
+        o.orderId === order.orderId || o.id === order.id
+          ? {
+              ...o,
+              docId: docIds[0],
+              trackingId: cleanTrackingId,
+              trackingUrl: cleanTrackingUrl || undefined,
+              courierName: cleanCourierName || undefined,
+            }
+          : o
+      );
+      setOrders(nextOrders);
+      saveAllOrders(nextOrders);
+      showToast(`✓ Tracking ID "${cleanTrackingId}" synced live to Customer & Promoter!`);
+    } catch {
+      showToast('❌ Tracking ID failed to save in Firestore.', 'error');
+    } finally {
+      setUpdatingOrderKey(null);
     }
-
-    await runCloudTracking();
   };
 
   const updateOrderDeliveryStage = async (order: any, stage: 'shipped' | 'delivered') => {
@@ -1224,99 +1019,75 @@ export default function AdminDashboard() {
 
     applyLocalDeliveryPatch();
 
-    const runCloudStage = async () => {
-      setUpdatingOrderKey(orderKey);
-      try {
-        const docIds = await resolveBookingDocIds(cleanOrderId, order.docId || order.id);
-        if (docIds.length === 0) {
-          showToast(`⚠️ Updated locally, but Order #${orderKey} was not found in Firestore.`, 'error');
-          return;
-        }
-
-        const bookingPatch: Record<string, any> = {
-          deliveryStatus: stage,
-          dispatchedAt: nextDispatchedAt,
-          deliveredAt: stage === 'delivered' ? nextDeliveredAt : '',
-        };
-        if (cleanCourierName) bookingPatch.courierName = cleanCourierName;
-        if (cleanTrackingId) bookingPatch.trackingId = cleanTrackingId;
-
-        await Promise.all(docIds.map(id => updateDoc(doc(db, 'bookings', id), bookingPatch)));
-
-        const refCode = String(order.referralCode || order.promoterId || '').trim().toUpperCase();
-        if (cleanOrderId && (refCode || order.promoterUserId)) {
-          try {
-            const saleRef = doc(db, 'promoter_sales', cleanOrderId);
-            const saleSnap = await getDoc(saleRef);
-            if (saleSnap.exists()) {
-              await updateDoc(saleRef, {
-                deliveryStatus: stage,
-                dispatchedAt: nextDispatchedAt,
-                deliveredAt: stage === 'delivered' ? nextDeliveredAt : '',
-                ...(cleanCourierName ? { courierName: cleanCourierName } : {}),
-                ...(cleanTrackingId ? { trackingId: cleanTrackingId } : {}),
-              });
-            } else if (refCode && order.userId && order.productId) {
-              const promRecord = promotersMap[refCode];
-              await setDoc(saleRef, {
-                orderId: cleanOrderId.slice(0, 64),
-                bookingDocId: String(docIds[0] || '').slice(0, 128),
-                buyerUserId: String(order.userId).slice(0, 128),
-                promoterId: refCode.slice(0, 64),
-                promoterUserId: String(order.promoterUserId || promRecord?.userId || '').slice(0, 128),
-                promoterEmail: String(order.promoterEmail || promRecord?.email || '').slice(0, 200),
-                productId: String(order.productId).slice(0, 128),
-                productName: String(order.productName || 'Amal Coolguard Vest').slice(0, 200),
-                price: Number(order.price || 0),
-                commission: Number(order.promoterCommission ?? promRecord?.commissionPerSale ?? 100),
-                status: order.status || 'pending_verification',
-                deliveryStatus: stage,
-                dispatchedAt: nextDispatchedAt,
-                deliveredAt: stage === 'delivered' ? nextDeliveredAt : '',
-                ...(cleanCourierName ? { courierName: cleanCourierName } : {}),
-                ...(cleanTrackingId ? { trackingId: cleanTrackingId } : {}),
-                createdAt: serverTimestamp(),
-              });
-            }
-          } catch (saleErr) {
-            console.warn('Promoter sale delivery sync warning:', saleErr);
-          }
-        }
-
-        applyLocalDeliveryPatch(docIds[0]);
-        showToast(
-          stage === 'shipped'
-            ? `✓ Order #${orderKey}: Courier Dispatched (കൊറിയർ അയച്ചു) — Customer & Promoter profiles updated!`
-            : `✓ Order #${orderKey}: Marked Delivered (ഡെലിവറി ചെയ്തു) — Customer & Promoter profiles updated!`
-        );
-      } catch (err: any) {
-        const msg = String(err?.message || err).toLowerCase();
-        if (msg.includes('permission') || msg.includes('denied')) {
-          setPendingCloudAction({
-            label: `${stage === 'shipped' ? 'Mark Courier Dispatched' : 'Mark Delivered'} for Order #${orderKey}`,
-            run: () => updateOrderDeliveryStage(order, stage),
-          });
-        }
-        showToast('❌ Cloud delivery sync requires Admin Gmail connection.', 'error');
-      } finally {
-        setUpdatingOrderKey(null);
+    setUpdatingOrderKey(orderKey);
+    try {
+      const docIds = await resolveBookingDocIds(cleanOrderId, order.docId || order.id);
+      if (docIds.length === 0) {
+        showToast(`⚠️ Updated locally, but Order #${orderKey} was not found in Firestore.`, 'error');
+        return;
       }
-    };
 
-    const currentEmail = await getCurrentAdminEmail();
-    if (currentEmail !== ADMIN_EMAIL) {
-      setPendingCloudAction({
-        label: `${stage === 'shipped' ? 'Mark Courier Dispatched' : 'Mark Delivered'} for Order #${orderKey}`,
-        run: runCloudStage,
-      });
+      const bookingPatch: Record<string, any> = {
+        deliveryStatus: stage,
+        dispatchedAt: nextDispatchedAt,
+        deliveredAt: stage === 'delivered' ? nextDeliveredAt : '',
+      };
+      if (cleanCourierName) bookingPatch.courierName = cleanCourierName;
+      if (cleanTrackingId) bookingPatch.trackingId = cleanTrackingId;
+
+      await Promise.all(docIds.map(id => updateDoc(doc(db, 'bookings', id), bookingPatch)));
+
+      const refCode = String(order.referralCode || order.promoterId || '').trim().toUpperCase();
+      if (cleanOrderId && (refCode || order.promoterUserId)) {
+        try {
+          const saleRef = doc(db, 'promoter_sales', cleanOrderId);
+          const saleSnap = await getDoc(saleRef);
+          if (saleSnap.exists()) {
+            await updateDoc(saleRef, {
+              deliveryStatus: stage,
+              dispatchedAt: nextDispatchedAt,
+              deliveredAt: stage === 'delivered' ? nextDeliveredAt : '',
+              ...(cleanCourierName ? { courierName: cleanCourierName } : {}),
+              ...(cleanTrackingId ? { trackingId: cleanTrackingId } : {}),
+            });
+          } else if (refCode && order.userId && order.productId) {
+            const promRecord = promotersMap[refCode];
+            await setDoc(saleRef, {
+              orderId: cleanOrderId.slice(0, 64),
+              bookingDocId: String(docIds[0] || '').slice(0, 128),
+              buyerUserId: String(order.userId).slice(0, 128),
+              promoterId: refCode.slice(0, 64),
+              promoterUserId: String(order.promoterUserId || promRecord?.userId || '').slice(0, 128),
+              promoterEmail: String(order.promoterEmail || promRecord?.email || '').slice(0, 200),
+              productId: String(order.productId).slice(0, 128),
+              productName: String(order.productName || 'Amal Coolguard Vest').slice(0, 200),
+              price: Number(order.price || 0),
+              commission: Number(order.promoterCommission ?? promRecord?.commissionPerSale ?? 100),
+              status: order.status || 'pending_verification',
+              deliveryStatus: stage,
+              dispatchedAt: nextDispatchedAt,
+              deliveredAt: stage === 'delivered' ? nextDeliveredAt : '',
+              ...(cleanCourierName ? { courierName: cleanCourierName } : {}),
+              ...(cleanTrackingId ? { trackingId: cleanTrackingId } : {}),
+              createdAt: serverTimestamp(),
+            });
+          }
+        } catch (saleErr) {
+          console.warn('Promoter sale delivery sync warning:', saleErr);
+        }
+      }
+
+      applyLocalDeliveryPatch(docIds[0]);
       showToast(
-        `Saved locally! Connect Admin Gmail (${ADMIN_EMAIL}) above to sync live to Customer & Promoter.`,
-        'error'
+        stage === 'shipped'
+          ? `✓ Order #${orderKey}: Courier Dispatched (കൊറിയർ അയച്ചു) — Customer & Promoter profiles updated!`
+          : `✓ Order #${orderKey}: Marked Delivered (ഡെലിവറി ചെയ്തു) — Customer & Promoter profiles updated!`
       );
-      return;
+    } catch {
+      showToast('❌ Cloud delivery sync error.', 'error');
+    } finally {
+      setUpdatingOrderKey(null);
     }
-
-    await runCloudStage();
   };
 
   const handleSaveOrderDeliveryDays = async (order: any) => {
@@ -1335,52 +1106,32 @@ export default function AdminDashboard() {
       return;
     }
 
-    const runCloudEta = async () => {
-      setUpdatingOrderKey(orderKey);
-      try {
-        const cleanOrderId = String(order.orderId || order.id || '').trim();
-        const docIds = await resolveBookingDocIds(cleanOrderId, order.docId || order.id);
-        if (docIds.length === 0) {
-          showToast(`❌ Order #${orderKey} not found in Firestore.`, 'error');
-          return;
-        }
-
-        await Promise.all(
-          docIds.map(id => updateDoc(doc(db, 'bookings', id), { estimatedDeliveryDays: cleanDays }))
-        );
-
-        const nextOrders = orders.map(o =>
-          o.orderId === order.orderId || o.id === order.id
-            ? { ...o, docId: docIds[0], estimatedDeliveryDays: cleanDays }
-            : o
-        );
-        setOrders(nextOrders);
-        saveAllOrders(nextOrders);
-        showToast(`✓ Delivery time "${cleanDays}" synced live to Customer!`);
-      } catch (err: any) {
-        const msg = String(err?.message || err).toLowerCase();
-        if (msg.includes('permission') || msg.includes('denied')) {
-          setPendingCloudAction({
-            label: `Apply ETA for Order #${orderKey}`,
-            run: () => handleSaveOrderDeliveryDays(order),
-          });
-        }
-        showToast('❌ Could not sync delivery ETA. Connect Admin Gmail first.', 'error');
-      } finally {
-        setUpdatingOrderKey(null);
+    setUpdatingOrderKey(orderKey);
+    try {
+      const cleanOrderId = String(order.orderId || order.id || '').trim();
+      const docIds = await resolveBookingDocIds(cleanOrderId, order.docId || order.id);
+      if (docIds.length === 0) {
+        showToast(`❌ Order #${orderKey} not found in Firestore.`, 'error');
+        return;
       }
-    };
 
-    const currentEmail = await getCurrentAdminEmail();
-    if (currentEmail !== ADMIN_EMAIL) {
-      setPendingCloudAction({
-        label: `Apply ETA for Order #${orderKey}`,
-        run: runCloudEta,
-      });
-      return;
+      await Promise.all(
+        docIds.map(id => updateDoc(doc(db, 'bookings', id), { estimatedDeliveryDays: cleanDays }))
+      );
+
+      const nextOrders = orders.map(o =>
+        o.orderId === order.orderId || o.id === order.id
+          ? { ...o, docId: docIds[0], estimatedDeliveryDays: cleanDays }
+          : o
+      );
+      setOrders(nextOrders);
+      saveAllOrders(nextOrders);
+      showToast(`✓ Delivery time "${cleanDays}" synced live to Customer!`);
+    } catch {
+      showToast('❌ Could not sync delivery ETA.', 'error');
+    } finally {
+      setUpdatingOrderKey(null);
     }
-
-    await runCloudEta();
   };
 
   const handleCopyAddressForWhatsApp = (order: any) => {
@@ -1529,20 +1280,9 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <ThemeSwitcher />
-          {!isAdminGmailConnected ? (
-            <button
-              type="button"
-              onClick={() => handleConnectAdminGmail(false)}
-              disabled={signingIn}
-              className="bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold px-3 py-2 rounded-xl shadow disabled:opacity-60"
-            >
-              {signingIn ? 'Connecting...' : '🔐 Connect Admin Gmail'}
-            </button>
-          ) : (
-            <span className="bg-emerald-900/60 border border-emerald-500/40 text-emerald-300 text-[11px] font-bold px-2.5 py-1.5 rounded-xl">
-              ✓ Cloud Live: {authUser?.email}
-            </span>
-          )}
+          <span className="bg-emerald-900/60 border border-emerald-500/40 text-emerald-300 text-[11px] font-bold px-2.5 py-1.5 rounded-xl">
+            ✓ Admin Active
+          </span>
           <button
             onClick={() => {
               fetchProducts();
@@ -1559,35 +1299,18 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
           <a href="/" className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-extrabold px-4 py-2 rounded-xl shadow">
             🏠 Visit Storefront
           </a>
+          <button
+            type="button"
+            onClick={() => {
+              localStorage.removeItem('amal_admin_auth');
+              navigate('/admin');
+            }}
+            className="bg-red-900/80 hover:bg-red-800 text-white text-xs font-bold px-3 py-2 rounded-xl border border-red-700/60 shadow"
+          >
+            🚪 Logout
+          </button>
         </div>
       </header>
-
-      {/* High-Visibility Cloud Sync Warning Banner when Admin Gmail is not connected */}
-      {!isAdminGmailConnected && (
-        <div className="mb-6 bg-amber-50 border-2 border-amber-400 rounded-2xl p-4 shadow-md flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-          <div className="space-y-1">
-            <p className="text-xs sm:text-sm font-black text-amber-950 flex items-center gap-1.5">
-              <span>⚠️</span>
-              <span>Cloud Order Sync Disconnected! (കസ്റ്റമർ വെബ്സൈറ്റിലേക്ക് അപ്പ്രൂവൽ സിങ്ക് ആകാൻ Admin Gmail കണക്റ്റ് ചെയ്യുക)</span>
-            </p>
-            <p className="text-[11px] text-amber-900 font-semibold">
-              {authUser?.email
-                ? `Currently signed in as "${authUser.email}". Customer Profile & Orders will ONLY update from Admin Gmail (${ADMIN_EMAIL}).`
-                : `Sign in with Admin Gmail (${ADMIN_EMAIL}) so order approvals, ETA & Tracking IDs reflect live on customer phones.`}
-            </p>
-          </div>
-          <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto shrink-0">
-            <button
-              type="button"
-              onClick={() => handleConnectAdminGmail(false)}
-              disabled={signingIn}
-              className="w-full sm:w-auto bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow transition disabled:opacity-60"
-            >
-              {signingIn ? 'Connecting...' : '🔐 Connect Admin Google'}
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Analytics Summary Bar */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
@@ -3932,47 +3655,6 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
         </div>
       )}
 
-      {/* ADMIN GMAIL REQUIRED MODAL (Prevents silent local-only approvals) */}
-      {pendingCloudAction && (
-        <div className="fixed inset-0 bg-black/75 backdrop-blur-xs flex items-center justify-center z-[290] p-4">
-          <div className="bg-white rounded-3xl p-6 shadow-2xl max-w-sm w-full space-y-4 text-center border-2 border-amber-400">
-            <div className="w-14 h-14 bg-amber-100 text-amber-700 text-2xl rounded-full flex items-center justify-center mx-auto">
-              🔐
-            </div>
-            <div className="space-y-1.5">
-              <h3 className="text-lg font-black text-gray-900">
-                Connect Admin Gmail for Live Sync
-              </h3>
-              <p className="text-xs text-gray-600 leading-relaxed">
-                Action paused: <span className="font-bold text-gray-900">{pendingCloudAction.label}</span>
-              </p>
-              <p className="text-[11px] text-amber-900 bg-amber-50 border border-amber-200 p-2.5 rounded-xl font-semibold">
-                {authUser?.email
-                  ? `You are currently signed in as "${authUser.email}". Sign in with "${ADMIN_EMAIL}" so Customer Orders & Profile update immediately.`
-                  : `Sign in with "${ADMIN_EMAIL}" so this change reaches the Customer's phone immediately.`}
-              </p>
-            </div>
-
-            <div className="space-y-2 pt-1">
-              <button
-                type="button"
-                onClick={() => handleConnectAdminGmail(true)}
-                disabled={signingIn}
-                className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold py-3 rounded-xl text-xs shadow transition disabled:opacity-60"
-              >
-                {signingIn ? 'Connecting Google...' : `🔐 Connect ${ADMIN_EMAIL} & Apply`}
-              </button>
-              <button
-                type="button"
-                onClick={() => setPendingCloudAction(null)}
-                className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 rounded-xl text-xs"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -17,6 +17,18 @@ export default function Layout() {
       ),
     },
     {
+      name: t('categories') || 'Categories',
+      path: '/categories',
+      icon: (
+        <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1">
+          <rect x="3" y="3" width="7" height="7" rx="1" />
+          <rect x="14" y="3" width="7" height="7" rx="1" />
+          <rect x="14" y="14" width="7" height="7" rx="1" />
+          <rect x="3" y="14" width="7" height="7" rx="1" />
+        </svg>
+      ),
+    },
+    {
       name: t('account'),
       path: '/account',
       icon: (
@@ -46,7 +58,7 @@ export default function Layout() {
       </div>
 
       <footer className="fixed bottom-0 left-0 right-0 h-14 bg-white border-t border-gray-200 z-[100] shadow-sm">
-        <nav className="max-w-3xl mx-auto h-full grid grid-cols-3">
+        <nav className="max-w-3xl mx-auto h-full grid grid-cols-4">
           {tabs.map(tab => {
             const active = location.pathname === tab.path;
             return (

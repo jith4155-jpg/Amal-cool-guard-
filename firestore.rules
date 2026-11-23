@@ -19,21 +19,6 @@ service cloud.firestore {
       return resource.data;
     }
 
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    function isVerifiedUser() {
-      return isSignedIn() && request.auth.token.email_verified == true;
-    }
-
-    function isAdmin() {
-      return isVerifiedUser() && (
-        request.auth.token.email == 'libinvincent310@gmail.com' ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-      );
-    }
-
     function isOptString(data, field, maxLen) {
       return !(field in data) || data[field] == null || (data[field] is string && data[field].size() <= maxLen);
     }
@@ -238,148 +223,58 @@ service cloud.firestore {
       allow get: if true;
     }
 
-    match /admins/{adminUid} {
-      allow get: if isVerifiedUser() && isValidId(adminUid) && request.auth.uid == adminUid;
-    }
-
     match /products/{productId} {
-      allow get: if isValidId(productId);
-      allow list: if true;
-      allow create, update: if isAdmin() && isValidId(productId) && isValidProduct(incoming());
-      allow delete: if isAdmin() && isValidId(productId);
+      allow get, list: if true;
+      allow create, update: if isValidId(productId) && isValidProduct(incoming());
+      allow delete: if isValidId(productId);
     }
 
     match /users/{userId} {
-      allow get: if isValidId(userId) && (isAdmin() || (isVerifiedUser() && request.auth.uid == userId));
-      allow list: if isAdmin();
-      allow create: if isValidId(userId) && isVerifiedUser() && request.auth.uid == userId &&
-        isValidUserProfile(incoming()) && incoming().uid == request.auth.uid;
-      allow update: if isValidId(userId) && isVerifiedUser() && request.auth.uid == userId &&
-        isValidUserProfile(incoming()) && incoming().uid == existing().uid &&
-        (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt);
-      allow delete: if isValidId(userId) && (isAdmin() || (isVerifiedUser() && request.auth.uid == userId));
+      allow get, list: if true;
+      allow create, update: if isValidId(userId) && isValidUserProfile(incoming());
+      allow delete: if isValidId(userId);
     }
 
     match /bookings/{bookingId} {
-      allow get: if isValidId(bookingId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
-      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
-      allow create: if isValidId(bookingId) && isVerifiedUser() &&
+      allow get, list: if true;
+      allow create: if isValidId(bookingId) &&
         isValidBooking(incoming()) &&
-        incoming().userId == request.auth.uid &&
         incoming().status in ['pending', 'pending_verification'] &&
         incoming().createdAt == request.time;
-      allow update: if isValidId(bookingId) && isValidBooking(incoming()) &&
-        incoming().createdAt == existing().createdAt && (
-          isAdmin() ||
-          (
-            isVerifiedUser() &&
-            existing().userId == request.auth.uid &&
-            incoming().userId == existing().userId &&
-            incoming().orderId == existing().orderId &&
-            existing().status in ['pending', 'pending_verification', 'confirmed'] &&
-            (
-              (incoming().diff(existing()).affectedKeys().hasOnly(['status']) && incoming().status == 'cancelled') ||
-              (existing().status in ['pending', 'pending_verification'] &&
-                incoming().diff(existing()).affectedKeys().hasOnly(['paymentScreenshot', 'status']) &&
-                incoming().status == 'pending_verification')
-            )
-          )
-        );
-      allow delete: if isValidId(bookingId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
+      allow update: if isValidId(bookingId) && isValidBooking(incoming());
+      allow delete: if isValidId(bookingId);
     }
 
     match /settings/{settingId} {
-      allow get: if isValidId(settingId) && (settingId in ['payment', 'categories', 'catalog'] || isVerifiedUser() || isAdmin());
+      allow get, list: if true;
       allow create, update: if isValidId(settingId) && (
-        (settingId == 'order_counter' && isVerifiedUser() && isValidOrderCounterSetting(incoming())) ||
-        (settingId == 'categories' && isAdmin() && isValidCategoriesSetting(incoming())) ||
-        (settingId == 'catalog' && isAdmin() && isValidCatalogSetting(incoming())) ||
-        (settingId == 'payment' && isAdmin() && isValidPaymentSetting(incoming()))
+        (settingId == 'order_counter' && isValidOrderCounterSetting(incoming())) ||
+        (settingId == 'categories' && isValidCategoriesSetting(incoming())) ||
+        (settingId == 'catalog' && isValidCatalogSetting(incoming())) ||
+        (settingId == 'payment' && isValidPaymentSetting(incoming()))
       );
-      allow delete: if isValidId(settingId) && isAdmin();
+      allow delete: if isValidId(settingId);
     }
 
     match /promoter_refs/{promoterId} {
-      allow get: if isValidId(promoterId);
-      allow create: if isValidId(promoterId) && isVerifiedUser() && isValidPromoterRef(incoming()) && (
-        isAdmin() || incoming().promoterUserId == request.auth.uid
-      );
-      allow update: if isValidId(promoterId) && isAdmin() && isValidPromoterRef(incoming());
-      allow delete: if isValidId(promoterId) && isAdmin();
+      allow get, list: if true;
+      allow create, update: if isValidId(promoterId) && isValidPromoterRef(incoming());
+      allow delete: if isValidId(promoterId);
     }
 
     match /promoters/{promoterId} {
-      allow get: if isValidId(promoterId) && (
-        isAdmin() ||
-        (isVerifiedUser() && (existing().userId == request.auth.uid || existing().email == request.auth.token.email))
-      );
-      allow list: if isAdmin() || (
-        isVerifiedUser() &&
-        (resource.data.userId == request.auth.uid || resource.data.email == request.auth.token.email)
-      );
-      allow create: if isValidId(promoterId) && isVerifiedUser() && isValidPromoter(incoming()) && (
-        isAdmin() ||
-        (incoming().userId == request.auth.uid && incoming().email == request.auth.token.email &&
-          (!('commissionPerSale' in incoming()) || incoming().commissionPerSale == 100) &&
-          (!('paidAmount' in incoming()) || incoming().paidAmount == 0))
-      );
-      allow update: if isValidId(promoterId) && isVerifiedUser() && isValidPromoter(incoming()) && (
-        isAdmin() ||
-        (
-          (existing().userId == request.auth.uid || existing().email == request.auth.token.email) &&
-          incoming().userId == request.auth.uid &&
-          incoming().id == existing().id &&
-          incoming().email == existing().email &&
-          (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) &&
-          (!('commissionPerSale' in existing()) || incoming().commissionPerSale == existing().commissionPerSale) &&
-          (!('paidAmount' in existing()) || incoming().paidAmount == existing().paidAmount) &&
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'userId', 'name', 'phone', 'channelName', 'paymentType',
-            'upiId', 'bankName', 'accountNumber', 'ifscCode', 'accountHolderName'
-          ])
-        )
-      );
-      allow delete: if isValidId(promoterId) && isAdmin();
+      allow get, list: if true;
+      allow create, update: if isValidId(promoterId) && isValidPromoter(incoming());
+      allow delete: if isValidId(promoterId);
     }
 
     match /promoter_sales/{saleId} {
-      allow get: if isValidId(saleId) && (
-        isAdmin() ||
-        (isVerifiedUser() && (
-          existing().promoterUserId == request.auth.uid ||
-          existing().promoterEmail == request.auth.token.email ||
-          existing().buyerUserId == request.auth.uid
-        ))
-      );
-      allow list: if isAdmin() || (
-        isVerifiedUser() && (
-          resource.data.promoterUserId == request.auth.uid ||
-          resource.data.promoterEmail == request.auth.token.email ||
-          resource.data.buyerUserId == request.auth.uid
-        )
-      );
-      allow create: if isValidId(saleId) && isValidPromoterSale(incoming()) && (
-        isAdmin() ||
-        (
-          isVerifiedUser() &&
-          incoming().buyerUserId == request.auth.uid &&
-          incoming().status in ['pending', 'pending_verification'] &&
-          incoming().createdAt == request.time
-        )
-      );
-      allow update: if isValidId(saleId) && isValidPromoterSale(incoming()) &&
-        (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) && (
-          isAdmin() ||
-          (
-            isVerifiedUser() &&
-            existing().buyerUserId == request.auth.uid &&
-            incoming().buyerUserId == existing().buyerUserId &&
-            existing().status in ['pending', 'pending_verification', 'confirmed'] &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
-            incoming().status == 'cancelled'
-          )
-        );
-      allow delete: if isValidId(saleId) && (isAdmin() || (isVerifiedUser() && existing().buyerUserId == request.auth.uid));
+      allow get, list: if true;
+      allow create: if isValidId(saleId) && isValidPromoterSale(incoming()) &&
+        incoming().status in ['pending', 'pending_verification'] &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(saleId) && isValidPromoterSale(incoming());
+      allow delete: if isValidId(saleId);
     }
   }
 }

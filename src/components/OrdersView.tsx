@@ -13,6 +13,7 @@ import {
 import { Product } from '../data/mockProducts';
 import {
   getCatalogProducts,
+  getLocalOrders,
   mergeRemoteCatalogProducts,
   resolveOrderProductImage,
   safeJsonParse,
@@ -118,8 +119,11 @@ export default function OrdersView() {
     );
   }
 
-  // STRICT ISOLATION: Orders cannot be viewed without logging into your Gmail account
-  if (!user) {
+  const localOrders = getLocalOrders();
+  const displayOrders = user ? myOrders : localOrders;
+
+  // If no user AND no local orders placed on this device
+  if (!user && displayOrders.length === 0) {
     return (
       <div className="min-h-screen bg-gray-100 pb-24">
         <div className="bg-white border-b border-gray-200 sticky top-0 z-40">
@@ -152,7 +156,7 @@ export default function OrdersView() {
                 if (res.error) setLoginError(res.error);
               }}
               disabled={signingIn}
-              className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 rounded-xl shadow-sm transition text-xs sm:text-sm disabled:opacity-60"
+              className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 rounded-xl shadow-sm transition text-xs sm:text-sm disabled:opacity-60 cursor-pointer"
             >
               {signingIn ? 'Signing in...' : 'Continue with Google / Gmail'}
             </button>
@@ -166,7 +170,7 @@ export default function OrdersView() {
             <button
               type="button"
               onClick={() => navigate('/login')}
-              className="w-full h-10 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-xl text-xs transition"
+              className="w-full h-10 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-xl text-xs transition cursor-pointer"
             >
               Open Login Page
             </button>
@@ -193,10 +197,10 @@ export default function OrdersView() {
     }
   };
 
-  const approvedCount = myOrders.filter(
+  const approvedCount = displayOrders.filter(
     o => o.status?.toLowerCase() === 'confirmed' || o.status?.toLowerCase() === 'approved'
   ).length;
-  const pendingCount = myOrders.filter(
+  const pendingCount = displayOrders.filter(
     o => !o.status || o.status === 'pending' || o.status === 'pending_verification'
   ).length;
 
@@ -207,17 +211,21 @@ export default function OrdersView() {
         <div className="max-w-3xl mx-auto px-4 h-14 flex items-center justify-between gap-2">
           <div className="min-w-0">
             <h1 className="text-lg font-extrabold text-gray-900 leading-tight">{t('myOrders')}</h1>
-            <p className="text-[11px] font-semibold text-blue-700 truncate">{user.email}</p>
+            <p className="text-[11px] font-semibold text-blue-700 truncate">
+              {user ? user.email : 'Device Orders (ഗസ്റ്റ് ഓർഡറുകൾ)'}
+            </p>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => refreshMyOrders()}
-              className="h-9 px-2.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-[11px] font-extrabold transition"
-              title="Refresh Order Status"
-            >
-              🔄 Refresh
-            </button>
+            {user && (
+              <button
+                type="button"
+                onClick={() => refreshMyOrders()}
+                className="h-9 px-2.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-[11px] font-extrabold transition cursor-pointer"
+                title="Refresh Order Status"
+              >
+                🔄 Refresh
+              </button>
+            )}
             <ThemeSwitcher compact />
             <LanguageSelector />
           </div>
@@ -225,11 +233,11 @@ export default function OrdersView() {
       </div>
 
       <div className="max-w-3xl mx-auto p-4 space-y-4">
-        {/* Exact Gmail Order Count Summary Banner */}
+        {/* Exact Order Count Summary Banner */}
         <div className="bg-white p-3.5 rounded-2xl shadow-xs border border-gray-200 grid grid-cols-3 gap-2 text-center">
           <div className="bg-blue-50 p-2 rounded-xl">
             <p className="text-[10px] font-bold text-blue-700 uppercase">Total Orders</p>
-            <p className="text-base font-black text-blue-900">{myOrders.length}</p>
+            <p className="text-base font-black text-blue-900">{displayOrders.length}</p>
           </div>
           <div className="bg-amber-50 p-2 rounded-xl">
             <p className="text-[10px] font-bold text-amber-700 uppercase">Pending</p>
@@ -241,24 +249,24 @@ export default function OrdersView() {
           </div>
         </div>
 
-        {loadingOrders && myOrders.length === 0 ? (
+        {loadingOrders && displayOrders.length === 0 ? (
           <div className="bg-white p-8 rounded-2xl text-center shadow-sm">
             <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
-            <p className="text-xs font-bold text-gray-500">Loading orders for {user.email}...</p>
+            <p className="text-xs font-bold text-gray-500">Loading orders...</p>
           </div>
-        ) : myOrders.length === 0 ? (
+        ) : displayOrders.length === 0 ? (
           <div className="bg-white p-8 rounded-2xl text-center shadow-sm my-4">
             <p className="text-4xl mb-3">📦</p>
             <h3 className="font-bold text-lg text-gray-800 mb-1">No Orders Placed Yet</h3>
             <p className="text-xs text-gray-500 mb-4">
-              You have 0 orders on {user.email}. Explore products to place your first booking.
+              Explore products to place your first booking without any login hassle.
             </p>
             <Link to="/" className="inline-block bg-blue-600 text-white font-bold text-xs px-6 py-3 rounded-full shadow">
               Explore Products
             </Link>
           </div>
         ) : (
-          myOrders.map((order, idx) => {
+          displayOrders.map((order, idx) => {
             const isCancelled = order.status?.toLowerCase() === 'cancelled';
             const targetId = String(order.orderId || order.id || `AC-${idx}`);
 

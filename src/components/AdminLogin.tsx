@@ -1,17 +1,10 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
-
-const ADMIN_EMAIL = 'libinvincent310@gmail.com';
 
 export default function AdminLogin() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(false);
-  const [gmailStatusMsg, setGmailStatusMsg] = useState('');
   const navigate = useNavigate();
-  const { user, signInWithGoogle, signingIn } = useAuth();
-
-  const isAdminGmailConnected = user?.email?.toLowerCase() === ADMIN_EMAIL;
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -20,20 +13,6 @@ export default function AdminLogin() {
       navigate('/admin/dashboard');
     } else {
       setError(true);
-    }
-  };
-
-  const handleConnectAdminGmail = async () => {
-    setGmailStatusMsg('');
-    const res = await signInWithGoogle();
-    if (res.user?.email?.toLowerCase() === ADMIN_EMAIL) {
-      setGmailStatusMsg('✓ Admin Google account connected to Firebase for live customer order sync!');
-    } else if (res.user) {
-      setGmailStatusMsg(
-        `Signed in as ${res.user.email}. For Cloud order approvals, please sign in with ${ADMIN_EMAIL}.`
-      );
-    } else if (res.error) {
-      setGmailStatusMsg(res.error);
     }
   };
 
@@ -46,48 +25,9 @@ export default function AdminLogin() {
 
         <div>
           <h2 className="text-2xl font-black text-gray-900 tracking-tight">Admin Portal</h2>
-          <p className="text-xs text-gray-500 mt-1">Enter password to access Amal Coolguard control panel.</p>
-        </div>
-
-        {/* Cloud Sync / Admin Connection Box */}
-        <div
-          className={`p-3.5 rounded-2xl border text-left space-y-2 ${
-            isAdminGmailConnected
-              ? 'bg-emerald-50 border-emerald-200'
-              : 'bg-amber-50 border-amber-200'
-          }`}
-        >
-          <p
-            className={`text-[11px] font-extrabold ${
-              isAdminGmailConnected ? 'text-emerald-800' : 'text-amber-900'
-            }`}
-          >
-            {isAdminGmailConnected
-              ? `✓ Firebase Cloud Sync Ready (${user?.email})`
-              : `⚠️ Connect Admin Google Account (${ADMIN_EMAIL})`}
+          <p className="text-xs text-gray-500 mt-1">
+            പാസ്‌വേഡ് നൽകി അഡ്മിൻ പാനലിലേക്ക് പ്രവേശിക്കുക (Enter password).
           </p>
-          {!isAdminGmailConnected && (
-            <>
-              <p className="text-[10px] text-amber-800 leading-relaxed">
-                {user?.email
-                  ? `Currently signed in as (${user.email}). Connect Admin Google account so order approvals sync live to customers.`
-                  : 'Connect Admin Google account so order approvals & tracking IDs update live on customer phones.'}
-              </p>
-              <button
-                type="button"
-                onClick={handleConnectAdminGmail}
-                disabled={signingIn}
-                className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-[11px] py-2.5 px-3 rounded-xl shadow-xs transition disabled:opacity-60"
-              >
-                {signingIn ? 'Connecting...' : '🔐 Connect Admin Google / Gmail'}
-              </button>
-            </>
-          )}
-          {gmailStatusMsg && (
-            <p className="text-[10px] font-bold text-gray-800 bg-white/80 p-2 rounded-lg border border-gray-200">
-              {gmailStatusMsg}
-            </p>
-          )}
         </div>
 
         <form onSubmit={handleLogin} className="space-y-4 text-left">
@@ -101,14 +41,15 @@ export default function AdminLogin() {
                 setPassword(e.target.value);
                 setError(false);
               }}
-              className="w-full p-3 text-xs border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 font-bold bg-gray-50"
+              className="w-full p-3 text-xs border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 font-bold bg-gray-50 text-gray-900"
               required
+              autoFocus
             />
           </div>
 
           {error && (
-            <p className="text-xs text-red-600 font-bold text-center bg-red-50 p-2 rounded-lg">
-              ❌ Incorrect Password! Please enter &apos;vengakkal&apos;.
+            <p className="text-xs text-red-600 font-bold text-center bg-red-50 p-2.5 rounded-lg border border-red-200">
+              ❌ തെറ്റായ പാസ്‌വേഡ്! ദയവായി &apos;vengakkal&apos; നൽകുക.
             </p>
           )}
 
@@ -120,7 +61,7 @@ export default function AdminLogin() {
           </button>
         </form>
 
-        <div className="pt-2 border-t">
+        <div className="pt-2 border-t border-gray-200">
           <Link to="/" className="text-xs font-bold text-blue-600 hover:underline">
             ← Back to Storefront
           </Link>

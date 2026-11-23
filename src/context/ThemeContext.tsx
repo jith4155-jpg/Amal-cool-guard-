@@ -83,7 +83,7 @@ function readStoredTheme(): AppTheme {
   } catch {
     // ignore storage errors
   }
-  return 'dark';
+  return 'light';
 }
 
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {

@@ -62,12 +62,50 @@ export default function ProductDetails() {
   const [isZoomOpen, setIsZoomOpen] = useState(false);
   const [zoomScale, setZoomScale] = useState<1 | 2 | 3>(1);
   const [showOrderModal, setShowOrderModal] = useState(false);
+  const [checkoutStep, setCheckoutStep] = useState<1 | 2 | 3>(1);
   const [submittedOrderId, setSubmittedOrderId] = useState<string | null>(null);
   const [submittedDocId, setSubmittedDocId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [orderErrorMsg, setOrderErrorMsg] = useState('');
   const [screenshotPreview, setScreenshotPreview] = useState<string | null>(null);
   const [uploadingScreenshot, setUploadingScreenshot] = useState(false);
+  const [copiedUpi, setCopiedUpi] = useState(false);
+  const [showPriceBreakdown, setShowPriceBreakdown] = useState(false);
+  const [cardPreview, setCardPreview] = useState({ number: '', expiry: '', cvv: '' });
+  const [selectedLocation] = useState<string>(() => {
+    try {
+      return localStorage.getItem('amal_user_location') || 'Kerala, India';
+    } catch {
+      return 'Kerala, India';
+    }
+  });
+
+  const openCheckout = () => {
+    setOrderErrorMsg('');
+    setSubmittedOrderId(null);
+    setSubmittedDocId(null);
+    setCheckoutStep(1);
+    setShowPriceBreakdown(false);
+    setShowOrderModal(true);
+  };
+
+  const closeCheckout = () => {
+    setShowOrderModal(false);
+    setSubmittedOrderId(null);
+    setSubmittedDocId(null);
+    setCheckoutStep(1);
+    setOrderErrorMsg('');
+    setShowPriceBreakdown(false);
+  };
+
+  const handleCopyUpi = () => {
+    const upi = formData.merchantUpiId || 'amalcoolguard@upi';
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(upi).catch(() => {});
+    }
+    setCopiedUpi(true);
+    setTimeout(() => setCopiedUpi(false), 1800);
+  };
 
   // Interactive Reviews state
   const [reviewsList, setReviewsList] = useState<any[]>([
@@ -127,7 +165,7 @@ export default function ProductDetails() {
   // If user just returned from /login?redirect=...openOrder=1, open the booking modal automatically
   useEffect(() => {
     if (authReady && user && searchParams.get('openOrder') === '1' && product) {
-      setShowOrderModal(true);
+      openCheckout();
       const nextParams = new URLSearchParams(searchParams);
       nextParams.delete('openOrder');
       setSearchParams(nextParams, { replace: true });
@@ -336,11 +374,24 @@ export default function ProductDetails() {
 
     const fbUser = auth.currentUser;
     const currentUser = toAppUser(fbUser) || user;
-    if (!currentUser || !fbUser) {
-      setShowOrderModal(false);
-      navigate(`/login?redirect=${encodeURIComponent(`/product/${product.id}?openOrder=1`)}`);
-      return;
+
+    let guestUid = localStorage.getItem('amal_guest_uid');
+    if (!guestUid) {
+      guestUid = `guest_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      localStorage.setItem('amal_guest_uid', guestUid);
     }
+    const currentUid = currentUser?.uid || guestUid;
+    const cleanCustomerName = (formData.customerName || 'Customer').trim().slice(0, 120) || 'Customer';
+    const cleanPhone = (formData.phoneNumber || '0000000000').trim().slice(0, 30) || '0000000000';
+    const cleanAddress = (formData.address || '').trim().slice(0, 500);
+    const cleanPincode = (formData.pincode || '').trim().slice(0, 20);
+    const currentEmail =
+      currentUser?.email ||
+      (cleanPhone && cleanPhone !== '0000000000'
+        ? `${cleanPhone.replace(/\D/g, '')}@guest.amalcoolguard.in`
+        : 'guest@amalcoolguard.in');
+    const currentDisplayName = currentUser?.displayName || cleanCustomerName;
+    const currentPhoto = currentUser?.photoURL || '';
 
     setSubmitting(true);
 
@@ -404,16 +455,11 @@ export default function ProductDetails() {
       }
     }
 
-    const cleanCustomerName = (formData.customerName || 'Customer').trim().slice(0, 120) || 'Customer';
-    const cleanPhone = (formData.phoneNumber || '0000000000').trim().slice(0, 30) || '0000000000';
-    const cleanAddress = (formData.address || '').trim().slice(0, 500);
-    const cleanPincode = (formData.pincode || '').trim().slice(0, 20);
-
     let resolvedScreenshot = screenshotPreview;
     if (resolvedScreenshot && resolvedScreenshot.startsWith('data:')) {
       const uploadedUrl = await uploadDataUrlToStorage(
         resolvedScreenshot,
-        `screenshots/${currentUser.uid}/${orderId}_${Date.now()}.jpg`
+        `screenshots/${currentUid}/${orderId}_${Date.now()}.jpg`
       );
       if (uploadedUrl) resolvedScreenshot = uploadedUrl;
     }
@@ -427,10 +473,10 @@ export default function ProductDetails() {
     try {
       const bookingRef = await addDoc(collection(db, 'bookings'), {
         orderId,
-        userId: currentUser.uid,
-        userEmail: (currentUser.email || '').slice(0, 200),
-        userName: (currentUser.displayName || cleanCustomerName).slice(0, 120),
-        userPhoto: (currentUser.photoURL || '').slice(0, 1000),
+        userId: currentUid,
+        userEmail: currentEmail.slice(0, 200),
+        userName: currentDisplayName.slice(0, 120),
+        userPhoto: currentPhoto.slice(0, 1000),
         productId: String(product.id).slice(0, 128),
         productName: (product.name || '').slice(0, 200),
         productImage: safeProductImage,
@@ -462,7 +508,7 @@ export default function ProductDetails() {
       setOrderErrorMsg(
         err?.message
           ? `Order could not be sent to store: ${err.message}`
-          : 'Unable to send your order to the store right now. Please sign in again and retry.'
+          : 'Unable to send your order to the store right now. Please retry.'
       );
       handleFirestoreError(err, OperationType.CREATE, 'bookings');
       return;
@@ -474,7 +520,7 @@ export default function ProductDetails() {
         await setDoc(doc(db, 'promoter_sales', orderId), {
           orderId,
           bookingDocId: createdDocId,
-          buyerUserId: currentUser.uid,
+          buyerUserId: currentUid,
           promoterId: activeRefCode,
           promoterUserId: promoterUserId.slice(0, 128),
           promoterEmail: promoterEmail.slice(0, 200),
@@ -495,10 +541,10 @@ export default function ProductDetails() {
       orderId,
       docId: createdDocId,
       id: createdDocId || orderId,
-      userId: currentUser.uid,
-      userEmail: currentUser.email || '',
-      userName: currentUser.displayName || formData.customerName,
-      userPhoto: currentUser.photoURL || '',
+      userId: currentUid,
+      userEmail: currentEmail,
+      userName: currentDisplayName,
+      userPhoto: currentPhoto,
       productId: product.id,
       productName: product.name,
       productImage: rawProductImg,
@@ -510,10 +556,10 @@ export default function ProductDetails() {
       deliveryCharge: totals.deliveryFee,
       estimatedDeliveryDays: estDelivery,
       price: amount,
-      customerName: formData.customerName,
-      phoneNumber: formData.phoneNumber,
-      address: formData.address,
-      pincode: formData.pincode,
+      customerName: cleanCustomerName,
+      phoneNumber: cleanPhone,
+      address: cleanAddress,
+      pincode: cleanPincode,
       paymentMethod: formData.paymentMethod,
       referralCode: activeRefCode,
       promoterId: activeRefCode,
@@ -531,26 +577,29 @@ export default function ProductDetails() {
 
     if (formData.phoneNumber) {
       restoreDeletedCustomerMobile(formData.phoneNumber);
+      localStorage.setItem('amal_customer_phone', cleanPhone);
     }
+    localStorage.setItem('amal_customer_name', cleanCustomerName);
+    localStorage.setItem('amal_customer_address', cleanAddress);
+    localStorage.setItem('amal_customer_pincode', cleanPincode);
 
-    await updateUserProfile({
-      name: formData.customerName,
-      mobile: formData.phoneNumber,
-      address: formData.address,
-      pincode: formData.pincode,
-    });
-
-    await refreshMyOrders();
+    if (currentUser && fbUser) {
+      try {
+        await updateUserProfile({
+          name: formData.customerName,
+          mobile: formData.phoneNumber,
+          address: formData.address,
+          pincode: formData.pincode,
+        });
+        await refreshMyOrders();
+      } catch {
+        // ignore profile error
+      }
+    }
 
     setSubmitting(false);
     setSubmittedOrderId(orderId);
     setSubmittedDocId(createdDocId);
-
-    if (formData.paymentMethod === 'UPI' && paymentSettings.enableUPI !== false) {
-      setTimeout(() => {
-        triggerUpiPayment(orderId, amount);
-      }, 400);
-    }
   };
 
   if (loading) {
@@ -583,14 +632,15 @@ export default function ProductDetails() {
   const itemBasePrice = totals.basePrice;
   const deliveryFee = totals.deliveryFee;
   const finalTotalPayable = totals.finalTotal;
+  const savingsAmount = Math.max(0, totals.originalTotal - totals.finalTotal);
   const estDeliveryText =
     (product.estimatedDeliveryDays || '').trim() ||
     (paymentSettings.defaultDeliveryDays || '').trim();
 
   const allowedPaymentMethods = [
-    ...(paymentSettings.enableUPI !== false ? [{ id: 'UPI', label: '⚡ UPI / GPay' }] : []),
-    ...(paymentSettings.enableCOD !== false ? [{ id: 'COD', label: '💵 Cash on Delivery' }] : []),
-    ...(paymentSettings.enableCard !== false ? [{ id: 'Card', label: '💳 Card / NetBank' }] : []),
+    ...(paymentSettings.enableUPI !== false ? [{ id: 'UPI', label: 'UPI' }] : []),
+    ...(paymentSettings.enableCard !== false ? [{ id: 'Card', label: 'Credit / Debit / ATM Card' }] : []),
+    ...(paymentSettings.enableCOD !== false ? [{ id: 'COD', label: 'Cash on Delivery' }] : []),
   ];
 
   const discountPercent = product.price && product.discountPrice
@@ -722,25 +772,13 @@ export default function ProductDetails() {
 
             {/* Desktop Primary Purchase CTA right under gallery */}
             <div className="hidden lg:block pt-2">
-              {!user && (
-                <p className="text-[11px] font-semibold text-amber-700 mb-2 text-center">
-                  {t('loginRequiredBook')}
-                </p>
-              )}
               <button
                 type="button"
-                onClick={() => {
-                  if (!user) {
-                    const redirectTarget = `/product/${product.id}?openOrder=1`;
-                    navigate(`/login?redirect=${encodeURIComponent(redirectTarget)}`);
-                    return;
-                  }
-                  setShowOrderModal(true);
-                }}
-                className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-sm rounded-xl shadow-sm active:scale-[0.99] transition flex items-center justify-center gap-2 whitespace-nowrap"
+                onClick={openCheckout}
+                className="flipkart-cta-btn w-full h-12 bg-[#FFC200] hover:bg-[#f5b800] text-slate-950 font-extrabold text-sm rounded-xl shadow-sm active:scale-[0.99] transition flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer tabular-nums"
               >
                 <span>
-                  {user ? `${t('orderNow')} — ₹${finalTotalPayable}` : `Sign in with Gmail to Order — ₹${finalTotalPayable}`}
+                  {t('orderNow')} — ₹{finalTotalPayable}
                 </span>
               </button>
             </div>
@@ -768,20 +806,20 @@ export default function ProductDetails() {
 
               {/* Price & Tax Breakdown Box */}
               <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 space-y-1.5">
-                <div className="flex items-baseline gap-3 flex-wrap tabular-nums">
-                  <span className="text-2xl sm:text-3xl font-extrabold text-gray-900">
-                    ₹{finalTotalPayable}
-                  </span>
+                <div className="flex items-baseline gap-2.5 flex-wrap tabular-nums">
+                  {discountPercent > 0 && (
+                    <span className="text-lg sm:text-xl font-extrabold text-emerald-600">
+                      ↓{discountPercent}%
+                    </span>
+                  )}
                   {totals.originalTotal > finalTotalPayable && (
-                    <span className="text-sm sm:text-base text-gray-400 line-through">
+                    <span className="text-base sm:text-lg text-gray-400 line-through">
                       ₹{totals.originalTotal}
                     </span>
                   )}
-                  {discountPercent > 0 && (
-                    <span className="text-xs font-bold text-emerald-700">
-                      {discountPercent}% {t('specialDiscount')}
-                    </span>
-                  )}
+                  <span className="text-2xl sm:text-3xl font-extrabold text-gray-900">
+                    ₹{finalTotalPayable}
+                  </span>
                 </div>
 
                 <div className="text-xs font-semibold space-y-1 pt-0.5 tabular-nums">
@@ -796,11 +834,68 @@ export default function ProductDetails() {
                       GSTIN: {paymentSettings.gstNumber}
                     </p>
                   )}
-                  {estDeliveryText && (
-                    <p className="text-xs font-bold text-emerald-700">
-                      Estimated Delivery: {estDeliveryText}
-                    </p>
+                </div>
+              </div>
+
+              {/* Flipkart-Style Delivery Details Card */}
+              <div className="rounded-xl border border-gray-200 overflow-hidden bg-white">
+                <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+                  <h3 className="text-xs sm:text-sm font-extrabold text-gray-900">Delivery details</h3>
+                  {deliveryFee === 0 && (
+                    <span className="text-[11px] font-bold text-emerald-700">Free Delivery</span>
                   )}
+                </div>
+
+                <div className="divide-y divide-gray-100 text-xs sm:text-sm">
+                  <div className="px-4 py-3 flex items-center justify-between gap-3 bg-blue-50/50">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <svg className="w-4 h-4 text-gray-700 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M12 21s-6-5.2-6-10a6 6 0 1 1 12 0c0 4.8-6 10-6 10Z" />
+                        <circle cx="12" cy="11" r="2.2" />
+                      </svg>
+                      <span className="text-gray-800 font-semibold truncate">
+                        Deliver to {formData.pincode ? `${formData.pincode} · ` : ''}{selectedLocation}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={openCheckout}
+                      className="text-xs font-bold text-blue-600 hover:underline shrink-0 whitespace-nowrap"
+                    >
+                      Change
+                    </button>
+                  </div>
+
+                  <div className="px-4 py-3 flex items-center gap-2.5">
+                    <svg className="w-4 h-4 text-gray-700 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M3 7h11v10H3z" />
+                      <path d="M14 10h4l3 3v4h-7v-7Z" />
+                      <circle cx="7.5" cy="17.5" r="1.5" />
+                      <circle cx="17.5" cy="17.5" r="1.5" />
+                    </svg>
+                    <div>
+                      <p className="font-bold text-gray-900">
+                        Delivery by {estDeliveryText || '3–5 Days'}
+                      </p>
+                      <p className="text-[11px] text-gray-500">Order now for priority dispatch</p>
+                    </div>
+                  </div>
+
+                  <div className="px-4 py-3 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <svg className="w-4 h-4 text-gray-700 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M3 9l1-4h16l1 4" />
+                        <path d="M5 9v11h14V9" />
+                        <path d="M9 20v-6h6v6" />
+                      </svg>
+                      <div className="min-w-0">
+                        <p className="font-bold text-gray-900 truncate">Fulfilled by Amal Coolguard</p>
+                        <p className="text-[11px] text-gray-500 tabular-nums">
+                          {product.rating || 4.8} ★ · Verified Seller
+                        </p>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -826,16 +921,39 @@ export default function ProductDetails() {
                 </div>
               </div>
 
-              {/* Customer Assurance */}
-              <div className="border-t border-gray-200 pt-4 grid grid-cols-3 gap-2 text-center text-xs text-gray-600">
-                <div className="p-2.5 bg-gray-50 rounded-lg border border-gray-100">
-                  <p className="font-bold text-gray-800">Fast Delivery</p>
+              {/* 4-Pillar Customer Assurance Strip */}
+              <div className="border-t border-gray-200 pt-4 grid grid-cols-4 gap-2 text-center text-[11px] text-gray-700">
+                <div className="p-2 bg-gray-50 rounded-lg border border-gray-100 flex flex-col items-center gap-1.5">
+                  <svg className="w-5 h-5 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M12 7v5l3 2" />
+                  </svg>
+                  <p className="font-semibold leading-tight">Fast Dispatch</p>
                 </div>
-                <div className="p-2.5 bg-gray-50 rounded-lg border border-gray-100">
-                  <p className="font-bold text-gray-800">UPI & COD</p>
+                <div className="p-2 bg-gray-50 rounded-lg border border-gray-100 flex flex-col items-center gap-1.5">
+                  <svg className="w-5 h-5 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
+                    <path d="M21 12a9 9 0 0 1-15.4 6.4L3 16" />
+                    <path d="M3 12a9 9 0 0 1 15.4-6.4L21 8" />
+                    <path d="M21 3v5h-5" />
+                    <path d="M3 21v-5h5" />
+                  </svg>
+                  <p className="font-semibold leading-tight">Quality Checked</p>
                 </div>
-                <div className="p-2.5 bg-gray-50 rounded-lg border border-gray-100">
-                  <p className="font-bold text-gray-800">Verified Store</p>
+                <div className="p-2 bg-gray-50 rounded-lg border border-gray-100 flex flex-col items-center gap-1.5">
+                  <svg className="w-5 h-5 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
+                    <rect x="3" y="6" width="18" height="12" rx="2" />
+                    <circle cx="12" cy="12" r="2.2" />
+                  </svg>
+                  <p className="font-semibold leading-tight">
+                    {paymentSettings.enableCOD !== false ? 'Cash on Delivery' : 'UPI & Cards'}
+                  </p>
+                </div>
+                <div className="p-2 bg-gray-50 rounded-lg border border-gray-100 flex flex-col items-center gap-1.5">
+                  <svg className="w-5 h-5 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
+                    <path d="M12 3 5 6v6c0 4.5 3 7.7 7 9 4-1.3 7-4.5 7-9V6l-7-3Z" />
+                    <path d="m9.5 12 1.8 1.8L15 10" />
+                  </svg>
+                  <p className="font-semibold leading-tight">Amal Assured</p>
                 </div>
               </div>
             </div>
@@ -916,27 +1034,22 @@ export default function ProductDetails() {
       </div>
 
       {/* Mobile / Tablet Sticky Bottom Purchase CTA */}
-      <div className="lg:hidden fixed bottom-14 left-0 right-0 bg-white border-t border-gray-200 px-3 py-2 flex items-center justify-between gap-3 shadow-lg z-40">
+      <div className="lg:hidden fixed bottom-14 left-0 right-0 bg-white border-t border-gray-200 px-3 py-2.5 flex items-center justify-between gap-3 shadow-lg z-40">
         <div className="min-w-0 tabular-nums">
-          <p className="text-[10px] font-semibold text-gray-500 truncate">
-            {user ? 'Total Payable' : t('loginRequiredBook')}
-          </p>
-          <p className="text-base font-extrabold text-gray-900 leading-tight">₹{finalTotalPayable}</p>
+          {totals.originalTotal > finalTotalPayable && (
+            <p className="text-[11px] text-gray-400 line-through leading-none">
+              ₹{totals.originalTotal}
+            </p>
+          )}
+          <p className="text-lg font-extrabold text-gray-900 leading-tight">₹{finalTotalPayable}</p>
         </div>
 
         <button
           type="button"
-          onClick={() => {
-            if (!user) {
-              const redirectTarget = `/product/${product.id}?openOrder=1`;
-              navigate(`/login?redirect=${encodeURIComponent(redirectTarget)}`);
-              return;
-            }
-            setShowOrderModal(true);
-          }}
-          className="h-10 px-5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs sm:text-sm rounded-lg shadow-xs active:scale-[0.98] transition flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
+          onClick={openCheckout}
+          className="flipkart-cta-btn h-11 px-6 bg-[#FFC200] hover:bg-[#f5b800] text-slate-950 font-extrabold text-sm rounded-lg shadow-xs active:scale-[0.98] transition flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer tabular-nums"
         >
-          <span>{user ? t('orderNow') : 'Sign in to Order'}</span>
+          <span>{t('orderNow')} — ₹{finalTotalPayable}</span>
         </button>
       </div>
 
@@ -1013,276 +1126,810 @@ export default function ProductDetails() {
         </div>
       )}
 
-      {/* Order Booking Modal */}
+      {/* Full-Screen Flipkart-Style 3-Step Checkout Experience */}
       {showOrderModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center z-[200] p-0 sm:p-4">
-          <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto animate-in slide-in-from-bottom duration-200">
-            {submittedOrderId ? (
-              <div className="py-3 space-y-4 text-center">
-                {/* Pending Verification Header */}
-                <div className="w-16 h-16 bg-amber-100 text-amber-600 text-3xl rounded-full flex items-center justify-center mx-auto mb-1 animate-pulse">
-                  ⏳
-                </div>
-                <span className="inline-block bg-amber-100 text-amber-800 text-xs font-extrabold px-3 py-1 rounded-full uppercase tracking-wider">
-                  Status: PENDING VERIFICATION
-                </span>
-                
-                <h3 className="text-2xl font-extrabold text-gray-900">Order Submitted (Pending)</h3>
-                <p className="text-xs text-gray-600">
-                  Your order <span className="font-bold">#{submittedOrderId}</span> is recorded in <span className="font-bold text-amber-700">PENDING status</span>. Upload your payment screenshot below (if applicable) for quick Admin verification.
-                </p>
-
-                {/* Upload Payment Screenshot Box */}
-                <div className="bg-amber-50 border-2 border-dashed border-amber-300 p-4 rounded-2xl text-left space-y-3">
-                  <p className="text-xs font-bold text-amber-900 flex items-center gap-1">
-                    <span>📷</span> Upload Payment Screenshot (യുപിഐ പേയ്‌മെന്റ് സ്ക്രീൻഷോട്ട്):
-                  </p>
-
-                  {uploadingScreenshot && (
-                    <p className="text-xs font-bold text-blue-700">⏳ Compressing & saving screenshot...</p>
-                  )}
-                  
-                  {screenshotPreview ? (
-                    <div className="space-y-2">
-                      <div className="w-full h-44 bg-gray-900 rounded-xl overflow-hidden relative">
-                        <img src={screenshotPreview} alt="Payment Screenshot" className="w-full h-full object-contain" />
-                      </div>
-                      <p className="text-[11px] text-green-700 font-bold text-center">
-                        ✓ Screenshot Uploaded Successfully! Admin will review it shortly.
-                      </p>
-                    </div>
-                  ) : (
-                    <div>
-                      <input 
-                        type="file" 
-                        accept="image/*"
-                        onChange={handleScreenshotChange}
-                        className="block w-full text-xs text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-amber-600 file:text-white hover:file:bg-amber-700 cursor-pointer"
-                      />
-                      <p className="text-[10px] text-amber-800 mt-2">
-                        Take a screenshot of your payment and upload here to speed up approval.
-                      </p>
-                    </div>
-                  )}
-
-                  {formData.paymentMethod === 'UPI' && paymentSettings.enableUPI !== false && (
-                    <button
-                      type="button"
-                      onClick={() => triggerUpiPayment(submittedOrderId, finalTotalPayable)}
-                      className="w-full bg-blue-600 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1 shadow-sm mt-2"
-                    >
-                      <span>📱</span> Re-open UPI App (GPay / PhonePe / Paytm)
-                    </button>
-                  )}
-
-                  {/* Direct WhatsApp Support Contact Button */}
-                  <a
-                    href={`https://wa.me/91${formData.whatsappNumber || '6238113451'}?text=${encodeURIComponent(
-                      `Hello Amal Coolguard Customer Care,\nI have submitted my order!\n\nOrder ID: #${submittedOrderId}\nProduct: ${product.name}\nTotal Amount: ₹${finalTotalPayable}\nCustomer: ${formData.customerName}\nPhone: ${formData.phoneNumber}\nAddress: ${formData.address}`
-                    )}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-3 px-3 rounded-xl text-xs flex items-center justify-center gap-2 shadow-md transition mt-2"
-                  >
-                    <span className="text-base">💬</span>
-                    <span>Contact Customer Care on WhatsApp ({formData.whatsappNumber || '6238113451'})</span>
-                  </a>
-                </div>
-
-                {/* Order Summary Box */}
-                <div className="bg-gray-100 p-4 rounded-2xl text-xs text-gray-800 space-y-1.5 text-left border">
-                  <p><span className="font-bold">Order ID:</span> {submittedOrderId}</p>
-                  <p><span className="font-bold">Product Price:</span> ₹{itemBasePrice}</p>
-                  {totals.gstPercent > 0 && (
-                    <p>
-                      <span className="font-bold">GST ({totals.gstPercent}%):</span> ₹{totals.gstAmount}
-                      {paymentSettings.gstNumber ? ` • GSTIN: ${paymentSettings.gstNumber}` : ''}
+        <div className="fixed inset-0 z-[200] bg-gray-100 overflow-y-auto">
+          <div className="max-w-2xl mx-auto min-h-screen flex flex-col bg-gray-100">
+            {/* Sticky Top Checkout Navigation Bar */}
+            <header className="sticky top-0 z-20 bg-white border-b border-gray-200 px-4 h-14 flex items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-center gap-3 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (submittedOrderId) {
+                      closeCheckout();
+                    } else if (checkoutStep > 1) {
+                      setOrderErrorMsg('');
+                      setCheckoutStep((checkoutStep - 1) as 1 | 2 | 3);
+                    } else {
+                      closeCheckout();
+                    }
+                  }}
+                  aria-label="Go back"
+                  className="w-9 h-9 -ml-1.5 rounded-lg flex items-center justify-center text-gray-800 hover:bg-gray-100 transition shrink-0"
+                >
+                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                    <path d="M19 12H5M12 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                <div className="min-w-0">
+                  {!submittedOrderId && checkoutStep === 3 && (
+                    <p className="text-[11px] font-semibold text-gray-500 leading-none mb-0.5">
+                      Step 3 of 3
                     </p>
                   )}
-                  <p><span className="font-bold">Delivery Charge:</span> {deliveryFee > 0 ? `₹${deliveryFee}` : 'Free'}</p>
-                  {estDeliveryText && (
-                    <p><span className="font-bold">Estimated Delivery:</span> {estDeliveryText}</p>
-                  )}
-                  <p><span className="font-bold">Total Amount:</span> ₹{finalTotalPayable}</p>
-                  <p><span className="font-bold">Customer:</span> {formData.customerName}</p>
-                  <p><span className="font-bold">Phone:</span> {formData.phoneNumber}</p>
-                  <p><span className="font-bold">Delivery Address:</span> {formData.address}, {formData.pincode}</p>
-                  <p><span className="font-bold">Payment Mode:</span> {formData.paymentMethod}</p>
-                  <p><span className="font-bold">Current Status:</span> <span className="text-amber-700 font-bold">Pending Admin Approval</span></p>
+                  <h2 className="text-base font-extrabold text-gray-900 truncate leading-tight">
+                    {submittedOrderId
+                      ? 'Order Confirmed'
+                      : checkoutStep === 1
+                        ? 'Delivery Address'
+                        : checkoutStep === 2
+                          ? 'Order Summary'
+                          : 'Payments'}
+                  </h2>
+                </div>
+              </div>
+
+              {!submittedOrderId && checkoutStep === 3 ? (
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-gray-50 border border-gray-200 text-xs font-bold text-gray-700 shrink-0 whitespace-nowrap">
+                  <svg className="w-3.5 h-3.5 text-gray-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                    <rect x="4" y="11" width="16" height="10" rx="2" />
+                    <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+                  </svg>
+                  <span>100% Secure</span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={closeCheckout}
+                  aria-label="Close checkout"
+                  className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-800 hover:bg-gray-100 font-bold text-base shrink-0"
+                >
+                  ✕
+                </button>
+              )}
+            </header>
+
+            {/* 3-Step Progress Stepper */}
+            {!submittedOrderId && (
+              <div className="bg-white border-b border-gray-200 px-4 py-3">
+                <div className="flex items-center justify-between max-w-md mx-auto">
+                  {[
+                    { step: 1, label: 'Address' },
+                    { step: 2, label: 'Order Summary' },
+                    { step: 3, label: 'Payment' },
+                  ].map((item, idx) => {
+                    const isActive = checkoutStep === item.step;
+                    const isDone = checkoutStep > item.step;
+                    return (
+                      <div key={item.step} className="flex items-center flex-1 last:flex-none">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-extrabold tabular-nums transition ${
+                              isDone
+                                ? 'bg-emerald-600 text-white'
+                                : isActive
+                                  ? 'bg-[#2874F0] text-white'
+                                  : 'bg-gray-200 text-gray-600'
+                            }`}
+                          >
+                            {isDone ? '✓' : item.step}
+                          </span>
+                          <span
+                            className={`text-xs font-bold whitespace-nowrap ${
+                              isActive
+                                ? 'text-[#2874F0]'
+                                : isDone
+                                  ? 'text-gray-900'
+                                  : 'text-gray-500'
+                            }`}
+                          >
+                            {item.label}
+                          </span>
+                        </div>
+                        {idx < 2 && (
+                          <div
+                            className={`h-[2px] flex-1 mx-2 sm:mx-3 rounded ${
+                              isDone ? 'bg-emerald-600' : 'bg-gray-200'
+                            }`}
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Main Checkout Content */}
+            {submittedOrderId ? (
+              <div className="flex-1 p-4 sm:p-6 flex flex-col justify-between gap-5">
+                <div className="space-y-4">
+                  {/* Clean Confirmed Hero Card */}
+                  <div className="bg-white rounded-xl border border-gray-200 p-6 text-center space-y-3 shadow-xs">
+                    <div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto">
+                      <svg className="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    </div>
+                    <div className="space-y-1">
+                      <h3 className="text-xl sm:text-2xl font-extrabold text-gray-900">
+                        Order Confirmed!
+                      </h3>
+                      <p className="text-xs sm:text-sm text-gray-600">
+                        Thank you, <span className="font-bold text-gray-900">{formData.customerName || 'Customer'}</span>. Your order has been placed.
+                      </p>
+                    </div>
+                    <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-50 border border-gray-200 text-xs font-bold text-gray-800 tabular-nums">
+                      <span>Order ID:</span>
+                      <span className="font-mono text-gray-900">#{submittedOrderId}</span>
+                    </div>
+                    <p className="text-xs font-semibold text-emerald-700">
+                      Expected Delivery: {estDeliveryText || '3–5 Days'}
+                    </p>
+                  </div>
+
+                  {/* Clean Order Summary Box */}
+                  <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-xs">
+                    <div className="flex items-center gap-3 pb-3 border-b border-gray-100">
+                      <img
+                        src={product.imageUrl}
+                        alt={product.name}
+                        referrerPolicy="no-referrer"
+                        className="w-16 h-16 rounded-lg object-cover border border-gray-200 shrink-0"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-gray-900 truncate">{product.name}</p>
+                        <p className="text-xs text-gray-500 mt-0.5 tabular-nums">Qty: 1</p>
+                        <p className="text-sm font-extrabold text-gray-900 mt-1 tabular-nums">
+                          ₹{finalTotalPayable}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-gray-500 font-medium">Payment Method</span>
+                        <span className="font-bold text-gray-900">
+                          {formData.paymentMethod === 'COD'
+                            ? 'Cash on Delivery'
+                            : formData.paymentMethod === 'Card'
+                              ? 'Credit / Debit Card'
+                              : 'UPI'}
+                        </span>
+                      </div>
+                      <div className="flex items-start justify-between gap-4">
+                        <span className="text-gray-500 font-medium shrink-0">Deliver to</span>
+                        <span className="font-semibold text-gray-900 text-right">
+                          {formData.customerName}, {formData.address} - {formData.pincode}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-gray-500 font-medium">Mobile</span>
+                        <span className="font-semibold text-gray-900 tabular-nums">
+                          {formData.phoneNumber}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t border-gray-100 flex items-center justify-between text-xs">
+                      <span className="text-gray-500">Need help with this order?</span>
+                      <a
+                        href={`https://wa.me/91${formData.whatsappNumber || '6238113451'}?text=${encodeURIComponent(
+                          `Hello Amal Coolguard Support,\nOrder ID: #${submittedOrderId}\nProduct: ${product.name}\nAmount: ₹${finalTotalPayable}`
+                        )}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-bold text-blue-600 hover:underline whitespace-nowrap"
+                      >
+                        WhatsApp Support
+                      </a>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="flex gap-3 pt-2">
-                  <button 
+                {/* Single Continue Button */}
+                <div className="sticky bottom-0 bg-white border-t border-gray-200 -mx-4 sm:-mx-6 px-4 sm:px-6 py-3">
+                  <button
                     type="button"
                     onClick={() => {
-                      setShowOrderModal(false);
-                      setSubmittedOrderId(null);
+                      closeCheckout();
                       navigate('/orders');
                     }}
-                    className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl text-xs shadow"
+                    className="flipkart-cta-btn w-full h-12 bg-[#FFC200] hover:bg-[#f5b800] text-slate-950 font-extrabold text-sm rounded-xl shadow-xs transition cursor-pointer"
                   >
-                    View My Orders Page
+                    Continue
                   </button>
-                  <button 
+                </div>
+              </div>
+            ) : checkoutStep === 1 ? (
+              /* STEP 1: Delivery Address */
+              <div className="flex-1 flex flex-col justify-between">
+                <div className="p-4 space-y-3">
+                  <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-5 space-y-4">
+                    <div>
+                      <h3 className="text-sm font-extrabold text-gray-900">Contact & Delivery Details</h3>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Enter the address where you want this order delivered.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 mb-1.5">Full Name *</label>
+                      <input
+                        type="text"
+                        placeholder="Enter your full name"
+                        required
+                        value={formData.customerName}
+                        onChange={e => setFormData({ ...formData, customerName: e.target.value })}
+                        className="w-full h-11 px-3.5 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 mb-1.5">
+                        10-Digit Mobile Number (WhatsApp) *
+                      </label>
+                      <input
+                        type="tel"
+                        placeholder="Enter 10-digit mobile number"
+                        required
+                        value={formData.phoneNumber}
+                        onChange={e => setFormData({ ...formData, phoneNumber: e.target.value })}
+                        className="w-full h-11 px-3.5 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white tabular-nums"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 mb-1.5">
+                        House No., Building, Road, Area *
+                      </label>
+                      <textarea
+                        placeholder="House name, street, landmark, town"
+                        required
+                        rows={3}
+                        value={formData.address}
+                        onChange={e => setFormData({ ...formData, address: e.target.value })}
+                        className="w-full p-3.5 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 mb-1.5">Pincode *</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 673001"
+                        required
+                        value={formData.pincode}
+                        onChange={e => setFormData({ ...formData, pincode: e.target.value })}
+                        className="w-full h-11 px-3.5 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white tabular-nums"
+                      />
+                    </div>
+
+                    {orderErrorMsg && (
+                      <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs font-bold text-red-700">
+                        {orderErrorMsg}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Sticky Step 1 Footer */}
+                <div className="sticky bottom-0 bg-white border-t border-gray-200 px-4 py-3 flex items-center justify-between gap-4 shadow-sm">
+                  <div className="tabular-nums">
+                    {totals.originalTotal > finalTotalPayable && (
+                      <p className="text-[11px] text-gray-400 line-through leading-none">
+                        ₹{totals.originalTotal}
+                      </p>
+                    )}
+                    <p className="text-lg font-extrabold text-gray-900 leading-tight">
+                      ₹{finalTotalPayable}
+                    </p>
+                  </div>
+                  <button
                     type="button"
                     onClick={() => {
-                      setShowOrderModal(false);
-                      setSubmittedOrderId(null);
+                      if (
+                        !formData.customerName.trim() ||
+                        !formData.phoneNumber.trim() ||
+                        !formData.address.trim() ||
+                        !formData.pincode.trim()
+                      ) {
+                        setOrderErrorMsg('Please fill in your name, mobile number, address, and pincode.');
+                        return;
+                      }
+                      setOrderErrorMsg('');
+                      setCheckoutStep(2);
                     }}
-                    className="flex-1 bg-gray-200 text-gray-800 font-bold py-3 rounded-xl text-xs"
+                    className="flipkart-cta-btn h-11 px-8 bg-[#FFC200] hover:bg-[#f5b800] text-slate-950 font-extrabold text-sm rounded-lg shadow-xs transition cursor-pointer whitespace-nowrap"
                   >
-                    Close Window
+                    Continue
+                  </button>
+                </div>
+              </div>
+            ) : checkoutStep === 2 ? (
+              /* STEP 2: Flipkart-Style Order Summary (No Donation Section) */
+              <div className="flex-1 flex flex-col justify-between">
+                <div className="p-4 space-y-3">
+                  {/* Deliver To Card */}
+                  <div className="bg-white rounded-xl border border-gray-200 p-4 flex items-start justify-between gap-3">
+                    <div className="space-y-1 min-w-0">
+                      <p className="text-xs font-bold text-gray-500 uppercase tracking-wide">
+                        Deliver to:
+                      </p>
+                      <p className="text-sm font-extrabold text-gray-900 truncate">
+                        {formData.customerName}
+                      </p>
+                      <p className="text-xs text-gray-600 leading-relaxed">
+                        {formData.address}, {formData.pincode}
+                      </p>
+                      <p className="text-xs font-semibold text-gray-800 tabular-nums">
+                        {formData.phoneNumber}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOrderErrorMsg('');
+                        setCheckoutStep(1);
+                      }}
+                      className="px-3.5 py-1.5 rounded-lg border border-gray-300 text-blue-600 font-bold text-xs hover:bg-blue-50 transition shrink-0 whitespace-nowrap"
+                    >
+                      Change
+                    </button>
+                  </div>
+
+                  {/* Product Summary Card */}
+                  <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
+                    <div className="flex items-start gap-3.5">
+                      <div className="flex flex-col items-center gap-1.5 shrink-0">
+                        <img
+                          src={product.imageUrl}
+                          alt={product.name}
+                          referrerPolicy="no-referrer"
+                          className="w-20 h-20 rounded-lg object-cover border border-gray-200"
+                        />
+                        <span className="px-2 py-0.5 rounded border border-gray-200 bg-gray-50 text-[11px] font-bold text-gray-700 tabular-nums">
+                          Qty: 1
+                        </span>
+                      </div>
+
+                      <div className="flex-1 min-w-0 space-y-1">
+                        <p className="text-sm font-bold text-gray-900 leading-snug line-clamp-2">
+                          {product.name}
+                        </p>
+                        <div className="inline-flex items-center gap-1.5 text-xs">
+                          <span className="bg-emerald-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded tabular-nums">
+                            {product.rating || 4.8} ★
+                          </span>
+                          <span className="text-gray-500 text-[11px]">Amal Assured</span>
+                        </div>
+                        <div className="flex items-baseline gap-2 pt-0.5 tabular-nums flex-wrap">
+                          {discountPercent > 0 && (
+                            <span className="text-xs font-extrabold text-emerald-700">
+                              ↓{discountPercent}%
+                            </span>
+                          )}
+                          {totals.originalTotal > finalTotalPayable && (
+                            <span className="text-xs text-gray-400 line-through">
+                              ₹{totals.originalTotal}
+                            </span>
+                          )}
+                          <span className="text-base font-extrabold text-gray-900">
+                            ₹{finalTotalPayable}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="pt-2.5 border-t border-gray-100 flex items-center justify-between text-xs text-gray-700">
+                      <span>Delivery by {estDeliveryText || '3–5 Days'}</span>
+                      <span className="font-bold text-emerald-700">
+                        {deliveryFee === 0 ? 'FREE' : `₹${deliveryFee}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Price Details Card */}
+                  <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
+                    <h3 className="text-sm font-extrabold text-gray-900">Price Details</h3>
+                    <div className="space-y-2 text-xs sm:text-sm tabular-nums">
+                      <div className="flex items-center justify-between text-gray-700">
+                        <span>Selling Price</span>
+                        <span className="font-semibold text-gray-900">₹{totals.originalTotal}</span>
+                      </div>
+                      {savingsAmount > 0 && (
+                        <div className="flex items-center justify-between text-gray-700">
+                          <span>Discount</span>
+                          <span className="font-bold text-emerald-700">-₹{savingsAmount}</span>
+                        </div>
+                      )}
+                      {totals.gstPercent > 0 && (
+                        <div className="flex items-center justify-between text-gray-700">
+                          <span>GST ({totals.gstPercent}%)</span>
+                          <span className="font-semibold text-gray-900">₹{totals.gstAmount}</span>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between text-gray-700">
+                        <span>Delivery Charges</span>
+                        <span className={deliveryFee === 0 ? 'font-bold text-emerald-700' : 'font-semibold text-gray-900'}>
+                          {deliveryFee === 0 ? 'FREE' : `₹${deliveryFee}`}
+                        </span>
+                      </div>
+                      <div className="pt-2.5 border-t border-dashed border-gray-200 flex items-center justify-between text-sm sm:text-base font-extrabold text-gray-900">
+                        <span>Total Amount</span>
+                        <span>₹{finalTotalPayable}</span>
+                      </div>
+                    </div>
+
+                    {savingsAmount > 0 && (
+                      <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs font-bold text-emerald-800 flex items-center gap-2 tabular-nums">
+                        <svg className="w-4 h-4 text-emerald-700 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="m9 12 2 2 4-4" />
+                        </svg>
+                        <span>You&apos;ll save ₹{savingsAmount} on this order!</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Sticky Step 2 Footer */}
+                <div className="sticky bottom-0 bg-white border-t border-gray-200 px-4 py-3 flex items-center justify-between gap-4 shadow-sm">
+                  <div className="tabular-nums">
+                    {totals.originalTotal > finalTotalPayable && (
+                      <p className="text-[11px] text-gray-400 line-through leading-none">
+                        ₹{totals.originalTotal}
+                      </p>
+                    )}
+                    <p className="text-lg font-extrabold text-gray-900 leading-tight">
+                      ₹{finalTotalPayable}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOrderErrorMsg('');
+                      setCheckoutStep(3);
+                    }}
+                    className="flipkart-cta-btn h-11 px-8 bg-[#FFC200] hover:bg-[#f5b800] text-slate-950 font-extrabold text-sm rounded-lg shadow-xs transition cursor-pointer whitespace-nowrap"
+                  >
+                    Continue
                   </button>
                 </div>
               </div>
             ) : (
-              <form onSubmit={handleOrderSubmit} className="space-y-3.5">
-                <div className="flex justify-between items-center border-b pb-2.5">
-                  <div>
-                    <h3 className="text-base font-bold text-gray-900">Book / Order Details</h3>
-                    {user?.email && (
-                      <p className="text-[10px] font-bold text-blue-600">✉️ Ordering via {user.email}</p>
+              /* STEP 3: Flipkart-Style Secure Payments Accordion */
+              <form onSubmit={handleOrderSubmit} className="flex-1 flex flex-col justify-between p-4 space-y-4">
+                <div className="space-y-3">
+                  {/* Total Amount Summary Bar */}
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setShowPriceBreakdown(prev => !prev)}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left"
+                    >
+                      <span className="inline-flex items-center gap-1.5 text-sm font-bold text-blue-700">
+                        <span>Total Amount</span>
+                        <svg
+                          className={`w-4 h-4 transition-transform ${showPriceBreakdown ? 'rotate-180' : ''}`}
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.2"
+                        >
+                          <path d="m6 9 6 6 6-6" />
+                        </svg>
+                      </span>
+                      <span className="text-base font-extrabold text-blue-700 tabular-nums">
+                        ₹{finalTotalPayable}
+                      </span>
+                    </button>
+                    {showPriceBreakdown && (
+                      <div className="px-4 pb-3 pt-1 border-t border-blue-200/70 text-xs text-gray-700 space-y-1 tabular-nums">
+                        <div className="flex justify-between">
+                          <span>Item Price</span>
+                          <span>₹{itemBasePrice}</span>
+                        </div>
+                        {totals.gstPercent > 0 && (
+                          <div className="flex justify-between">
+                            <span>GST ({totals.gstPercent}%)</span>
+                            <span>₹{totals.gstAmount}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between">
+                          <span>Delivery</span>
+                          <span>{deliveryFee === 0 ? 'FREE' : `₹${deliveryFee}`}</span>
+                        </div>
+                      </div>
                     )}
                   </div>
-                  <button 
-                    type="button" 
-                    onClick={() => setShowOrderModal(false)}
-                    className="text-gray-400 hover:text-gray-600 font-bold text-xl"
-                  >
-                    ✕
-                  </button>
-                </div>
 
-                <div className="flex items-center gap-3 bg-blue-50 p-2.5 rounded-xl border border-blue-100">
-                  <img src={product.imageUrl} alt={product.name} className="w-12 h-12 rounded-lg object-cover" />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-bold text-xs text-gray-900 truncate">{product.name}</p>
-                    <p className="text-sm font-extrabold text-blue-700">Total: ₹{finalTotalPayable}</p>
-                    <p className="text-[10px] text-gray-600">
-                      Item ₹{itemBasePrice}
-                      {totals.gstPercent > 0 ? ` + ${totals.gstPercent}% GST ₹${totals.gstAmount}` : ''}
-                      {deliveryFee > 0 ? ` + Delivery ₹${deliveryFee}` : ' • Free Delivery'}
-                    </p>
-                    {estDeliveryText && (
-                      <p className="text-[10px] text-emerald-700 font-bold">
-                        ⏱️ Estimated Delivery: {estDeliveryText}
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Your Full Name *</label>
-                  <input 
-                    type="text" 
-                    placeholder="Enter your full name"
-                    required
-                    value={formData.customerName}
-                    onChange={e => setFormData({ ...formData, customerName: e.target.value })}
-                    className="w-full p-2.5 text-xs border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Phone Number (WhatsApp) *</label>
-                  <input 
-                    type="tel" 
-                    placeholder="10-digit mobile number"
-                    required
-                    value={formData.phoneNumber}
-                    onChange={e => setFormData({ ...formData, phoneNumber: e.target.value })}
-                    className="w-full p-2.5 text-xs border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Delivery Address *</label>
-                  <textarea 
-                    placeholder="House name, street, area details"
-                    required
-                    rows={2}
-                    value={formData.address}
-                    onChange={e => setFormData({ ...formData, address: e.target.value })}
-                    className="w-full p-2.5 text-xs border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Pincode *</label>
-                  <input 
-                    type="text" 
-                    placeholder="e.g. 673001"
-                    required
-                    value={formData.pincode}
-                    onChange={e => setFormData({ ...formData, pincode: e.target.value })}
-                    className="w-full p-2.5 text-xs border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Payment Method</label>
+                  {/* Accordion Payment Options */}
                   {allowedPaymentMethods.length === 0 ? (
-                    <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs font-bold text-red-700 text-center">
-                      All online & COD payment gateways are currently blocked by Admin. Please contact Customer Care on WhatsApp.
+                    <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-xs font-bold text-red-700 text-center">
+                      All payment methods are temporarily unavailable. Please contact WhatsApp support ({formData.whatsappNumber || '6238113451'}).
                     </div>
                   ) : (
-                    <div className={`grid gap-2 mb-2 ${
-                      allowedPaymentMethods.length === 1 ? 'grid-cols-1' :
-                      allowedPaymentMethods.length === 2 ? 'grid-cols-2' : 'grid-cols-3'
-                    }`}>
-                      {allowedPaymentMethods.map(method => (
-                        <button
-                          type="button"
-                          key={method.id}
-                          onClick={() => setFormData({ ...formData, paymentMethod: method.id })}
-                          className={`p-2 rounded-xl text-xs font-bold border text-center transition ${
-                            formData.paymentMethod === method.id 
-                              ? 'border-blue-600 bg-blue-50 text-blue-700 ring-2 ring-blue-200' 
-                              : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                    <div className="space-y-2.5">
+                      {/* 1. UPI Payment Option */}
+                      {paymentSettings.enableUPI !== false && (
+                        <div
+                          className={`bg-white rounded-xl border transition overflow-hidden ${
+                            formData.paymentMethod === 'UPI'
+                              ? 'border-blue-600 ring-1 ring-blue-200'
+                              : 'border-gray-200'
                           }`}
                         >
-                          {method.label}
-                        </button>
-                      ))}
+                          <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, paymentMethod: 'UPI' })}
+                            className="w-full p-4 flex items-center justify-between gap-3 text-left"
+                          >
+                            <div className="flex items-start gap-3 min-w-0">
+                              <span className="w-9 h-9 rounded-lg border border-gray-200 bg-gray-50 flex items-center justify-center text-[11px] font-black text-gray-800 shrink-0">
+                                UPI
+                              </span>
+                              <div className="min-w-0">
+                                <p className="text-sm font-bold text-gray-900">UPI</p>
+                                <p className="text-xs text-gray-500">
+                                  Pay by any UPI app (GPay, PhonePe, Paytm, BHIM)
+                                </p>
+                              </div>
+                            </div>
+                            <svg
+                              className={`w-4 h-4 text-gray-500 shrink-0 transition-transform ${
+                                formData.paymentMethod === 'UPI' ? 'rotate-180 text-blue-600' : ''
+                              }`}
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2.2"
+                            >
+                              <path d="m6 9 6 6 6-6" />
+                            </svg>
+                          </button>
+
+                          {formData.paymentMethod === 'UPI' && (
+                            <div className="px-4 pb-4 pt-2 border-t border-gray-100 space-y-3">
+                              <div className="bg-gray-50 rounded-lg border border-gray-200 p-3 flex items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="text-[11px] font-semibold text-gray-500">Merchant UPI ID</p>
+                                  <p className="text-xs sm:text-sm font-mono font-bold text-gray-900 truncate">
+                                    {formData.merchantUpiId}
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={handleCopyUpi}
+                                  className="px-3 py-1.5 rounded-lg bg-white border border-gray-300 text-xs font-bold text-gray-800 hover:bg-gray-100 transition shrink-0 whitespace-nowrap"
+                                >
+                                  {copiedUpi ? 'Copied' : 'Copy'}
+                                </button>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => triggerUpiPayment('PAY', finalTotalPayable)}
+                                className="w-full h-10 rounded-lg border border-blue-600 text-blue-700 font-bold text-xs hover:bg-blue-50 transition flex items-center justify-center gap-2"
+                              >
+                                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <rect x="6" y="2" width="12" height="20" rx="2" />
+                                  <path d="M12 18h.01" />
+                                </svg>
+                                <span>Open UPI App (GPay / PhonePe / Paytm)</span>
+                              </button>
+
+                              {/* Optional UPI receipt attachment */}
+                              <div className="rounded-lg border border-dashed border-gray-300 p-3 space-y-2 bg-gray-50/70">
+                                <p className="text-[11px] font-semibold text-gray-700">
+                                  Attach payment screenshot (optional)
+                                </p>
+                                {uploadingScreenshot && (
+                                  <p className="text-[11px] font-semibold text-blue-700">
+                                    Optimizing screenshot...
+                                  </p>
+                                )}
+                                {screenshotPreview ? (
+                                  <div className="flex items-center gap-3">
+                                    <img
+                                      src={screenshotPreview}
+                                      alt="Payment screenshot"
+                                      className="w-12 h-12 rounded-md object-cover border border-gray-200"
+                                    />
+                                    <span className="text-xs font-bold text-emerald-700 flex-1">
+                                      Receipt attached
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setScreenshotPreview(null)}
+                                      className="text-xs font-bold text-red-600 hover:underline"
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    onChange={handleScreenshotChange}
+                                    className="block w-full text-xs text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border file:border-gray-300 file:text-xs file:font-bold file:bg-white file:text-gray-800 hover:file:bg-gray-100 cursor-pointer"
+                                  />
+                                )}
+                              </div>
+
+                              <button
+                                type="submit"
+                                disabled={submitting}
+                                className="flipkart-cta-btn w-full h-11 bg-[#FFC200] hover:bg-[#f5b800] text-slate-950 font-extrabold text-sm rounded-lg shadow-xs transition cursor-pointer disabled:opacity-50 tabular-nums"
+                              >
+                                {submitting ? 'Confirming Order...' : `Pay & Confirm Order • ₹${finalTotalPayable}`}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* 2. Credit / Debit / ATM Card Option */}
+                      {paymentSettings.enableCard !== false && (
+                        <div
+                          className={`bg-white rounded-xl border transition overflow-hidden ${
+                            formData.paymentMethod === 'Card'
+                              ? 'border-blue-600 ring-1 ring-blue-200'
+                              : 'border-gray-200'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, paymentMethod: 'Card' })}
+                            className="w-full p-4 flex items-center justify-between gap-3 text-left"
+                          >
+                            <div className="flex items-start gap-3 min-w-0">
+                              <span className="w-9 h-9 rounded-lg border border-gray-200 bg-gray-50 flex items-center justify-center text-gray-700 shrink-0">
+                                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
+                                  <rect x="2" y="5" width="20" height="14" rx="2" />
+                                  <path d="M2 10h20" />
+                                </svg>
+                              </span>
+                              <div className="min-w-0">
+                                <p className="text-sm font-bold text-gray-900">Credit / Debit / ATM Card</p>
+                                <p className="text-xs text-gray-500">
+                                  Visa, Mastercard, RuPay & Maestro supported
+                                </p>
+                              </div>
+                            </div>
+                            <svg
+                              className={`w-4 h-4 text-gray-500 shrink-0 transition-transform ${
+                                formData.paymentMethod === 'Card' ? 'rotate-180 text-blue-600' : ''
+                              }`}
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2.2"
+                            >
+                              <path d="m6 9 6 6 6-6" />
+                            </svg>
+                          </button>
+
+                          {formData.paymentMethod === 'Card' && (
+                            <div className="px-4 pb-4 pt-2 border-t border-gray-100 space-y-3">
+                              <div className="space-y-2.5">
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  maxLength={19}
+                                  placeholder="Card Number (XXXX XXXX XXXX XXXX)"
+                                  value={cardPreview.number}
+                                  onChange={e => setCardPreview({ ...cardPreview, number: e.target.value })}
+                                  className="w-full h-10 px-3 text-xs sm:text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white tabular-nums"
+                                />
+                                <div className="grid grid-cols-2 gap-2.5">
+                                  <input
+                                    type="text"
+                                    maxLength={5}
+                                    placeholder="Valid Thru (MM/YY)"
+                                    value={cardPreview.expiry}
+                                    onChange={e => setCardPreview({ ...cardPreview, expiry: e.target.value })}
+                                    className="w-full h-10 px-3 text-xs sm:text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white tabular-nums"
+                                  />
+                                  <input
+                                    type="password"
+                                    inputMode="numeric"
+                                    maxLength={4}
+                                    placeholder="CVV"
+                                    value={cardPreview.cvv}
+                                    onChange={e => setCardPreview({ ...cardPreview, cvv: e.target.value })}
+                                    className="w-full h-10 px-3 text-xs sm:text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white tabular-nums"
+                                  />
+                                </div>
+                              </div>
+                              <button
+                                type="submit"
+                                disabled={submitting}
+                                className="flipkart-cta-btn w-full h-11 bg-[#FFC200] hover:bg-[#f5b800] text-slate-950 font-extrabold text-sm rounded-lg shadow-xs transition cursor-pointer disabled:opacity-50 tabular-nums"
+                              >
+                                {submitting ? 'Confirming Order...' : `Pay & Confirm Order • ₹${finalTotalPayable}`}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* 3. Cash on Delivery Option */}
+                      {paymentSettings.enableCOD !== false && (
+                        <div
+                          className={`bg-white rounded-xl border transition overflow-hidden ${
+                            formData.paymentMethod === 'COD'
+                              ? 'border-blue-600 ring-1 ring-blue-200'
+                              : 'border-gray-200'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, paymentMethod: 'COD' })}
+                            className="w-full p-4 flex items-center justify-between gap-3 text-left"
+                          >
+                            <div className="flex items-start gap-3 min-w-0">
+                              <span className="w-9 h-9 rounded-lg border border-gray-200 bg-gray-50 flex items-center justify-center text-gray-700 shrink-0">
+                                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
+                                  <rect x="2" y="6" width="20" height="12" rx="2" />
+                                  <circle cx="12" cy="12" r="2.5" />
+                                </svg>
+                              </span>
+                              <div className="min-w-0">
+                                <p className="text-sm font-bold text-gray-900">Cash on Delivery</p>
+                                <p className="text-xs text-gray-500">
+                                  Pay in cash or UPI when your order arrives
+                                </p>
+                              </div>
+                            </div>
+                            <svg
+                              className={`w-4 h-4 text-gray-500 shrink-0 transition-transform ${
+                                formData.paymentMethod === 'COD' ? 'rotate-180 text-blue-600' : ''
+                              }`}
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2.2"
+                            >
+                              <path d="m6 9 6 6 6-6" />
+                            </svg>
+                          </button>
+
+                          {formData.paymentMethod === 'COD' && (
+                            <div className="px-4 pb-4 pt-2 border-t border-gray-100 space-y-3">
+                              <p className="text-xs text-gray-600 leading-relaxed tabular-nums">
+                                Pay <span className="font-bold text-gray-900">₹{finalTotalPayable}</span> directly at delivery to the courier partner.
+                              </p>
+                              <button
+                                type="submit"
+                                disabled={submitting}
+                                className="flipkart-cta-btn w-full h-11 bg-[#FFC200] hover:bg-[#f5b800] text-slate-950 font-extrabold text-sm rounded-lg shadow-xs transition cursor-pointer disabled:opacity-50 tabular-nums"
+                              >
+                                {submitting ? 'Confirming Order...' : `Confirm Order • ₹${finalTotalPayable}`}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 
-                  {formData.paymentMethod === 'UPI' && paymentSettings.enableUPI !== false && (
-                    <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 p-3 rounded-xl text-xs space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-blue-900">📲 Mobile UPI Launcher</span>
-                        <span className="text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-bold">GPay / PhonePe / Paytm</span>
-                      </div>
-                      <p className="text-[11px] text-gray-600">
-                        When you submit, your mobile UPI app will open for ₹{finalTotalPayable}. Upload the payment screenshot on the next screen for Admin approval.
-                      </p>
-                      <div>
-                        <label className="block text-[10px] font-bold text-gray-700 mb-0.5">Store / Merchant UPI ID</label>
-                        <input 
-                          type="text" 
-                          readOnly
-                          value={formData.merchantUpiId}
-                          className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none bg-white font-mono text-gray-700"
-                        />
-                      </div>
+                  {orderErrorMsg && (
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs font-bold text-red-700 text-center">
+                      {orderErrorMsg}
                     </div>
                   )}
                 </div>
 
-                {orderErrorMsg && (
-                  <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs font-bold text-red-700 text-center">
-                    {orderErrorMsg}
-                  </div>
-                )}
-
-                <button
-                  type="submit"
-                  disabled={submitting || allowedPaymentMethods.length === 0}
-                  className="w-full bg-gradient-to-r from-amber-600 to-orange-600 text-white font-extrabold py-3.5 rounded-xl shadow-lg hover:brightness-110 active:scale-98 transition mt-2 disabled:opacity-50 text-sm flex items-center justify-center gap-2"
-                >
-                  <span>⏳</span>
-                  <span>{submitting ? 'Saving Order...' : `Submit Order (Pending Verification) • ₹${finalTotalPayable}`}</span>
-                </button>
+                {/* Trust Footer */}
+                <div className="py-4 text-center text-[11px] font-medium text-gray-500 flex items-center justify-center gap-1.5">
+                  <svg className="w-3.5 h-3.5 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 3 5 6v6c0 4.5 3 7.7 7 9 4-1.3 7-4.5 7-9V6l-7-3Z" />
+                    <path d="m9.5 12 1.8 1.8L15 10" />
+                  </svg>
+                  <span>100% Safe & Secure Payments • Genuine Amal Coolguard Products</span>
+                </div>
               </form>
             )}
           </div>

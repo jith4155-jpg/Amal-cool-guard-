@@ -198,6 +198,16 @@
   color: #ffffff;
 }
 
+/* Preserve high-contrast dark text on yellow/amber Flipkart CTA buttons */
+:root:not([data-theme='light']) .flipkart-cta-btn,
+:root:not([data-theme='light']) .flipkart-cta-btn *,
+:root:not([data-theme='light']) .bg-amber-400,
+:root:not([data-theme='light']) .bg-amber-400 *,
+:root:not([data-theme='light']) .bg-\[\#FFC200\],
+:root:not([data-theme='light']) .bg-\[\#FFC200\] * {
+  color: #0f172a;
+}
+
 /* Borders */
 :root:not([data-theme='light']) :is(.border-gray-100, .border-gray-200, .border-gray-300, .border-slate-200, .border-blue-100, .border-blue-200, .border-blue-300, .border-amber-200, .border-amber-300, .border-emerald-200, .border-emerald-300, .border-green-200, .border-purple-100, .border-purple-200, .border-purple-300, .border-indigo-200, .border-indigo-300, .border-red-200, .border-t, .border-b, .border) {
   border-color: var(--border-subtle);

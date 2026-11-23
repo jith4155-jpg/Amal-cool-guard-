@@ -66,17 +66,9 @@ export default function CustomerLogin() {
             {user ? 'Signed In' : 'Sign In with Gmail'}
           </h2>
           <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
-            {isOrderRedirect
-              ? 'Please sign in with your Google / Gmail account to place an order.'
-              : 'Sign in with your Gmail account to continue shopping on Amal Coolguard.'}
+            നിങ്ങളുടെ ഓർഡർ ഹിസ്റ്ററിയും പ്രൊഫൈലും കാണാൻ സ്വന്തം Google / Gmail അക്കൗണ്ട് വഴി പ്രവേശിക്കുക.
           </p>
         </div>
-
-        {isOrderRedirect && !user && (
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center text-[11px] font-bold text-amber-900">
-            Sign-in is required to complete your booking.
-          </div>
-        )}
 
         {user ? (
           <div className="space-y-3">

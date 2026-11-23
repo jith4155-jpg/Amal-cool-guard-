@@ -33,6 +33,11 @@ export default function AppStorefront() {
   const wishlistKey = user ? `amal_wishlist_${user.uid}` : 'amal_wishlist_guest';
   const [wishlist, setWishlist] = useState<Record<string, boolean>>({});
 
+  // Location selector state
+  const [selectedLocation, setSelectedLocation] = useState<string>(() => localStorage.getItem('amal_user_location') || 'Kerala, India');
+  const [showLocationModal, setShowLocationModal] = useState(false);
+  const [locationInput, setLocationInput] = useState('');
+
   useEffect(() => {
     try {
       const savedWishlistIds: string[] = safeJsonParse<string[]>(localStorage.getItem(wishlistKey), []);
@@ -168,20 +173,10 @@ export default function AppStorefront() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
 
-  // Categories shown: only categories that actually exist among active products (no empty ghost categories)
-  const isCategoriesInitialized = typeof window !== 'undefined' && localStorage.getItem('amal_categories_initialized') === 'true';
-
-  const validCategoryNames = (
-    isCategoriesInitialized
-      ? customCategories
-      : Array.from(new Set(products.map(p => (p.category || '').trim()).filter(Boolean)))
-  ).filter(c => Boolean(c) && products.some(p => p.category?.trim().toLowerCase() === c.trim().toLowerCase()));
-
-  const categories = validCategoryNames.length > 0 ? ['All', ...Array.from(new Set(validCategoryNames))] : [];
-
-  const matchingSearchedCategories = searchQuery.trim()
-    ? validCategoryNames.filter(c => c.toLowerCase().includes(searchQuery.trim().toLowerCase()))
-    : [];
+  const validCategoryNames = customCategories.filter(
+    c => Boolean(c) && products.some(p => p.category?.trim().toLowerCase() === c.trim().toLowerCase())
+  );
+  const categories = validCategoryNames.length > 0 ? ['All', ...validCategoryNames] : ['All'];
 
   const filteredProducts = products.filter(p => {
     const matchesCategory =
@@ -200,27 +195,45 @@ export default function AppStorefront() {
 
   return (
     <div className="min-h-screen bg-gray-100 pb-20">
-      {/* Flipkart-Style Clean Sticky Header (Zero Overlap on All Mobile & Desktop Widths) */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-50 shadow-xs">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
-          {/* Top Bar Row */}
-          <div className="h-14 flex items-center justify-between gap-2 sm:gap-4">
-            {/* Brand Zone (single-line, never wraps behind controls) */}
-            <Link to="/" className="flex items-center gap-2 min-w-0 shrink">
+      {/* Location Selector Bar */}
+      <div className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between text-xs font-semibold text-gray-700">
+        <div className="flex items-center gap-1.5 truncate">
+          <span className="text-blue-600 font-bold">📍</span>
+          <span className="text-gray-500">Location:</span>
+          <button
+            type="button"
+            onClick={() => setShowLocationModal(true)}
+            className="text-blue-700 font-bold underline hover:text-blue-800 truncate"
+          >
+            {selectedLocation}
+          </button>
+        </div>
+        <span className="text-[10px] text-gray-400">Kerala, India</span>
+      </div>
+
+      {/* Prominent Flipkart-Style Header with Logo and Larger Brand Name */}
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-40 shadow-xs">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3">
+          <div className="flex items-center justify-between gap-2 sm:gap-4">
+            <Link to="/" className="flex items-center gap-3 min-w-0 shrink">
               <img
                 src="/assets/aistudio/file_000000004d888211a2ae8deecb004de1_adbff682.png"
                 alt="Amal Coolguard"
-                className="w-8 h-8 rounded-full border border-gray-200 object-cover shrink-0"
+                className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border-2 border-blue-600 object-cover shadow-sm shrink-0"
                 onError={e => {
                   (e.target as HTMLElement).style.display = 'none';
                 }}
               />
-              <span className="text-sm sm:text-base font-extrabold text-gray-900 tracking-tight whitespace-nowrap truncate">
-                {t('brandName')}
-              </span>
+              <div className="flex flex-col min-w-0">
+                <span className="text-base sm:text-xl font-extrabold text-blue-700 tracking-tight whitespace-nowrap truncate">
+                  {t('brandName')}
+                </span>
+                <span className="text-[10px] sm:text-xs font-bold text-gray-500 truncate">
+                  {t('tagline') || 'Sun Protection Gear'}
+                </span>
+              </div>
             </Link>
 
-            {/* Controls Zone (uniform h-9 controls, zero collision) */}
             <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
               <ThemeSwitcher compact />
               <LanguageSelector />
@@ -243,7 +256,6 @@ export default function AppStorefront() {
                     </span>
                   )}
                   <span className="max-w-[70px] sm:max-w-[115px] truncate">{firstName}</span>
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" aria-hidden="true" />
                 </Link>
               ) : (
                 <Link
@@ -255,7 +267,7 @@ export default function AppStorefront() {
               )}
 
               <a
-                href={`https://wa.me/91${whatsappNum}?text=Hello%20Amal%20Coolguard,%20I%20have%20an%20enquiry%20about%20your%20cooling%20vests.`}
+                href={`https://wa.me/91${whatsappNum}?text=Hello%20Amal%20Coolguard,%20I%20have%20an%20enquiry.`}
                 target="_blank"
                 rel="noreferrer"
                 title="WhatsApp Support"
@@ -269,8 +281,8 @@ export default function AppStorefront() {
             </div>
           </div>
 
-          {/* Integrated Search Bar (Flipkart style) */}
-          <div className="pb-2.5">
+          {/* Flipkart-Style Search Bar */}
+          <div className="pt-2.5">
             <div className="relative flex items-center">
               <svg
                 className="w-4 h-4 text-gray-400 absolute left-3.5 pointer-events-none"
@@ -305,66 +317,60 @@ export default function AppStorefront() {
         </div>
       </header>
 
-      {/* Main Responsive Store Container */}
-      <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-3 space-y-4">
-        {/* Category Filter Rail (hidden if all categories cleared or single category) */}
-        {categories.length > 1 && (
-          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
-            {categories.map(cat => {
-              const active = selectedCategory === cat;
-              return (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => setSelectedCategory(cat)}
-                  className={`h-9 px-4 rounded-lg text-xs font-bold transition whitespace-nowrap shrink-0 border ${
-                    active
-                      ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
-                      : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  {cat === 'All' ? t('allProducts') : cat}
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Matching Categories Quick-Jump when searching */}
-        {matchingSearchedCategories.length > 0 && (
-          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
-            <span className="text-xs font-semibold text-gray-500 whitespace-nowrap">Categories:</span>
-            {matchingSearchedCategories.map(cat => (
+      {/* Flipkart-Style Category Icon Rail */}
+      <div className="bg-white border-b border-gray-200 px-3 py-3 overflow-x-auto no-scrollbar shadow-2xs">
+        <div className="max-w-7xl mx-auto flex items-center gap-4 sm:gap-6 min-w-max">
+          {[
+            { name: 'For You', icon: '🛍️' },
+            { name: 'Coats', icon: '🧥' },
+            { name: 'Vests', icon: '🦺' },
+            { name: 'Sun Protection', icon: '☀️' },
+            { name: 'Accessories', icon: '🛡️' },
+            { name: 'Kerala Special', icon: '🌴' },
+          ].map(cat => {
+            const active = selectedCategory === (cat.name === 'For You' ? 'All' : cat.name);
+            return (
               <button
-                key={cat}
+                key={cat.name}
                 type="button"
-                onClick={() => {
-                  setSelectedCategory(cat);
-                  setSearchQuery('');
-                }}
-                className="h-8 px-3 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 text-xs font-bold whitespace-nowrap hover:bg-blue-100 transition"
+                onClick={() => setSelectedCategory(cat.name === 'For You' ? 'All' : cat.name)}
+                className="flex flex-col items-center gap-1.5 group cursor-pointer"
               >
-                {cat}
+                <div className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center text-xl sm:text-2xl transition shadow-xs border ${
+                  active
+                    ? 'bg-blue-600 text-white border-blue-600 ring-2 ring-blue-300'
+                    : 'bg-gray-50 text-gray-700 border-gray-200 group-hover:bg-blue-50 group-hover:border-blue-200'
+                }`}>
+                  {cat.icon}
+                </div>
+                <span className={`text-[11px] font-bold transition ${active ? 'text-blue-600' : 'text-gray-700 group-hover:text-blue-600'}`}>
+                  {cat.name}
+                </span>
               </button>
-            ))}
-          </div>
-        )}
+            );
+          })}
+        </div>
+      </div>
 
-        {/* Store Banner (shown when catalog has active products) */}
+      {/* Main Store Container */}
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-4 space-y-4">
+        {/* Promotional Banner */}
         {products.length > 0 && (
-          <section className="bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-600 text-white px-5 py-4 sm:px-8 sm:py-6 rounded-xl shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div>
-              <h1 className="text-lg sm:text-2xl font-extrabold tracking-tight leading-tight">
+          <section className="bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-600 text-white px-5 py-5 sm:px-8 sm:py-7 rounded-2xl shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="space-y-1">
+              <span className="bg-white/20 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full uppercase tracking-wider">
+                {t('heroBadge')}
+              </span>
+              <h1 className="text-xl sm:text-3xl font-extrabold tracking-tight leading-tight">
                 {t('heroTitle')}
               </h1>
-              <p className="text-xs sm:text-sm text-blue-100 font-medium mt-1">
+              <p className="text-xs sm:text-sm text-blue-100 font-medium">
                 {t('heroDesc')}
               </p>
             </div>
             <div className="hidden sm:flex items-center gap-4 text-xs font-semibold text-blue-50 shrink-0">
-              <span>{t('heatBlock')}</span>
-              <span aria-hidden="true">·</span>
-              <span>{t('waterproof')}</span>
+              <span className="bg-blue-800/50 px-3 py-1.5 rounded-lg border border-blue-400/30">{t('heatBlock')}</span>
+              <span className="bg-blue-800/50 px-3 py-1.5 rounded-lg border border-blue-400/30">{t('waterproof')}</span>
             </div>
           </section>
         )}
@@ -381,47 +387,21 @@ export default function AppStorefront() {
           </div>
 
           {filteredProducts.length === 0 ? (
-            <div className="py-14 px-4 bg-white rounded-2xl border border-dashed border-gray-300 text-center space-y-4 max-w-md mx-auto my-4 shadow-2xs">
+            <div className="py-16 px-4 bg-white rounded-2xl border border-dashed border-gray-300 text-center space-y-4 max-w-md mx-auto my-4 shadow-2xs">
               <div className="w-16 h-16 bg-blue-50 text-blue-600 text-3xl rounded-full flex items-center justify-center mx-auto shadow-inner">
                 🛍️
               </div>
               <div className="space-y-1">
                 <h3 className="font-extrabold text-base text-gray-900">
-                  {searchQuery
-                    ? `No products found matching "${searchQuery}".`
-                    : 'ഉൽപ്പന്നങ്ങൾ ലഭ്യമല്ല (No Products in Store)'}
+                  {searchQuery ? `No products matching "${searchQuery}".` : 'ഉൽപ്പന്നങ്ങൾ ലഭ്യമല്ല (No Products)'}
                 </h3>
                 <p className="text-xs text-gray-500 leading-relaxed">
-                  {searchQuery
-                    ? 'മറ്റൊരു വാക്ക് നൽകി തിരയുക അല്ലെങ്കിൽ എല്ലാ കാറ്റഗറിയും പരിശോധിക്കുക.'
-                    : 'ഡെമോ പരസ്യങ്ങളും ഫോട്ടോകളും പൂർണ്ണമായി നീക്കം ചെയ്തിട്ടുണ്ട്. അഡ്മിൻ പാനലിൽ നിന്ന് നിങ്ങൾക്ക് പുതിയ യഥാർത്ഥ പ്രോഡക്റ്റുകൾ ചേർക്കാവുന്നതാണ്.'}
+                  {searchQuery ? 'Try another search term.' : 'Add your products from the Admin Panel.'}
                 </p>
               </div>
-              {!searchQuery && (
-                <div className="pt-2">
-                  <p className="text-[11px] text-gray-400 font-medium">
-                    ഉടൻ തന്നെ പുതിയ ഉൽപ്പന്നങ്ങൾ ഇവിടെ ലഭ്യമാകുന്നതാണ്.
-                  </p>
-                </div>
-              )}
-              {selectedCategory !== 'All' && searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setSelectedCategory('All')}
-                  className="h-9 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-5 rounded-lg transition"
-                >
-                  {t('allProducts')}
-                </button>
-              )}
             </div>
           ) : (
-            <div
-              className={`grid gap-3 sm:gap-4 lg:gap-5 ${
-                filteredProducts.length === 1
-                  ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
-                  : 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4'
-              }`}
-            >
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4 lg:gap-5">
               {filteredProducts.map(product => {
                 const totals = calculateProductTotals(product);
                 const totalWithExtras = totals.finalTotal;
@@ -439,7 +419,6 @@ export default function AppStorefront() {
                     className="bg-white rounded-xl border border-gray-200 shadow-xs hover:shadow-md hover:-translate-y-0.5 transition duration-150 flex flex-col justify-between overflow-hidden group"
                   >
                     <div>
-                      {/* Clean Product Photo Stage */}
                       <div className="relative aspect-[4/3] sm:aspect-square w-full bg-gray-50 overflow-hidden border-b border-gray-100">
                         {!imgBroken ? (
                           <img
@@ -451,16 +430,10 @@ export default function AppStorefront() {
                           />
                         ) : (
                           <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center text-gray-400">
-                            <svg className="w-8 h-8 mb-1.5 opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                              <rect x="3" y="3" width="18" height="18" rx="2" />
-                              <circle cx="8.5" cy="8.5" r="1.5" />
-                              <path d="m21 15-5-5L5 21" />
-                            </svg>
                             <span className="text-[11px] font-semibold line-clamp-1">{product.name}</span>
                           </div>
                         )}
 
-                        {/* Wishlist Heart Toggle */}
                         <button
                           type="button"
                           onClick={e => toggleWishlist(e, product.id)}
@@ -476,7 +449,6 @@ export default function AppStorefront() {
                         </button>
                       </div>
 
-                      {/* Card Body: Clean Typographic Hierarchy (Flipkart style, zero badge clutter) */}
                       <div className="p-3 sm:p-4 space-y-1.5">
                         <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500 truncate">
                           {product.category}
@@ -486,7 +458,6 @@ export default function AppStorefront() {
                           {product.name}
                         </h3>
 
-                        {/* Rating & Delivery inline metadata */}
                         <div className="flex items-center gap-1.5 text-[11px] text-gray-500 flex-wrap">
                           <span className="bg-emerald-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded tabular-nums">
                             {product.rating || 4.8} ★
@@ -498,7 +469,6 @@ export default function AppStorefront() {
                           </span>
                         </div>
 
-                        {/* Price Row */}
                         <div className="flex items-baseline gap-1.5 pt-1 flex-wrap tabular-nums">
                           <span className="text-base sm:text-lg font-extrabold text-gray-900">
                             ₹{totalWithExtras}
@@ -514,19 +484,9 @@ export default function AppStorefront() {
                             </span>
                           )}
                         </div>
-
-                        {/* Optional GST & Delivery Days crisp single line */}
-                        {(totals.gstPercent > 0 || product.estimatedDeliveryDays) && (
-                          <p className="text-[10.5px] text-gray-500 truncate tabular-nums">
-                            {totals.gstPercent > 0 ? `Incl. ${totals.gstPercent}% GST` : ''}
-                            {totals.gstPercent > 0 && product.estimatedDeliveryDays ? ' · ' : ''}
-                            {product.estimatedDeliveryDays ? `Est. ${product.estimatedDeliveryDays}` : ''}
-                          </p>
-                        )}
                       </div>
                     </div>
 
-                    {/* Crisp Single CTA Button */}
                     <div className="px-3 pb-3 sm:px-4 sm:pb-4 pt-0">
                       <span className="h-9 w-full bg-blue-600 group-hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-xs transition flex items-center justify-center whitespace-nowrap">
                         {t('orderNow')}
@@ -539,6 +499,45 @@ export default function AppStorefront() {
           )}
         </main>
       </div>
+
+      {/* Location Modal */}
+      {showLocationModal && (
+        <div className="fixed inset-0 bg-black/60 z-[200] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 space-y-4 shadow-2xl animate-in fade-in zoom-in duration-200">
+            <h3 className="text-lg font-extrabold text-gray-900">Set Delivery Location</h3>
+            <p className="text-xs text-gray-500">Enter your delivery city or pincode in Kerala / India:</p>
+            <input
+              type="text"
+              placeholder="e.g. Kozhikode, Kochi, 673574"
+              value={locationInput}
+              onChange={e => setLocationInput(e.target.value)}
+              className="w-full h-11 bg-gray-50 border border-gray-200 rounded-xl px-4 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowLocationModal(false)}
+                className="flex-1 h-10 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-xl transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (locationInput.trim()) {
+                    setSelectedLocation(locationInput.trim());
+                    localStorage.setItem('amal_user_location', locationInput.trim());
+                  }
+                  setShowLocationModal(false);
+                }}
+                className="flex-1 h-10 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition shadow-xs"
+              >
+                Save Location
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
