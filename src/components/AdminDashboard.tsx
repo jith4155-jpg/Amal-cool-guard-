@@ -65,7 +65,13 @@ export default function AdminDashboard() {
   const { user: authUser, signInWithGoogle, signInWithEmail, signingIn } = useAuth();
   const [adminEmailInput, setAdminEmailInput] = useState(ADMIN_EMAIL);
   const [adminPassInput, setAdminPassInput] = useState('');
-  const [showAdminEmailBox, setShowAdminEmailBox] = useState(false);
+  const [showAdminEmailBox, setShowAdminEmailBox] = useState(() => {
+    try {
+      return window.self !== window.top;
+    } catch {
+      return false;
+    }
+  });
   const isAdminGmailConnected = authUser?.email?.toLowerCase() === ADMIN_EMAIL;
   const getCurrentAdminEmail = async (): Promise<string> => {
     try {
@@ -854,8 +860,13 @@ export default function AdminDashboard() {
         `Signed in as ${res.user.email}. Please select Admin account (${ADMIN_EMAIL}) for Cloud Sync.`,
         'error'
       );
-    } else if (res.error) {
-      showToast(res.error, 'error');
+    } else {
+      if (res.isIframeBlocked) {
+        setShowAdminEmailBox(true);
+      }
+      if (res.error) {
+        showToast(res.error, 'error');
+      }
     }
   };
 
@@ -1469,21 +1480,37 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
             </p>
           </div>
           <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto shrink-0">
-            <button
-              type="button"
-              onClick={() => handleConnectAdminGmail(false)}
-              disabled={signingIn}
-              className="w-full sm:w-auto bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow transition disabled:opacity-60"
-            >
-              {signingIn ? 'Connecting...' : '🔐 Connect Admin Google'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowAdminEmailBox(v => !v)}
-              className="w-full sm:w-auto bg-white hover:bg-amber-100 text-amber-950 border border-amber-400 font-bold text-xs px-3 py-2.5 rounded-xl transition"
-            >
-              {showAdminEmailBox ? 'Close Email Login' : '✉️ Email Login'}
-            </button>
+            {(() => {
+              const isInIframe = (() => {
+                try {
+                  return window.self !== window.top;
+                } catch {
+                  return true;
+                }
+              })();
+              if (isInIframe) {
+                return null;
+              }
+              return (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => handleConnectAdminGmail(false)}
+                    disabled={signingIn}
+                    className="w-full sm:w-auto bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow transition disabled:opacity-60"
+                  >
+                    {signingIn ? 'Connecting...' : '🔐 Connect Admin Google'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAdminEmailBox(v => !v)}
+                    className="w-full sm:w-auto bg-white hover:bg-amber-100 text-amber-950 border border-amber-400 font-bold text-xs px-3 py-2.5 rounded-xl transition"
+                  >
+                    {showAdminEmailBox ? 'Close Email Login' : '✉️ Email Login'}
+                  </button>
+                </>
+              );
+            })()}
           </div>
           {showAdminEmailBox && (
             <div className="w-full flex flex-col sm:flex-row gap-2 pt-2 border-t border-amber-300/70">

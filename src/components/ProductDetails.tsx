@@ -629,6 +629,36 @@ export default function ProductDetails() {
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <ThemeSwitcher compact />
             <LanguageSelector />
+            {user ? (
+              <Link
+                to="/account"
+                title={profile?.email || user.email || 'My Profile'}
+                className="h-9 inline-flex items-center gap-1.5 bg-blue-50 border border-blue-200 text-blue-800 text-xs font-extrabold px-2 sm:px-2.5 rounded-lg hover:bg-blue-100 transition whitespace-nowrap shrink-0"
+              >
+                {user.photoURL ? (
+                  <img
+                    src={user.photoURL}
+                    alt={profile?.name || user.displayName || 'User'}
+                    className="w-5 h-5 rounded-full object-cover border border-blue-300 shrink-0"
+                  />
+                ) : (
+                  <span className="w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] font-black flex items-center justify-center shrink-0">
+                    {(profile?.name || user.displayName || user.email || 'U').charAt(0).toUpperCase()}
+                  </span>
+                )}
+                <span className="max-w-[64px] sm:max-w-[100px] truncate">
+                  {(profile?.name || user.displayName || user.email || 'Account').split(' ')[0]}
+                </span>
+                <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" aria-hidden="true" />
+              </Link>
+            ) : (
+              <Link
+                to={`/login?redirect=${encodeURIComponent(`/product/${product.id}?openOrder=1`)}`}
+                className="h-9 inline-flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3 rounded-lg shadow-xs transition whitespace-nowrap shrink-0"
+              >
+                {t('login')}
+              </Link>
+            )}
             <Link
               to="/"
               title="Storefront"

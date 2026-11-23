@@ -8,7 +8,13 @@ export default function AdminLogin() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(false);
   const [gmailStatusMsg, setGmailStatusMsg] = useState('');
-  const [showAdminEmailAuth, setShowAdminEmailAuth] = useState(false);
+  const [showAdminEmailAuth, setShowAdminEmailAuth] = useState(() => {
+    try {
+      return window.self !== window.top;
+    } catch {
+      return false;
+    }
+  });
   const [adminAuthEmail, setAdminAuthEmail] = useState(ADMIN_EMAIL);
   const [adminAuthPass, setAdminAuthPass] = useState('');
   const navigate = useNavigate();
@@ -35,8 +41,13 @@ export default function AdminLogin() {
       setGmailStatusMsg(
         `Signed in as ${res.user.email}. For Cloud order approvals, please sign in with ${ADMIN_EMAIL}.`
       );
-    } else if (res.error) {
-      setGmailStatusMsg(res.error);
+    } else {
+      if (res.isIframeBlocked) {
+        setShowAdminEmailAuth(true);
+      }
+      if (res.error) {
+        setGmailStatusMsg(res.error);
+      }
     }
   };
 
@@ -96,21 +107,37 @@ export default function AdminLogin() {
                   ? `Currently signed in as customer (${user.email}). Connect Admin account so order approvals sync live to customers.`
                   : 'Connect Admin account so order approvals & tracking IDs update live on customer phones.'}
               </p>
-              <button
-                type="button"
-                onClick={handleConnectAdminGmail}
-                disabled={signingIn}
-                className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-[11px] py-2 px-3 rounded-xl shadow-xs transition disabled:opacity-60"
-              >
-                {signingIn ? 'Connecting...' : '🔐 Connect Admin Google / Gmail'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowAdminEmailAuth(v => !v)}
-                className="w-full text-[10px] font-bold text-amber-900 hover:underline text-center pt-0.5"
-              >
-                {showAdminEmailAuth ? 'Hide Email Password Login' : 'Or sign in with Email & Password'}
-              </button>
+              {(() => {
+                const isInIframe = (() => {
+                  try {
+                    return window.self !== window.top;
+                  } catch {
+                    return true;
+                  }
+                })();
+                if (isInIframe) {
+                  return null;
+                }
+                return (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleConnectAdminGmail}
+                      disabled={signingIn}
+                      className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-[11px] py-2 px-3 rounded-xl shadow-xs transition disabled:opacity-60"
+                    >
+                      {signingIn ? 'Connecting...' : '🔐 Connect Admin Google / Gmail'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowAdminEmailAuth(v => !v)}
+                      className="w-full text-[10px] font-bold text-amber-900 hover:underline text-center pt-0.5"
+                    >
+                      {showAdminEmailAuth ? 'Hide Email Password Login' : 'Or sign in with Email & Password'}
+                    </button>
+                  </>
+                );
+              })()}
               {showAdminEmailAuth && (
                 <div className="space-y-1.5 pt-1">
                   <input

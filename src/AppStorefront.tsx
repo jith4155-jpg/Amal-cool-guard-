@@ -190,13 +190,22 @@ export default function AppStorefront() {
               {user ? (
                 <Link
                   to="/account"
-                  className="h-9 inline-flex items-center gap-1.5 bg-blue-50 border border-blue-200 text-blue-700 text-xs font-bold px-2.5 sm:px-3 rounded-lg hover:bg-blue-100 transition whitespace-nowrap shrink-0"
+                  title={profile?.email || user.email || 'My Profile'}
+                  className="h-9 inline-flex items-center gap-1.5 bg-blue-50 border border-blue-200 text-blue-800 text-xs font-extrabold px-2 sm:px-3 rounded-lg hover:bg-blue-100 transition whitespace-nowrap shrink-0"
                 >
-                  <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                    <circle cx="12" cy="7" r="4" />
-                  </svg>
-                  <span className="max-w-[60px] sm:max-w-[100px] truncate">{firstName}</span>
+                  {user.photoURL ? (
+                    <img
+                      src={user.photoURL}
+                      alt={firstName}
+                      className="w-5 h-5 rounded-full object-cover border border-blue-300 shrink-0"
+                    />
+                  ) : (
+                    <span className="w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] font-black flex items-center justify-center shrink-0">
+                      {firstName.charAt(0).toUpperCase()}
+                    </span>
+                  )}
+                  <span className="max-w-[70px] sm:max-w-[115px] truncate">{firstName}</span>
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" aria-hidden="true" />
                 </Link>
               ) : (
                 <Link

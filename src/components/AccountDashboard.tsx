@@ -81,9 +81,25 @@ export default function AccountDashboard() {
     }
   };
 
+  const isInIframe = (() => {
+    try {
+      return window.self !== window.top;
+    } catch {
+      return true;
+    }
+  })();
+
   const handleQuickLogin = async () => {
     setLoginError('');
+    if (isInIframe) {
+      navigate('/login');
+      return;
+    }
     const res = await signInWithGoogle('/');
+    if (res.isIframeBlocked) {
+      navigate('/login');
+      return;
+    }
     if (res.error) setLoginError(res.error);
   };
 
@@ -135,7 +151,11 @@ export default function AccountDashboard() {
               className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 rounded-xl shadow-sm transition flex items-center justify-center gap-2 text-xs sm:text-sm disabled:opacity-60"
             >
               <span>
-                {signingIn ? 'Signing in with Google...' : 'Sign In with Google / Gmail'}
+                {signingIn
+                  ? 'Signing in...'
+                  : isInIframe
+                  ? 'Sign In with Email & Password'
+                  : 'Sign In with Google / Gmail'}
               </span>
             </button>
 

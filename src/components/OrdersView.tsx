@@ -130,18 +130,41 @@ export default function OrdersView() {
               </p>
             </div>
 
-            <button
-              type="button"
-              onClick={async () => {
-                setLoginError('');
-                const res = await signInWithGoogle('/');
-                if (res.error) setLoginError(res.error);
-              }}
-              disabled={signingIn}
-              className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 rounded-xl shadow-sm transition text-xs sm:text-sm disabled:opacity-60"
-            >
-              {signingIn ? 'Signing in...' : 'Sign In with Google / Gmail'}
-            </button>
+            {(() => {
+              const isInIframe = (() => {
+                try {
+                  return window.self !== window.top;
+                } catch {
+                  return true;
+                }
+              })();
+              return (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setLoginError('');
+                    if (isInIframe) {
+                      navigate('/login');
+                      return;
+                    }
+                    const res = await signInWithGoogle('/');
+                    if (res.isIframeBlocked) {
+                      navigate('/login');
+                      return;
+                    }
+                    if (res.error) setLoginError(res.error);
+                  }}
+                  disabled={signingIn}
+                  className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 rounded-xl shadow-sm transition text-xs sm:text-sm disabled:opacity-60"
+                >
+                  {signingIn
+                    ? 'Signing in...'
+                    : isInIframe
+                    ? 'Sign In with Email & Password'
+                    : 'Sign In with Google / Gmail'}
+                </button>
+              );
+            })()}
 
             {loginError && (
               <p className="text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 p-2.5 rounded-xl">

@@ -65,13 +65,22 @@ interface AuthContextValue {
   myPromoterSales: any[];
   loadingPromoter: boolean;
   signingIn: boolean;
-  signInWithGoogle: (redirectPath?: string) => Promise<{ user: AppUser | null; error?: string }>;
+  signInWithGoogle: (
+    redirectPath?: string
+  ) => Promise<{ user: AppUser | null; error?: string; isIframeBlocked?: boolean }>;
+  getGoogleOAuthUrl: (redirectPath?: string) => Promise<string | null>;
   signInWithEmail: (email: string, password: string) => Promise<{ user: AppUser | null; error?: string }>;
   signUpWithEmail: (
     email: string,
     password: string,
     fullName?: string
-  ) => Promise<{ user: AppUser | null; error?: string; message?: string }>;
+  ) => Promise<{
+    user: AppUser | null;
+    error?: string;
+    message?: string;
+    needsEmailConfirmation?: boolean;
+    alreadyRegistered?: boolean;
+  }>;
   logout: () => Promise<void>;
   updateUserProfile: (patch: Partial<UserProfile>) => Promise<UserProfile | null>;
   refreshMyOrders: () => Promise<any[]>;
@@ -539,9 +548,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       hydrateSession(toAppUser(session?.user));
     });
 
+    const syncSessionOnReturn = () => {
+      supabase.auth
+        .getSession()
+        .then(({ data }) => {
+          hydrateSession(toAppUser(data.session?.user));
+        })
+        .catch(() => {
+          // ignore
+        });
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        syncSessionOnReturn();
+      }
+    };
+
+    window.addEventListener('focus', syncSessionOnReturn);
+    window.addEventListener('storage', syncSessionOnReturn);
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
       mounted = false;
       authListener.subscription.unsubscribe();
+      window.removeEventListener('focus', syncSessionOnReturn);
+      window.removeEventListener('storage', syncSessionOnReturn);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [loadOrCreateProfile, loadUserOrders, loadUserPromoter]);
 
@@ -607,6 +640,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signInWithGoogle = useCallback(async (redirectPath?: string) => {
     setSigningIn(true);
     try {
+      const inIframe = (() => {
+        try {
+          return window.self !== window.top;
+        } catch {
+          return true;
+        }
+      })();
+
+      if (inIframe) {
+        setSigningIn(false);
+        return {
+          user: null,
+          isIframeBlocked: true,
+          error:
+            'Preview വിൻഡോയിൽ Email & Password വഴി ലോഗിൻ ചെയ്യുക, അല്ലെങ്കിൽ പുതിയ ബ്രൗസർ ടാബിൽ തുറന്ന് Google ലോഗിൻ ഉപയോഗിക്കുക.',
+        };
+      }
+
       let targetUrl = `${window.location.origin}/`;
       try {
         const currentPath = window.location.pathname;
@@ -657,6 +708,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const getGoogleOAuthUrl = useCallback(async (redirectPath?: string): Promise<string | null> => {
+    try {
+      let targetUrl = `${window.location.origin}/`;
+      try {
+        if (redirectPath && redirectPath.startsWith('/')) {
+          targetUrl = new URL(redirectPath, window.location.origin).toString();
+        }
+      } catch {
+        targetUrl = `${window.location.origin}/`;
+      }
+
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: targetUrl,
+          skipBrowserRedirect: true,
+          queryParams: {
+            prompt: 'select_account',
+          },
+        },
+      });
+      if (error || !data?.url) return null;
+      return data.url;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const signInWithEmail = useCallback(
     async (email: string, password: string) => {
       setSigningIn(true);
@@ -695,6 +774,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           email: email.trim(),
           password,
           options: {
+            emailRedirectTo: `${window.location.origin}/`,
             data: {
               full_name: (fullName || email.split('@')[0] || 'Customer').trim(),
             },
@@ -702,6 +782,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
         if (error) {
           return { user: null, error: error.message };
+        }
+        if (Array.isArray(data.user?.identities) && data.user.identities.length === 0) {
+          return {
+            user: null,
+            alreadyRegistered: true,
+            error: 'ഈ ഇമെയിൽ ഇതിനകം രജിസ്റ്റർ ചെയ്തതാണ്. താഴെ Sign In വഴി ലോഗിൻ ചെയ്യുക.',
+          };
         }
         const appUser = toAppUser(data.user);
         if (data.session && appUser) {
@@ -714,8 +801,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return { user: appUser };
         }
         return {
-          user: appUser,
-          message: 'Verification email sent! Please check your inbox and confirm your email to sign in.',
+          user: null,
+          needsEmailConfirmation: true,
+          message:
+            'അക്കൗണ്ട് രജിസ്റ്റർ ആയി! നിങ്ങളുടെ Email/Gmail Inbox-ൽ വന്ന കൺഫർമേഷൻ ലിങ്കിൽ ക്ലിക്ക് ചെയ്ത ശേഷം താഴെ Sign In ചെയ്യുക.',
         };
       } catch (err: any) {
         return { user: null, error: err?.message || 'Sign up failed.' };
@@ -1010,6 +1099,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loadingPromoter,
         signingIn,
         signInWithGoogle,
+        getGoogleOAuthUrl,
         signInWithEmail,
         signUpWithEmail,
         logout,

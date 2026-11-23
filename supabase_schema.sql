@@ -449,9 +449,20 @@ END $$;
 -- 7. STORAGE BUCKET ('Amalcoolguard') & STORAGE POLICIES
 -- ============================================================================
 
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('Amalcoolguard', 'Amalcoolguard', true)
-ON CONFLICT (id) DO UPDATE SET public = true;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM storage.buckets WHERE id = 'Amalcoolguard' OR name = 'Amalcoolguard'
+  ) THEN
+    INSERT INTO storage.buckets (id, name, public)
+    VALUES ('Amalcoolguard', 'Amalcoolguard', true)
+    ON CONFLICT DO NOTHING;
+  ELSE
+    UPDATE storage.buckets SET public = true WHERE id = 'Amalcoolguard' OR name = 'Amalcoolguard';
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  NULL;
+END $$;
 
 DROP POLICY IF EXISTS "Public read Amalcoolguard" ON storage.objects;
 CREATE POLICY "Public read Amalcoolguard"
