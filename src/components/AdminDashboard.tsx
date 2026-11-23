@@ -113,6 +113,7 @@ export default function AdminDashboard() {
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [savingProduct, setSavingProduct] = useState(false);
   const [syncingCloudCatalog, setSyncingCloudCatalog] = useState(false);
+  const [dbSetupMissing, setDbSetupMissing] = useState(false);
 
   // Custom commission inputs, Tracking ID drafts & Delivery Days ETA drafts
   const [customCommissionInputs, setCustomCommissionInputs] = useState<Record<string, string>>({});
@@ -431,7 +432,13 @@ export default function AdminDashboard() {
         .from('bookings')
         .select('*')
         .order('created_at', { ascending: false });
-      if (!error && Array.isArray(data)) {
+      if (error) {
+        const msg = String(error.message || '').toLowerCase();
+        if (msg.includes('schema cache') || msg.includes('does not exist') || msg.includes('bookings')) {
+          setDbSetupMissing(true);
+        }
+      } else if (Array.isArray(data)) {
+        setDbSetupMissing(false);
         const remote = data.map(mapBookingFromDb);
         applyFetchedOrders(remote);
         setLoadingOrders(false);
@@ -1434,6 +1441,18 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
           </a>
         </div>
       </header>
+
+      {/* Missing Supabase SQL Tables Alert */}
+      {dbSetupMissing && (
+        <div className="mb-6 bg-red-50 border-2 border-red-400 rounded-2xl p-4 shadow-md space-y-1.5">
+          <p className="text-xs sm:text-sm font-black text-red-900">
+            ❌ Supabase Tables Not Found (`public.bookings` missing)!
+          </p>
+          <p className="text-[11px] text-red-800 font-semibold leading-relaxed">
+            Customer orders cannot reach the Admin Panel until you run the setup SQL in your Supabase Dashboard → <strong>SQL Editor</strong> → <strong>New Query</strong> → <strong>Run</strong>.
+          </p>
+        </div>
+      )}
 
       {/* High-Visibility Cloud Sync Warning Banner when Admin Gmail is not connected */}
       {!isAdminGmailConnected && (

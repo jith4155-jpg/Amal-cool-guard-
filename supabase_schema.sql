@@ -483,3 +483,6 @@ WITH CHECK (
   AND (storage.foldername(name))[1] = 'screenshots'
   AND (storage.foldername(name))[2] = auth.uid()::text
 );
+
+-- Refresh PostgREST schema cache immediately so bookings/products tables work right away
+NOTIFY pgrst, 'reload schema';
