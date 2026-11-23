@@ -28,9 +28,9 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isSignedIn() && (
+      return isVerifiedUser() && (
         request.auth.token.email == 'libinvincent310@gmail.com' ||
-        (isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)))
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
 
@@ -42,11 +42,15 @@ service cloud.firestore {
       return !(field in data) || data[field] == null || (data[field] is number);
     }
 
+    function isOptBool(data, field) {
+      return !(field in data) || data[field] == null || (data[field] is bool);
+    }
+
     // 3. Entity Validation Blueprints
     function isValidUserProfile(data) {
       return data.keys().hasAll(['uid', 'email', 'name']) &&
         data.keys().hasOnly(['uid', 'email', 'name', 'photoURL', 'mobile', 'address', 'pincode', 'createdAt', 'updatedAt']) &&
-        data.uid is string && data.uid.size() <= 128 &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
         data.email is string && data.email.size() <= 200 &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
         isOptString(data, 'photoURL', 1000) &&
@@ -74,12 +78,12 @@ service cloud.firestore {
         isOptNumber(data, 'gstPercent') &&
         isOptNumber(data, 'deliveryCharge') &&
         isOptString(data, 'estimatedDeliveryDays', 100) &&
-        (!('galleryImages' in data) || (data.galleryImages is list && data.galleryImages.size() <= 15)) &&
-        (!('features' in data) || (data.features is list && data.features.size() <= 20));
+        (!('galleryImages' in data) || (data.galleryImages is list && data.galleryImages.size() <= 15 && (data.galleryImages.size() == 0 || (data.galleryImages[0] is string && data.galleryImages[0].size() <= 950000)))) &&
+        (!('features' in data) || (data.features is list && data.features.size() <= 20 && (data.features.size() == 0 || (data.features[0] is string && data.features[0].size() <= 200))));
     }
 
     function isValidBooking(data) {
-      return data.keys().hasAll(['orderId', 'userId', 'customerName', 'phoneNumber', 'productId', 'status']) &&
+      return data.keys().hasAll(['orderId', 'userId', 'customerName', 'phoneNumber', 'productId', 'status', 'createdAt']) &&
         data.keys().hasOnly([
           'orderId', 'userId', 'userEmail', 'userName', 'userPhoto', 'customerName',
           'phoneNumber', 'address', 'pincode', 'productId', 'productName', 'productImage',
@@ -125,32 +129,39 @@ service cloud.firestore {
     }
 
     function isValidPromoter(data) {
-      return data.keys().hasAll(['id', 'name', 'phone']) &&
+      return data.keys().hasAll(['id', 'userId', 'email', 'name', 'phone']) &&
         data.keys().hasOnly([
           'id', 'name', 'phone', 'email', 'userId', 'channelName', 'paymentType',
           'upiId', 'bankName', 'accountNumber', 'ifscCode', 'accountHolderName',
-          'password', 'createdAt', 'commissionPerSale', 'paidAmount'
+          'createdAt', 'commissionPerSale', 'paidAmount'
         ]) &&
         data.id is string && data.id.size() >= 1 && data.id.size() <= 64 &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+        data.email is string && data.email.size() >= 1 && data.email.size() <= 200 &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
         data.phone is string && data.phone.size() >= 1 && data.phone.size() <= 30 &&
-        isOptString(data, 'email', 200) &&
-        isOptString(data, 'userId', 128) &&
         isOptString(data, 'channelName', 120) &&
-        isOptString(data, 'paymentType', 20) &&
+        (!('paymentType' in data) || data.paymentType == null || data.paymentType in ['upi', 'bank']) &&
         isOptString(data, 'upiId', 120) &&
         isOptString(data, 'bankName', 120) &&
         isOptString(data, 'accountNumber', 64) &&
         isOptString(data, 'ifscCode', 32) &&
         isOptString(data, 'accountHolderName', 120) &&
-        isOptString(data, 'password', 120) &&
         isOptString(data, 'createdAt', 100) &&
         isOptNumber(data, 'commissionPerSale') &&
         isOptNumber(data, 'paidAmount');
     }
 
+    function isValidPromoterRef(data) {
+      return data.keys().hasAll(['id', 'promoterUserId', 'commissionPerSale']) &&
+        data.keys().hasOnly(['id', 'promoterUserId', 'commissionPerSale']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 64 &&
+        data.promoterUserId is string && data.promoterUserId.size() >= 1 && data.promoterUserId.size() <= 128 &&
+        data.commissionPerSale is number && data.commissionPerSale >= 0;
+    }
+
     function isValidPromoterSale(data) {
-      return data.keys().hasAll(['orderId', 'buyerUserId', 'promoterId', 'productId', 'status']) &&
+      return data.keys().hasAll(['orderId', 'buyerUserId', 'promoterId', 'productId', 'status', 'createdAt']) &&
         data.keys().hasOnly([
           'orderId', 'bookingDocId', 'buyerUserId', 'promoterId', 'promoterUserId',
           'promoterEmail', 'productId', 'productName', 'price', 'commission',
@@ -179,12 +190,56 @@ service cloud.firestore {
       return data.keys().hasAll(['initialized']) &&
         data.keys().hasOnly(['initialized', 'deletedIds', 'updatedAt']) &&
         data.initialized is bool &&
-        (!('deletedIds' in data) || (data.deletedIds is list && data.deletedIds.size() <= 200 && (data.deletedIds.size() == 0 || data.deletedIds[0] is string)));
+        (!('deletedIds' in data) || (data.deletedIds is list && data.deletedIds.size() <= 200 && (data.deletedIds.size() == 0 || (data.deletedIds[0] is string && data.deletedIds[0].size() <= 128))));
+    }
+
+    function isValidCategoriesSetting(data) {
+      return data.keys().hasAll(['list']) &&
+        data.keys().hasOnly(['list', 'updatedAt']) &&
+        data.list is list &&
+        data.list.size() <= 100 &&
+        (data.list.size() == 0 || (data.list[0] is string && data.list[0].size() <= 100));
+    }
+
+    function isValidOrderCounterSetting(data) {
+      return data.keys().hasAll(['nextVal']) &&
+        data.keys().hasOnly(['nextVal']) &&
+        data.nextVal is number &&
+        data.nextVal >= 1;
+    }
+
+    function isValidPaymentSetting(data) {
+      return data.keys().hasOnly([
+          'enableCOD', 'enableUPI', 'enableCard', 'merchantUpiId', 'whatsappNumber',
+          'storeBaseUrl', 'gstNumber', 'pickupName', 'pickupPhone', 'pickupAddress',
+          'pickupPincode', 'defaultDeliveryDays', 'blockAccountOrders',
+          'blockAccountWishlist', 'blockAccountCoupons', 'blockAccountHelp', 'updatedAt'
+        ]) &&
+        isOptBool(data, 'enableCOD') &&
+        isOptBool(data, 'enableUPI') &&
+        isOptBool(data, 'enableCard') &&
+        isOptString(data, 'merchantUpiId', 120) &&
+        isOptString(data, 'whatsappNumber', 30) &&
+        isOptString(data, 'storeBaseUrl', 300) &&
+        isOptString(data, 'gstNumber', 64) &&
+        isOptString(data, 'pickupName', 120) &&
+        isOptString(data, 'pickupPhone', 30) &&
+        isOptString(data, 'pickupAddress', 500) &&
+        isOptString(data, 'pickupPincode', 20) &&
+        isOptString(data, 'defaultDeliveryDays', 100) &&
+        isOptBool(data, 'blockAccountOrders') &&
+        isOptBool(data, 'blockAccountWishlist') &&
+        isOptBool(data, 'blockAccountCoupons') &&
+        isOptBool(data, 'blockAccountHelp');
     }
 
     // 4. Collection Rules
     match /test/connection {
       allow get: if true;
+    }
+
+    match /admins/{adminUid} {
+      allow get: if isVerifiedUser() && isValidId(adminUid) && request.auth.uid == adminUid;
     }
 
     match /products/{productId} {
@@ -200,7 +255,8 @@ service cloud.firestore {
       allow create: if isValidId(userId) && isVerifiedUser() && request.auth.uid == userId &&
         isValidUserProfile(incoming()) && incoming().uid == request.auth.uid;
       allow update: if isValidId(userId) && isVerifiedUser() && request.auth.uid == userId &&
-        isValidUserProfile(incoming()) && incoming().uid == existing().uid;
+        isValidUserProfile(incoming()) && incoming().uid == existing().uid &&
+        (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt);
       allow delete: if isValidId(userId) && (isAdmin() || (isVerifiedUser() && request.auth.uid == userId));
     }
 
@@ -212,43 +268,60 @@ service cloud.firestore {
         incoming().userId == request.auth.uid &&
         incoming().status in ['pending', 'pending_verification'] &&
         incoming().createdAt == request.time;
-      allow update: if isValidId(bookingId) && isValidBooking(incoming()) && (
-        isAdmin() ||
-        (
-          isVerifiedUser() &&
-          existing().userId == request.auth.uid &&
-          incoming().userId == existing().userId &&
-          incoming().orderId == existing().orderId &&
+      allow update: if isValidId(bookingId) && isValidBooking(incoming()) &&
+        incoming().createdAt == existing().createdAt && (
+          isAdmin() ||
           (
-            (incoming().diff(existing()).affectedKeys().hasOnly(['status']) && incoming().status == 'cancelled') ||
-            (incoming().diff(existing()).affectedKeys().hasOnly(['paymentScreenshot', 'status']) && incoming().status == 'pending_verification')
+            isVerifiedUser() &&
+            existing().userId == request.auth.uid &&
+            incoming().userId == existing().userId &&
+            incoming().orderId == existing().orderId &&
+            existing().status in ['pending', 'pending_verification', 'confirmed'] &&
+            (
+              (incoming().diff(existing()).affectedKeys().hasOnly(['status']) && incoming().status == 'cancelled') ||
+              (existing().status in ['pending', 'pending_verification'] &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['paymentScreenshot', 'status']) &&
+                incoming().status == 'pending_verification')
+            )
           )
-        )
-      );
+        );
       allow delete: if isValidId(bookingId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
     }
 
     match /settings/{settingId} {
       allow get: if isValidId(settingId) && (settingId in ['payment', 'categories', 'catalog'] || isVerifiedUser() || isAdmin());
       allow create, update: if isValidId(settingId) && (
-        (isAdmin() && (settingId != 'catalog' || isValidCatalogSetting(incoming()))) ||
-        (
-          settingId == 'order_counter' &&
-          isVerifiedUser() &&
-          incoming().keys().hasOnly(['nextVal']) &&
-          incoming().nextVal is number &&
-          incoming().nextVal >= 1
-        )
+        (settingId == 'order_counter' && isVerifiedUser() && isValidOrderCounterSetting(incoming())) ||
+        (settingId == 'categories' && isAdmin() && isValidCategoriesSetting(incoming())) ||
+        (settingId == 'catalog' && isAdmin() && isValidCatalogSetting(incoming())) ||
+        (settingId == 'payment' && isAdmin() && isValidPaymentSetting(incoming()))
       );
       allow delete: if isValidId(settingId) && isAdmin();
     }
 
-    match /promoters/{promoterId} {
+    match /promoter_refs/{promoterId} {
       allow get: if isValidId(promoterId);
-      allow list: if isAdmin() || (isVerifiedUser() && (resource.data.userId == request.auth.uid || resource.data.email == request.auth.token.email));
+      allow create: if isValidId(promoterId) && isVerifiedUser() && isValidPromoterRef(incoming()) && (
+        isAdmin() || incoming().promoterUserId == request.auth.uid
+      );
+      allow update: if isValidId(promoterId) && isAdmin() && isValidPromoterRef(incoming());
+      allow delete: if isValidId(promoterId) && isAdmin();
+    }
+
+    match /promoters/{promoterId} {
+      allow get: if isValidId(promoterId) && (
+        isAdmin() ||
+        (isVerifiedUser() && (existing().userId == request.auth.uid || existing().email == request.auth.token.email))
+      );
+      allow list: if isAdmin() || (
+        isVerifiedUser() &&
+        (resource.data.userId == request.auth.uid || resource.data.email == request.auth.token.email)
+      );
       allow create: if isValidId(promoterId) && isVerifiedUser() && isValidPromoter(incoming()) && (
         isAdmin() ||
-        (incoming().userId == request.auth.uid && incoming().email == request.auth.token.email)
+        (incoming().userId == request.auth.uid && incoming().email == request.auth.token.email &&
+          (!('commissionPerSale' in incoming()) || incoming().commissionPerSale == 100) &&
+          (!('paidAmount' in incoming()) || incoming().paidAmount == 0))
       );
       allow update: if isValidId(promoterId) && isVerifiedUser() && isValidPromoter(incoming()) && (
         isAdmin() ||
@@ -256,8 +329,14 @@ service cloud.firestore {
           (existing().userId == request.auth.uid || existing().email == request.auth.token.email) &&
           incoming().userId == request.auth.uid &&
           incoming().id == existing().id &&
+          incoming().email == existing().email &&
+          (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) &&
           (!('commissionPerSale' in existing()) || incoming().commissionPerSale == existing().commissionPerSale) &&
-          (!('paidAmount' in existing()) || incoming().paidAmount == existing().paidAmount)
+          (!('paidAmount' in existing()) || incoming().paidAmount == existing().paidAmount) &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'userId', 'name', 'phone', 'channelName', 'paymentType',
+            'upiId', 'bankName', 'accountNumber', 'ifscCode', 'accountHolderName'
+          ])
         )
       );
       allow delete: if isValidId(promoterId) && isAdmin();
@@ -275,7 +354,8 @@ service cloud.firestore {
       allow list: if isAdmin() || (
         isVerifiedUser() && (
           resource.data.promoterUserId == request.auth.uid ||
-          resource.data.promoterEmail == request.auth.token.email
+          resource.data.promoterEmail == request.auth.token.email ||
+          resource.data.buyerUserId == request.auth.uid
         )
       );
       allow create: if isValidId(saleId) && isValidPromoterSale(incoming()) && (
@@ -283,19 +363,22 @@ service cloud.firestore {
         (
           isVerifiedUser() &&
           incoming().buyerUserId == request.auth.uid &&
-          incoming().status in ['pending', 'pending_verification']
+          incoming().status in ['pending', 'pending_verification'] &&
+          incoming().createdAt == request.time
         )
       );
-      allow update: if isValidId(saleId) && isValidPromoterSale(incoming()) && (
-        isAdmin() ||
-        (
-          isVerifiedUser() &&
-          existing().buyerUserId == request.auth.uid &&
-          incoming().buyerUserId == existing().buyerUserId &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
-          incoming().status == 'cancelled'
-        )
-      );
+      allow update: if isValidId(saleId) && isValidPromoterSale(incoming()) &&
+        (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) && (
+          isAdmin() ||
+          (
+            isVerifiedUser() &&
+            existing().buyerUserId == request.auth.uid &&
+            incoming().buyerUserId == existing().buyerUserId &&
+            existing().status in ['pending', 'pending_verification', 'confirmed'] &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
+            incoming().status == 'cancelled'
+          )
+        );
       allow delete: if isValidId(saleId) && (isAdmin() || (isVerifiedUser() && existing().buyerUserId == request.auth.uid));
     }
   }

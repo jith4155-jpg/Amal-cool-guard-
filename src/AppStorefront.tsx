@@ -1,5 +1,11 @@
 import { useState, useEffect } from 'react';
-import { supabase, mapProductFromDb } from './supabase';
+import { collection, doc, getDoc, getDocs, onSnapshot } from 'firebase/firestore';
+import {
+  db,
+  mapProductFromDb,
+  OperationType,
+  handleFirestoreError,
+} from './firebase';
 import { Link } from 'react-router-dom';
 import { Product } from './data/mockProducts';
 import { useLanguage, LanguageSelector } from './context/LanguageContext';
@@ -57,59 +63,91 @@ export default function AppStorefront() {
 
     const loadRemoteCatalogAndSettings = async () => {
       try {
-        const [{ data: catRow }, { data: catalogRow }, { data: prodRows }] = await Promise.all([
-          supabase.from('store_settings').select('data').eq('id', 'categories').maybeSingle(),
-          supabase.from('store_settings').select('data').eq('id', 'catalog').maybeSingle(),
-          supabase.from('products').select('*').order('created_at', { ascending: false }),
+        const [catSnap, catalogSnap, prodSnap] = await Promise.all([
+          getDoc(doc(db, 'settings', 'categories')),
+          getDoc(doc(db, 'settings', 'catalog')),
+          getDocs(collection(db, 'products')),
         ]);
 
         if (!isMounted) return;
 
-        if (catalogRow?.data && Array.isArray(catalogRow.data.deletedIds)) {
-          syncDeletedProductIds(catalogRow.data.deletedIds);
-        }
-
-        if (catRow?.data && Array.isArray(catRow.data.list)) {
-          const synced = saveCategories(catRow.data.list);
-          setCustomCategories(synced);
-        }
-
-        if (Array.isArray(prodRows)) {
-          const fetched = prodRows.map(mapProductFromDb);
-          const merged = mergeRemoteCatalogProducts(fetched);
-          if (isMounted) {
-            setProducts(merged);
-            setBrokenImages({});
+        if (catalogSnap.exists()) {
+          const catData = catalogSnap.data();
+          if (Array.isArray(catData?.deletedIds)) {
+            syncDeletedProductIds(catData.deletedIds);
           }
         }
-      } catch {
-        // Local catalog remains active if network unavailable
+
+        if (catSnap.exists()) {
+          const catData = catSnap.data();
+          if (Array.isArray(catData?.list)) {
+            const synced = saveCategories(catData.list);
+            setCustomCategories(synced);
+          }
+        }
+
+        const fetched: Product[] = prodSnap.docs.map(d => mapProductFromDb(d.data(), d.id));
+        const merged = mergeRemoteCatalogProducts(fetched);
+        if (isMounted) {
+          setProducts(merged);
+          setBrokenImages({});
+        }
+      } catch (err) {
+        console.warn('Firestore storefront load warning:', err);
       }
     };
 
     loadRemoteCatalogAndSettings();
 
-    const productsChannel = supabase
-      .channel('storefront-products-sync')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'products' },
-        () => {
-          loadRemoteCatalogAndSettings();
+    const unsubProducts = onSnapshot(
+      collection(db, 'products'),
+      snap => {
+        if (!isMounted) return;
+        const fetched = snap.docs.map(d => mapProductFromDb(d.data(), d.id));
+        const merged = mergeRemoteCatalogProducts(fetched);
+        setProducts(merged);
+        setBrokenImages({});
+      },
+      error => {
+        handleFirestoreError(error, OperationType.LIST, 'products');
+      }
+    );
+
+    const unsubCategories = onSnapshot(
+      doc(db, 'settings', 'categories'),
+      snap => {
+        if (!isMounted || !snap.exists()) return;
+        const data = snap.data();
+        if (Array.isArray(data?.list)) {
+          const synced = saveCategories(data.list);
+          setCustomCategories(synced);
         }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'store_settings' },
-        () => {
-          loadRemoteCatalogAndSettings();
+      },
+      error => {
+        handleFirestoreError(error, OperationType.GET, 'settings/categories');
+      }
+    );
+
+    const unsubCatalog = onSnapshot(
+      doc(db, 'settings', 'catalog'),
+      snap => {
+        if (!isMounted || !snap.exists()) return;
+        const data = snap.data();
+        if (Array.isArray(data?.deletedIds)) {
+          syncDeletedProductIds(data.deletedIds);
+          setProducts(getCatalogProducts());
         }
-      )
-      .subscribe();
+      },
+      error => {
+        handleFirestoreError(error, OperationType.GET, 'settings/catalog');
+      }
+    );
 
     return () => {
       isMounted = false;
-      supabase.removeChannel(productsChannel);
+      unsubProducts();
+      unsubCategories();
+      unsubCatalog();
       window.removeEventListener('amal_store_updated', handleStoreSync);
       window.removeEventListener('storage', handleStoreSync);
     };

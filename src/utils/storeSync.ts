@@ -132,7 +132,7 @@ export function estimateDataUrlKB(dataUrl: string): number {
 
 /**
  * Automatically resizes and optimizes uploaded product photos into the 10 KB – 50 KB target band
- * (sweet spot ~25–45 KB) for instant storefront loading and fast Supabase Storage/DB sync.
+ * (sweet spot ~25–45 KB) for instant storefront loading and fast Firebase Storage/Firestore sync.
  */
 export async function compressProductImageToRange(
   file: File,
@@ -221,7 +221,7 @@ export async function compressProductImageToRange(
 
 /**
  * Compresses an uploaded image File into a compact JPEG Data URL (~40-80KB)
- * so multiple product gallery images & screenshots fit comfortably in localStorage & Supabase (<1MB).
+ * so multiple product gallery images & screenshots fit comfortably in localStorage & Firestore (<1MB).
  */
 export async function compressImageFile(
   file: File,
@@ -426,7 +426,7 @@ export function mergeRemoteCatalogProducts(remoteProducts: Product[]): Product[]
   const deletedSet = new Set(getDeletedProductIds());
   const filteredRemote = remoteProducts.filter(p => p && p.id && !deletedSet.has(p.id));
 
-  // Authoritative remote Supabase catalog always takes precedence across all devices/browsers
+  // Authoritative remote Firestore catalog always takes precedence across all devices/browsers
   if (filteredRemote.length > 0) {
     saveCatalogProducts(filteredRemote, false);
     return filteredRemote;
@@ -545,7 +545,7 @@ export function mergeRemoteUserOrdersIntoLocal(
     const did = String(loc.docId || loc.id || '');
     if (seenKeys.has(oid) || seenKeys.has(did)) continue;
 
-    // If a synced order (has docId) belongs to this user and is no longer returned by Supabase query,
+    // If a synced order (has docId) belongs to this user and is no longer returned by Firestore query,
     // it was deleted remotely by Admin/User — do not keep a ghost copy.
     if (matchesTargetUser(loc) && loc.docId) {
       continue;

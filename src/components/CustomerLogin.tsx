@@ -12,63 +12,30 @@ export default function CustomerLogin() {
     myOrdersCount,
     signingIn,
     signInWithGoogle,
-    getGoogleOAuthUrl,
-    signInWithEmail,
-    signUpWithEmail,
-    updateUserProfile,
     logout,
   } = useAuth();
   const [searchParams] = useSearchParams();
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
-  const [justLoggedIn, setJustLoggedIn] = useState(false);
-  const [googleBrowserUrl, setGoogleBrowserUrl] = useState<string | null>(null);
-  const [showEmailForm, setShowEmailForm] = useState(() => {
-    try {
-      return window.self !== window.top;
-    } catch {
-      return true;
-    }
-  });
-  const [isSignUpMode, setIsSignUpMode] = useState(false);
-  const [emailInput, setEmailInput] = useState('');
-  const [passwordInput, setPasswordInput] = useState('');
-  const [nameInput, setNameInput] = useState('');
   const navigate = useNavigate();
-
-  const isInIframe = (() => {
-    try {
-      return window.self !== window.top;
-    } catch {
-      return true;
-    }
-  })();
 
   const redirectParam = searchParams.get('redirect') || '';
   const isOrderRedirect = redirectParam.startsWith('/product/') && redirectParam.includes('openOrder=1');
   const safeRedirect = isOrderRedirect ? redirectParam : '/';
 
   useEffect(() => {
-    if (isInIframe && !user) {
-      getGoogleOAuthUrl(safeRedirect).then(url => {
-        if (url) setGoogleBrowserUrl(url);
-      });
-    }
-  }, [isInIframe, user, safeRedirect, getGoogleOAuthUrl]);
-
-  useEffect(() => {
-    if (authReady && user && !justLoggedIn) {
+    if (authReady && user) {
       const timer = setTimeout(() => {
         navigate(safeRedirect, { replace: true });
-      }, 650);
+      }, 500);
       return () => clearTimeout(timer);
     }
-  }, [authReady, user, justLoggedIn, navigate, safeRedirect]);
+  }, [authReady, user, navigate, safeRedirect]);
 
   const handleGoogleSignIn = async () => {
     setErrorMsg('');
     setSuccessMsg('');
-    const result = await signInWithGoogle(safeRedirect);
+    const result = await signInWithGoogle();
     if (result.user) {
       setSuccessMsg(
         isOrderRedirect
@@ -79,52 +46,7 @@ export default function CustomerLogin() {
         navigate(safeRedirect, { replace: true });
       }, 350);
     } else if (result.error) {
-      if (result.isIframeBlocked) {
-        setShowEmailForm(true);
-      }
       setErrorMsg(result.error);
-    }
-  };
-
-  const handleEmailAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-    setSuccessMsg('');
-
-    const cleanEmail = emailInput.trim();
-    const cleanName = nameInput.trim();
-    if (!cleanEmail || !passwordInput) {
-      setErrorMsg('ദയവായി Email-ഉം Password-ഉം നൽകുക.');
-      return;
-    }
-
-    if (isSignUpMode) {
-      const res = await signUpWithEmail(cleanEmail, passwordInput, cleanName);
-      if (res.user) {
-        setJustLoggedIn(true);
-        if (cleanName) {
-          await updateUserProfile({ name: cleanName });
-        }
-        setSuccessMsg(`✓ അക്കൗണ്ട് സേവ് ചെയ്ത് ലോഗിൻ ആയി (${res.user.email})!`);
-        setTimeout(() => navigate(safeRedirect, { replace: true }), 900);
-      } else if (res.needsEmailConfirmation && res.message) {
-        setIsSignUpMode(false);
-        setSuccessMsg(res.message);
-      } else if (res.alreadyRegistered && res.error) {
-        setIsSignUpMode(false);
-        setErrorMsg(res.error);
-      } else if (res.error) {
-        setErrorMsg(res.error);
-      }
-    } else {
-      const res = await signInWithEmail(cleanEmail, passwordInput);
-      if (res.user) {
-        setJustLoggedIn(true);
-        setSuccessMsg(`✓ ലോഗിൻ വിജയകരം (${res.user.email})! തുറക്കുന്നു...`);
-        setTimeout(() => navigate(safeRedirect, { replace: true }), 800);
-      } else if (res.error) {
-        setErrorMsg(res.error);
-      }
     }
   };
 
@@ -141,13 +63,11 @@ export default function CustomerLogin() {
             🔐
           </div>
           <h2 className="text-xl font-extrabold text-gray-900">
-            {user ? 'Signed In' : isInIframe ? 'Customer Sign In' : 'Sign In with Gmail'}
+            {user ? 'Signed In' : 'Sign In with Gmail'}
           </h2>
           <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
             {isOrderRedirect
-              ? 'Please sign in with your own account to place an order.'
-              : isInIframe
-              ? 'Sign in or create an account using your own Email & Password.'
+              ? 'Please sign in with your Google / Gmail account to place an order.'
               : 'Sign in with your Gmail account to continue shopping on Amal Coolguard.'}
           </p>
         </div>
@@ -197,16 +117,14 @@ export default function CustomerLogin() {
               {isOrderRedirect ? 'Continue to Booking Form →' : 'Go to Home Page →'}
             </button>
 
-            {!isInIframe && (
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                disabled={signingIn}
-                className="w-full h-10 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-xl text-xs transition"
-              >
-                Switch Gmail Account
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={handleGoogleSignIn}
+              disabled={signingIn}
+              className="w-full h-10 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-xl text-xs transition"
+            >
+              Switch Gmail Account
+            </button>
 
             <button
               type="button"
@@ -218,142 +136,34 @@ export default function CustomerLogin() {
           </div>
         ) : (
           <div className="space-y-3.5">
-            {isInIframe ? (
-              googleBrowserUrl ? (
-                <a
-                  href={googleBrowserUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => {
-                    setErrorMsg('');
-                    setSuccessMsg(
-                      'നിങ്ങളുടെ ഫോണിന്റെ ബ്രൗസറിൽ Google അക്കൗണ്ട് തിരഞ്ഞെടുത്ത് ലോഗിൻ ചെയ്ത ശേഷം തിരികെ വരൂ.'
-                    );
-                  }}
-                  className="w-full h-12 bg-white hover:bg-gray-50 text-gray-900 border border-gray-300 font-bold px-4 rounded-xl shadow-sm hover:shadow transition flex items-center justify-center gap-3 text-xs sm:text-sm"
-                >
-                  <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      fill="#4285F4"
-                      d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
-                    />
-                    <path
-                      fill="#34A853"
-                      d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
-                    />
-                    <path
-                      fill="#FBBC05"
-                      d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
-                    />
-                    <path
-                      fill="#EA4335"
-                      d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
-                    />
-                  </svg>
-                  <span>Continue with Google / Gmail (Browser) ↗</span>
-                </a>
-              ) : null
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={handleGoogleSignIn}
-                  disabled={signingIn}
-                  className="w-full h-12 bg-white hover:bg-gray-50 text-gray-900 border border-gray-300 font-bold px-4 rounded-xl shadow-sm hover:shadow transition active:scale-[0.99] flex items-center justify-center gap-3 text-xs sm:text-sm disabled:opacity-60"
-                >
-                  <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      fill="#4285F4"
-                      d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
-                    />
-                    <path
-                      fill="#34A853"
-                      d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
-                    />
-                    <path
-                      fill="#FBBC05"
-                      d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
-                    />
-                    <path
-                      fill="#EA4335"
-                      d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
-                    />
-                  </svg>
-                  <span>
-                    {signingIn ? 'Signing in with Google...' : 'Continue with Google / Gmail'}
-                  </span>
-                </button>
-
-                <div className="text-center">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowEmailForm(prev => !prev);
-                      setErrorMsg('');
-                      setSuccessMsg('');
-                    }}
-                    className="text-[11px] font-bold text-blue-600 hover:underline"
-                  >
-                    {showEmailForm ? 'Hide Email & Password Sign-In' : 'Or use Email & Password'}
-                  </button>
-                </div>
-              </>
-            )}
-
-            {(isInIframe || showEmailForm) && (
-              <form onSubmit={handleEmailAuth} className="space-y-2.5 bg-gray-50 p-3.5 rounded-xl border border-gray-200 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="font-extrabold text-gray-800">
-                    {isSignUpMode ? 'Create Account' : 'Email Sign In'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsSignUpMode(v => !v);
-                      setErrorMsg('');
-                      setSuccessMsg('');
-                    }}
-                    className="text-[11px] font-bold text-blue-600 hover:underline"
-                  >
-                    {isSignUpMode ? 'Already registered? Sign In' : 'New customer? Sign Up'}
-                  </button>
-                </div>
-
-                {isSignUpMode && (
-                  <input
-                    type="text"
-                    placeholder="Full Name"
-                    value={nameInput}
-                    onChange={e => setNameInput(e.target.value)}
-                    className="w-full p-2.5 border border-gray-300 rounded-lg bg-white outline-none"
-                  />
-                )}
-                <input
-                  type="email"
-                  required
-                  placeholder="Email address (Gmail)"
-                  value={emailInput}
-                  onChange={e => setEmailInput(e.target.value)}
-                  className="w-full p-2.5 border border-gray-300 rounded-lg bg-white outline-none"
+            <button
+              type="button"
+              onClick={handleGoogleSignIn}
+              disabled={signingIn}
+              className="w-full h-12 bg-white hover:bg-gray-50 text-gray-900 border border-gray-300 font-bold px-4 rounded-xl shadow-sm hover:shadow transition active:scale-[0.99] flex items-center justify-center gap-3 text-xs sm:text-sm disabled:opacity-60"
+            >
+              <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  fill="#4285F4"
+                  d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
                 />
-                <input
-                  type="password"
-                  required
-                  minLength={6}
-                  placeholder="Password (min 6 chars)"
-                  value={passwordInput}
-                  onChange={e => setPasswordInput(e.target.value)}
-                  className="w-full p-2.5 border border-gray-300 rounded-lg bg-white outline-none"
+                <path
+                  fill="#34A853"
+                  d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
                 />
-                <button
-                  type="submit"
-                  disabled={signingIn}
-                  className="w-full h-10 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-lg transition disabled:opacity-60"
-                >
-                  {signingIn ? 'Please wait...' : isSignUpMode ? 'Create Account & Continue' : 'Sign In with Email'}
-                </button>
-              </form>
-            )}
+                <path
+                  fill="#FBBC05"
+                  d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
+                />
+                <path
+                  fill="#EA4335"
+                  d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
+                />
+              </svg>
+              <span>
+                {signingIn ? 'Signing in with Google...' : 'Continue with Google / Gmail'}
+              </span>
+            </button>
 
             {errorMsg && (
               <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-[11px] text-red-700 font-bold text-center">
@@ -368,8 +178,8 @@ export default function CustomerLogin() {
             )}
 
             <div className="bg-gray-50 p-3 rounded-xl border border-gray-200 text-[11px] text-gray-600 space-y-1">
-              <p className="font-bold text-gray-800">Secure Account Access</p>
-              <p>Your profile, saved delivery address, and order history stay strictly private to your account.</p>
+              <p className="font-bold text-gray-800">Secure Google Account Access</p>
+              <p>Sign in with your own phone/browser Gmail account. Your profile and order history stay strictly private to your account.</p>
             </div>
           </div>
         )}

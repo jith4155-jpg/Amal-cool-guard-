@@ -1,9 +1,15 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { collection, getDocs, onSnapshot } from 'firebase/firestore';
 import { ThemeSwitcher } from '../context/ThemeContext';
 import { useLanguage, LanguageSelector } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
-import { supabase, mapProductFromDb } from '../supabase';
+import {
+  db,
+  mapProductFromDb,
+  OperationType,
+  handleFirestoreError,
+} from '../firebase';
 import { Product } from '../data/mockProducts';
 import {
   getCatalogProducts,
@@ -43,9 +49,9 @@ export default function OrdersView() {
 
     const loadProducts = async () => {
       try {
-        const { data, error } = await supabase.from('products').select('*');
-        if (!error && Array.isArray(data) && data.length > 0) {
-          const fetched = data.map(mapProductFromDb);
+        const snap = await getDocs(collection(db, 'products'));
+        if (!snap.empty) {
+          const fetched = snap.docs.map(d => mapProductFromDb(d.data(), d.id));
           const merged = mergeRemoteCatalogProducts(fetched);
           setCatalogProducts(merged);
           setBrokenOrderThumbs({});
@@ -57,15 +63,23 @@ export default function OrdersView() {
 
     loadProducts();
 
-    const channel = supabase
-      .channel('orders-view-products')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
-        loadProducts();
-      })
-      .subscribe();
+    const unsubProducts = onSnapshot(
+      collection(db, 'products'),
+      snap => {
+        if (!snap.empty) {
+          const fetched = snap.docs.map(d => mapProductFromDb(d.data(), d.id));
+          const merged = mergeRemoteCatalogProducts(fetched);
+          setCatalogProducts(merged);
+          setBrokenOrderThumbs({});
+        }
+      },
+      error => {
+        handleFirestoreError(error, OperationType.LIST, 'products');
+      }
+    );
 
     return () => {
-      supabase.removeChannel(channel);
+      unsubProducts();
       window.removeEventListener('amal_store_updated', syncCatalog);
       window.removeEventListener('storage', syncCatalog);
     };
@@ -130,41 +144,18 @@ export default function OrdersView() {
               </p>
             </div>
 
-            {(() => {
-              const isInIframe = (() => {
-                try {
-                  return window.self !== window.top;
-                } catch {
-                  return true;
-                }
-              })();
-              return (
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setLoginError('');
-                    if (isInIframe) {
-                      navigate('/login');
-                      return;
-                    }
-                    const res = await signInWithGoogle('/');
-                    if (res.isIframeBlocked) {
-                      navigate('/login');
-                      return;
-                    }
-                    if (res.error) setLoginError(res.error);
-                  }}
-                  disabled={signingIn}
-                  className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 rounded-xl shadow-sm transition text-xs sm:text-sm disabled:opacity-60"
-                >
-                  {signingIn
-                    ? 'Signing in...'
-                    : isInIframe
-                    ? 'Sign In with Email & Password'
-                    : 'Sign In with Google / Gmail'}
-                </button>
-              );
-            })()}
+            <button
+              type="button"
+              onClick={async () => {
+                setLoginError('');
+                const res = await signInWithGoogle();
+                if (res.error) setLoginError(res.error);
+              }}
+              disabled={signingIn}
+              className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 rounded-xl shadow-sm transition text-xs sm:text-sm disabled:opacity-60"
+            >
+              {signingIn ? 'Signing in...' : 'Continue with Google / Gmail'}
+            </button>
 
             {loginError && (
               <p className="text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 p-2.5 rounded-xl">

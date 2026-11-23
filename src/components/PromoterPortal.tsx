@@ -17,9 +17,6 @@ export default function PromoterPortal() {
     loadingPromoter,
     signingIn,
     signInWithGoogle,
-    getGoogleOAuthUrl,
-    signInWithEmail,
-    signUpWithEmail,
     logout,
     refreshMyPromoter,
     registerMyPromoter,
@@ -37,22 +34,7 @@ export default function PromoterPortal() {
   const [ifscCode, setIfscCode] = useState('');
   const [accountHolderName, setAccountHolderName] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
-  const [infoMsg, setInfoMsg] = useState('');
   const [submitting, setSubmitting] = useState(false);
-
-  // Email & Password login fallback state (auto-opened inside preview iframes)
-  const [showEmailAuth, setShowEmailAuth] = useState(() => {
-    try {
-      return window.self !== window.top;
-    } catch {
-      return false;
-    }
-  });
-  const [emailAuthMode, setEmailAuthMode] = useState<'signin' | 'signup'>('signin');
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [authName, setAuthName] = useState('');
-  const [googleBrowserUrl, setGoogleBrowserUrl] = useState<string | null>(null);
 
   // Edit Existing Promoter Details state
   const [isEditingDetails, setIsEditingDetails] = useState(false);
@@ -78,12 +60,8 @@ export default function PromoterPortal() {
     if (user) {
       setName(prev => prev || profile?.name || user.displayName || '');
       setPhone(prev => prev || profile?.mobile || '');
-    } else {
-      getGoogleOAuthUrl('/promoter').then(url => {
-        if (url) setGoogleBrowserUrl(url);
-      });
     }
-  }, [user, profile, getGoogleOAuthUrl]);
+  }, [user, profile]);
 
   const openEditDetails = () => {
     if (!myPromoter) return;
@@ -282,225 +260,52 @@ export default function PromoterPortal() {
             <p className="text-xs font-bold text-slate-300">Checking Gmail promoter status...</p>
           </div>
         ) : !user ? (
-          /* Step 1: Must sign in before accessing Promoter Sign-Up or Dashboard */
-          (() => {
-            const isInIframe = (() => {
-              try {
-                return window.self !== window.top;
-              } catch {
-                return true;
-              }
-            })();
+          /* Step 1: Must sign in with Google/Gmail before accessing Promoter Sign-Up or Dashboard */
+          <div className="bg-slate-900 border border-slate-800 p-6 md:p-8 rounded-2xl shadow-xl space-y-5 text-center">
+            <div className="w-14 h-14 bg-gradient-to-tr from-blue-600 to-indigo-500 rounded-2xl flex items-center justify-center text-2xl mx-auto shadow-lg shadow-blue-500/20">
+              ✉️
+            </div>
+            <div className="space-y-1.5">
+              <h1 className="text-xl font-black text-white">
+                Promoter Login &amp; Sign Up
+              </h1>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                നിങ്ങളുടെ സ്വന്തം പ്രൊമോഷൻ ലിങ്ക് എടുക്കാനും, ആ ലിങ്ക് വഴി എത്ര പേർ വാങ്ങി എന്ന് കാണാനും നിങ്ങളുടെ സ്വന്തം Gmail അക്കൗണ്ട് ഉപയോഗിച്ച് ലോഗിൻ ചെയ്യുക.
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Sign in with your Google / Gmail account to open your Promoter Dashboard.
+              </p>
+            </div>
 
-            return (
-              <div className="bg-slate-900 border border-slate-800 p-6 md:p-8 rounded-2xl shadow-xl space-y-5 text-center">
-                <div className="w-14 h-14 bg-gradient-to-tr from-blue-600 to-indigo-500 rounded-2xl flex items-center justify-center text-2xl mx-auto shadow-lg shadow-blue-500/20">
-                  ✉️
-                </div>
-                <div className="space-y-1.5">
-                  <h1 className="text-xl font-black text-white">
-                    Promoter Login & Sign Up
-                  </h1>
-                  <p className="text-xs text-slate-300 leading-relaxed">
-                    നിങ്ങളുടെ സ്വന്തം പ്രൊമോഷൻ ലിങ്ക് എടുക്കാനും, ആ ലിങ്ക് വഴി എത്ര പേർ വാങ്ങി എന്ന് കാണാനും നിങ്ങളുടെ അക്കൗണ്ട് ഉപയോഗിച്ച് ലോഗിൻ ചെയ്യുക.
-                  </p>
-                  <p className="text-[11px] text-slate-400">
-                    {isInIframe
-                      ? 'Sign in or create an account with your own Email & Password below.'
-                      : 'Sign in with your Gmail or Email to open your Promoter Dashboard.'}
-                  </p>
-                </div>
+            <button
+              type="button"
+              onClick={async () => {
+                setErrorMsg('');
+                const res = await signInWithGoogle();
+                if (res.error) setErrorMsg(res.error);
+              }}
+              disabled={signingIn}
+              className="w-full bg-white hover:bg-slate-100 text-slate-900 font-black py-3.5 px-4 rounded-xl shadow-lg transition flex items-center justify-center gap-3 text-xs disabled:opacity-60"
+            >
+              <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z" />
+                <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z" />
+                <path fill="#FBBC05" d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z" />
+                <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z" />
+              </svg>
+              <span>
+                {signingIn
+                  ? 'Signing in with Google...'
+                  : 'Continue with Google / Gmail (ലോഗിൻ ചെയ്യുക)'}
+              </span>
+            </button>
 
-                {isInIframe ? (
-                  googleBrowserUrl ? (
-                    <a
-                      href={googleBrowserUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() => {
-                        setErrorMsg('');
-                        setInfoMsg(
-                          'ഫോണിന്റെ ബ്രൗസറിൽ Google അക്കൗണ്ട് തിരഞ്ഞെടുത്ത് ലോഗിൻ ചെയ്ത ശേഷം തിരികെ വരൂ.'
-                        );
-                      }}
-                      className="w-full bg-white hover:bg-slate-100 text-slate-900 font-black py-3.5 px-4 rounded-xl shadow-lg transition flex items-center justify-center gap-3 text-xs"
-                    >
-                      <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                        <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z" />
-                        <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z" />
-                        <path fill="#FBBC05" d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z" />
-                        <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z" />
-                      </svg>
-                      <span>Continue with Google / Gmail (Browser) ↗</span>
-                    </a>
-                  ) : null
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        setErrorMsg('');
-                        setInfoMsg('');
-                        const res = await signInWithGoogle();
-                        if (res.isIframeBlocked) {
-                          setShowEmailAuth(true);
-                        }
-                        if (res.error) setErrorMsg(res.error);
-                      }}
-                      disabled={signingIn}
-                      className="w-full bg-white hover:bg-slate-100 text-slate-900 font-black py-3.5 px-4 rounded-xl shadow-lg transition flex items-center justify-center gap-3 text-xs disabled:opacity-60"
-                    >
-                      <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                        <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z" />
-                        <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z" />
-                        <path fill="#FBBC05" d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z" />
-                        <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z" />
-                      </svg>
-                      <span>
-                        {signingIn
-                          ? 'Signing in with Google...'
-                          : 'Continue with Google / Gmail (ലോഗിൻ ചെയ്യുക)'}
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setErrorMsg('');
-                        setInfoMsg('');
-                        setShowEmailAuth(prev => !prev);
-                      }}
-                      className="w-full py-2 text-[11px] font-bold text-blue-300 hover:text-blue-200 underline underline-offset-4 transition"
-                    >
-                      {showEmailAuth
-                        ? 'Hide Email & Password Login'
-                        : 'Or Sign In / Create Account with Email & Password'}
-                    </button>
-                  </>
-                )}
-
-                {(isInIframe || showEmailAuth) && (
-                  <form
-                    onSubmit={async e => {
-                      e.preventDefault();
-                      setErrorMsg('');
-                      setInfoMsg('');
-                      const cleanEmail = authEmail.trim();
-                      if (!cleanEmail || !authPassword) {
-                        setErrorMsg('ദയവായി Email-ഉം Password-ഉം നൽകുക.');
-                        return;
-                      }
-                      if (emailAuthMode === 'signup') {
-                        const res = await signUpWithEmail(cleanEmail, authPassword, authName.trim());
-                        if (res.user) {
-                          setInfoMsg('✓ അക്കൗണ്ട് ലോഗിൻ ആയി!');
-                        } else if (res.needsEmailConfirmation && res.message) {
-                          setEmailAuthMode('signin');
-                          setInfoMsg(res.message);
-                        } else if (res.alreadyRegistered && res.error) {
-                          setEmailAuthMode('signin');
-                          setErrorMsg(res.error);
-                        } else if (res.error) {
-                          setErrorMsg(res.error);
-                        }
-                      } else {
-                        const res = await signInWithEmail(cleanEmail, authPassword);
-                        if (res.error) setErrorMsg(res.error);
-                      }
-                    }}
-                    className="text-left space-y-3 bg-slate-950/70 border border-slate-800 rounded-xl p-4"
-                  >
-                    <div className="flex items-center justify-between gap-2 pb-1 border-b border-slate-800">
-                      <span className="text-xs font-extrabold text-white">
-                        {emailAuthMode === 'signin'
-                          ? 'Email Sign In (ലോഗിൻ)'
-                          : 'Create Promoter Account'}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setErrorMsg('');
-                          setInfoMsg('');
-                          setEmailAuthMode(m => (m === 'signin' ? 'signup' : 'signin'));
-                        }}
-                        className="text-[11px] font-bold text-amber-400 hover:text-amber-300"
-                      >
-                        {emailAuthMode === 'signin' ? 'New user? Sign Up' : 'Have account? Sign In'}
-                      </button>
-                    </div>
-
-                    {emailAuthMode === 'signup' && (
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-300 mb-1">
-                          Full Name (പേര്)
-                        </label>
-                        <input
-                          type="text"
-                          value={authName}
-                          onChange={e => setAuthName(e.target.value)}
-                          placeholder="Your full name"
-                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        />
-                      </div>
-                    )}
-
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-300 mb-1">
-                        Email Address *
-                      </label>
-                      <input
-                        type="email"
-                        required
-                        value={authEmail}
-                        onChange={e => setAuthEmail(e.target.value)}
-                        placeholder="name@gmail.com"
-                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-300 mb-1">
-                        Password *
-                      </label>
-                      <input
-                        type="password"
-                        required
-                        minLength={6}
-                        value={authPassword}
-                        onChange={e => setAuthPassword(e.target.value)}
-                        placeholder="Minimum 6 characters"
-                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={signingIn}
-                      className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-2.5 rounded-lg text-xs transition disabled:opacity-60"
-                    >
-                      {signingIn
-                        ? 'Please wait...'
-                        : emailAuthMode === 'signin'
-                        ? 'Sign In with Email'
-                        : 'Create Account & Continue'}
-                    </button>
-                  </form>
-                )}
-
-                {infoMsg && (
-                  <div className="p-3 bg-emerald-950/60 border border-emerald-800/80 rounded-xl text-emerald-300 font-bold text-xs">
-                    {infoMsg}
-                  </div>
-                )}
-
-                {errorMsg && (
-                  <div className="p-3 bg-red-950/60 border border-red-800/80 rounded-xl text-red-300 font-bold text-xs">
-                    {errorMsg}
-                  </div>
-                )}
+            {errorMsg && (
+              <div className="p-3 bg-red-950/60 border border-red-800/80 rounded-xl text-red-300 font-bold text-xs">
+                {errorMsg}
               </div>
-            );
-          })()
+            )}
+          </div>
         ) : !myPromoter ? (
           /* Step 2: Signed in with Gmail, not yet registered as a Promoter -> Show Sign-Up Form */
           <div className="bg-slate-900 border border-slate-800 p-6 md:p-8 rounded-2xl shadow-xl space-y-5">

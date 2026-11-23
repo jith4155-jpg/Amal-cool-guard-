@@ -38,8 +38,8 @@
           "type": "string",
           "enum": ["pending", "shipped", "delivered"]
         },
-        "dispatchedAt": { "type": "string", "format": "date-time" },
-        "deliveredAt": { "type": "string", "format": "date-time" },
+        "dispatchedAt": { "type": "string", "maxLength": 100 },
+        "deliveredAt": { "type": "string", "maxLength": 100 },
         "status": {
           "type": "string",
           "enum": ["pending", "pending_verification", "confirmed", "rejected", "cancelled", "completed"]
@@ -83,13 +83,15 @@
         "stock": { "type": "number" },
         "gstPercent": { "type": "number" },
         "deliveryCharge": { "type": "number" },
-        "estimatedDeliveryDays": { "type": "string", "maxLength": 100 }
+        "estimatedDeliveryDays": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["name", "price"]
     },
     "promoter": {
       "title": "Promoter",
-      "description": "Affiliate / Promoter profile tied to a verified Gmail account.",
+      "description": "Private Affiliate / Promoter profile and payout details bound to a verified Gmail account.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 64 },
@@ -109,6 +111,17 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "userId", "email", "name", "phone"]
+    },
+    "promoterRef": {
+      "title": "PromoterRef",
+      "description": "PII-free public referral routing metadata keyed by promoter code.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "promoterUserId": { "type": "string", "maxLength": 128 },
+        "commissionPerSale": { "type": "number" }
+      },
+      "required": ["id", "promoterUserId", "commissionPerSale"]
     },
     "promoterSale": {
       "title": "PromoterSale",
@@ -131,8 +144,8 @@
         },
         "courierName": { "type": "string", "maxLength": 100 },
         "trackingId": { "type": "string", "maxLength": 120 },
-        "dispatchedAt": { "type": "string", "format": "date-time" },
-        "deliveredAt": { "type": "string", "format": "date-time" },
+        "dispatchedAt": { "type": "string", "maxLength": 100 },
+        "deliveredAt": { "type": "string", "maxLength": 100 },
         "status": {
           "type": "string",
           "enum": ["pending", "pending_verification", "confirmed", "rejected", "cancelled", "completed"]
@@ -161,7 +174,12 @@
         "pickupPhone": { "type": "string", "maxLength": 30 },
         "pickupAddress": { "type": "string", "maxLength": 500 },
         "pickupPincode": { "type": "string", "maxLength": 20 },
-        "defaultDeliveryDays": { "type": "string", "maxLength": 100 }
+        "defaultDeliveryDays": { "type": "string", "maxLength": 100 },
+        "blockAccountOrders": { "type": "boolean" },
+        "blockAccountWishlist": { "type": "boolean" },
+        "blockAccountCoupons": { "type": "boolean" },
+        "blockAccountHelp": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       }
     }
   },
@@ -180,15 +198,19 @@
     },
     "/promoters/{promoterId}": {
       "schema": "promoter",
-      "description": "Promoter & affiliate profiles bound to verified Gmail accounts."
+      "description": "Private promoter & affiliate profiles bound to verified Gmail accounts."
+    },
+    "/promoter_refs/{promoterId}": {
+      "schema": "promoterRef",
+      "description": "PII-free referral lookup metadata keyed by promoter code."
     },
     "/promoter_sales/{saleId}": {
       "schema": "promoterSale",
-      "description": "PII-free referral sales summary readable only by the owning promoter or admin."
+      "description": "PII-free referral sales summary readable only by the owning promoter, buyer, or admin."
     },
     "/settings/{settingId}": {
       "schema": "setting",
-      "description": "Store configuration docs: payment, categories, order_counter."
+      "description": "Store configuration docs: payment, categories, catalog, order_counter."
     }
   }
 }

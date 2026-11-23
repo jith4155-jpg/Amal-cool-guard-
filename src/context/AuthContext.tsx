@@ -1,6 +1,26 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import {
-  supabase,
+  onAuthStateChanged,
+  signInWithPopup,
+  signOut,
+} from 'firebase/auth';
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  query,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  where,
+  writeBatch,
+} from 'firebase/firestore';
+import {
+  auth,
+  db,
+  googleProvider,
   toAppUser,
   mapBookingFromDb,
   mapPromoterFromDb,
@@ -8,8 +28,10 @@ import {
   mapPromoterSaleFromDb,
   mapUserProfileFromDb,
   mapUserProfileToDb,
+  OperationType,
+  handleFirestoreError,
   type AppUser,
-} from '../supabase';
+} from '../firebase';
 import {
   getLocalOrders,
   saveAllOrders,
@@ -65,22 +87,7 @@ interface AuthContextValue {
   myPromoterSales: any[];
   loadingPromoter: boolean;
   signingIn: boolean;
-  signInWithGoogle: (
-    redirectPath?: string
-  ) => Promise<{ user: AppUser | null; error?: string; isIframeBlocked?: boolean }>;
-  getGoogleOAuthUrl: (redirectPath?: string) => Promise<string | null>;
-  signInWithEmail: (email: string, password: string) => Promise<{ user: AppUser | null; error?: string }>;
-  signUpWithEmail: (
-    email: string,
-    password: string,
-    fullName?: string
-  ) => Promise<{
-    user: AppUser | null;
-    error?: string;
-    message?: string;
-    needsEmailConfirmation?: boolean;
-    alreadyRegistered?: boolean;
-  }>;
+  signInWithGoogle: () => Promise<{ user: AppUser | null; error?: string }>;
   logout: () => Promise<void>;
   updateUserProfile: (patch: Partial<UserProfile>) => Promise<UserProfile | null>;
   refreshMyOrders: () => Promise<any[]>;
@@ -184,14 +191,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       );
 
       let remoteData: Partial<UserProfile> | null = null;
+      const userPath = `users/${appUser.uid}`;
       try {
-        const { data, error } = await supabase
-          .from('users')
-          .select('*')
-          .eq('uid', appUser.uid)
-          .maybeSingle();
-        if (!error && data) {
-          remoteData = mapUserProfileFromDb(data);
+        const snap = await getDoc(doc(db, 'users', appUser.uid));
+        if (snap.exists()) {
+          remoteData = mapUserProfileFromDb(snap.data(), snap.id);
         }
       } catch (err) {
         console.warn('Could not fetch remote user profile:', err);
@@ -217,13 +221,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       syncLocalProfileCache(mergedProfile);
       setProfile(mergedProfile);
 
-      if (!remoteData) {
+      if (!remoteData && appUser.emailVerified) {
         try {
-          await supabase
-            .from('users')
-            .upsert(mapUserProfileToDb(mergedProfile), { onConflict: 'uid' });
+          await setDoc(doc(db, 'users', appUser.uid), mapUserProfileToDb(mergedProfile));
         } catch (err) {
-          console.warn('Could not persist initial user profile to Supabase:', err);
+          handleFirestoreError(err, OperationType.WRITE, userPath);
         }
       }
 
@@ -285,25 +287,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const remoteDocs: any[] = [];
       let fetchSucceeded = false;
 
-      try {
-        const { data, error } = await supabase
-          .from('bookings')
-          .select('*')
-          .eq('user_id', targetUser.uid)
-          .order('created_at', { ascending: false });
-
-        if (!error && Array.isArray(data)) {
+      if (targetUser.emailVerified) {
+        try {
+          const q = query(collection(db, 'bookings'), where('userId', '==', targetUser.uid));
+          const snap = await getDocs(q);
           fetchSucceeded = true;
-          data.forEach(row => {
-            const mapped = mapBookingFromDb(row);
+          snap.forEach(docSnap => {
+            const mapped = mapBookingFromDb(docSnap.data(), docSnap.id);
             const oid = String(mapped.orderId || '');
             const did = String(mapped.id || '');
             if (deletedSet.has(oid) || deletedSet.has(did)) return;
             remoteDocs.push(mapped);
           });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.LIST, 'bookings');
         }
-      } catch (err) {
-        console.warn('Supabase user bookings query fallback:', err);
       }
 
       if (fetchSucceeded) {
@@ -344,48 +342,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const deletedOrderIds = new Set(getDeletedOrderIds());
       const salesMap = new Map<string, any>();
 
-      // 1. Remote PII-free promoter_sales scoped by promoter_user_id or promoter_email
-      try {
-        const { data, error } = await supabase
-          .from('promoter_sales')
-          .select('*')
-          .eq('promoter_user_id', targetUser.uid)
-          .order('created_at', { ascending: false });
-        if (!error && Array.isArray(data)) {
-          data.forEach(row => {
-            const mapped = mapPromoterSaleFromDb(row);
+      if (targetUser.emailVerified) {
+        try {
+          const qUid = query(
+            collection(db, 'promoter_sales'),
+            where('promoterUserId', '==', targetUser.uid)
+          );
+          const snapUid = await getDocs(qUid);
+          snapUid.forEach(docSnap => {
+            const mapped = mapPromoterSaleFromDb(docSnap.data(), docSnap.id);
             const key = String(mapped.orderId || mapped.id);
             if (!deletedOrderIds.has(key) && !deletedOrderIds.has(String(mapped.bookingDocId || ''))) {
               salesMap.set(key, mapped);
             }
           });
+        } catch (err) {
+          console.warn('Promoter sales UID query fallback:', err);
         }
-      } catch (err) {
-        console.warn('Promoter sales UID query fallback:', err);
-      }
 
-      if (targetUser.email) {
-        try {
-          const { data, error } = await supabase
-            .from('promoter_sales')
-            .select('*')
-            .ilike('promoter_email', targetUser.email)
-            .order('created_at', { ascending: false });
-          if (!error && Array.isArray(data)) {
-            data.forEach(row => {
-              const mapped = mapPromoterSaleFromDb(row);
+        if (targetUser.email) {
+          try {
+            const qEmail = query(
+              collection(db, 'promoter_sales'),
+              where('promoterEmail', '==', targetUser.email)
+            );
+            const snapEmail = await getDocs(qEmail);
+            snapEmail.forEach(docSnap => {
+              const mapped = mapPromoterSaleFromDb(docSnap.data(), docSnap.id);
               const key = String(mapped.orderId || mapped.id);
               if (!deletedOrderIds.has(key) && !deletedOrderIds.has(String(mapped.bookingDocId || ''))) {
                 if (!salesMap.has(key)) salesMap.set(key, mapped);
               }
             });
+          } catch {
+            // ignore email secondary lookup
           }
-        } catch {
-          // ignore
         }
       }
 
-      // 2. Local orders matching this promoter's code
       const localOrders = getLocalOrders();
       for (const ord of localOrders) {
         const refMatch =
@@ -448,40 +442,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const deletedIds = new Set(getDeletedPromoterIds());
       let found: PromoterRecord | null = null;
 
-      // 1. Check Supabase promoters owned by this exact UID or Email
-      try {
-        const { data, error } = await supabase
-          .from('promoters')
-          .select('*')
-          .eq('user_id', targetUser.uid);
-        if (!error && Array.isArray(data)) {
-          const validRow = data.find(r => !deletedIds.has(r.id));
-          if (validRow) {
-            found = mapPromoterFromDb(validRow);
-          }
-        }
-      } catch (err) {
-        console.warn('Supabase promoter UID query fallback:', err);
-      }
-
-      if (!found && targetUser.email) {
+      if (targetUser.emailVerified) {
         try {
-          const { data, error } = await supabase
-            .from('promoters')
-            .select('*')
-            .ilike('email', targetUser.email);
-          if (!error && Array.isArray(data)) {
-            const validRow = data.find(r => !deletedIds.has(r.id));
-            if (validRow) {
-              found = mapPromoterFromDb(validRow);
-            }
+          const qUid = query(collection(db, 'promoters'), where('userId', '==', targetUser.uid));
+          const snapUid = await getDocs(qUid);
+          const validDoc = snapUid.docs.find(d => !deletedIds.has(d.id));
+          if (validDoc) {
+            found = mapPromoterFromDb(validDoc.data(), validDoc.id);
           }
-        } catch {
-          // ignore
+        } catch (err) {
+          console.warn('Firestore promoter UID query fallback:', err);
+        }
+
+        if (!found && targetUser.email) {
+          try {
+            const qEmail = query(collection(db, 'promoters'), where('email', '==', targetUser.email));
+            const snapEmail = await getDocs(qEmail);
+            const validDoc = snapEmail.docs.find(d => !deletedIds.has(d.id));
+            if (validDoc) {
+              found = mapPromoterFromDb(validDoc.data(), validDoc.id);
+            }
+          } catch {
+            // ignore secondary email lookup
+          }
         }
       }
 
-      // 2. Check local promoters dict strictly matching this user's UID or Gmail
       const localDict = getPromotersDict();
       if (!found) {
         const localMatch = Object.values(localDict).find(
@@ -508,15 +494,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let mounted = true;
 
-    const hydrateSession = async (appUser: AppUser | null) => {
+    const unsubscribe = onAuthStateChanged(auth, async fbUser => {
       if (!mounted) return;
+      const appUser = toAppUser(fbUser);
       setUser(appUser);
+
       if (appUser) {
-        await Promise.all([
-          loadOrCreateProfile(appUser),
-          loadUserOrders(appUser),
-          loadUserPromoter(appUser),
-        ]);
+        try {
+          await Promise.all([
+            loadOrCreateProfile(appUser),
+            loadUserOrders(appUser),
+            loadUserPromoter(appUser),
+          ]);
+        } catch (err) {
+          console.warn('Auth session hydration warning:', err);
+        }
       } else {
         setProfile(null);
         setMyOrders([]);
@@ -525,106 +517,63 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         localStorage.removeItem(STORAGE_KEYS.CUSTOMER_SESSION);
         localStorage.removeItem(STORAGE_KEYS.PROMOTER_SESSION);
       }
+
       if (mounted) {
         setAuthReady(true);
-        try {
-          sessionStorage.removeItem('amal_oauth_pending');
-        } catch {
-          // ignore
-        }
       }
-    };
-
-    supabase.auth
-      .getSession()
-      .then(({ data }) => {
-        hydrateSession(toAppUser(data.session?.user));
-      })
-      .catch(() => {
-        if (mounted) setAuthReady(true);
-      });
-
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
-      hydrateSession(toAppUser(session?.user));
     });
-
-    const syncSessionOnReturn = () => {
-      supabase.auth
-        .getSession()
-        .then(({ data }) => {
-          hydrateSession(toAppUser(data.session?.user));
-        })
-        .catch(() => {
-          // ignore
-        });
-    };
-
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        syncSessionOnReturn();
-      }
-    };
-
-    window.addEventListener('focus', syncSessionOnReturn);
-    window.addEventListener('storage', syncSessionOnReturn);
-    document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
       mounted = false;
-      authListener.subscription.unsubscribe();
-      window.removeEventListener('focus', syncSessionOnReturn);
-      window.removeEventListener('storage', syncSessionOnReturn);
-      document.removeEventListener('visibilitychange', handleVisibility);
+      unsubscribe();
     };
   }, [loadOrCreateProfile, loadUserOrders, loadUserPromoter]);
 
-  // Real-time Supabase listener for user's bookings (Approval, Tracking, ETA, Courier Dispatched / Delivered)
+  // Real-time Firestore listener for user's bookings (Approval, Tracking, ETA, Delivery status)
   useEffect(() => {
-    if (!user) return;
-    const channel = supabase
-      .channel(`bookings-user-${user.uid}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'bookings',
-          filter: `user_id=eq.${user.uid}`,
-        },
-        () => {
-          loadUserOrders(user);
-        }
-      )
-      .subscribe();
+    if (!authReady || !user || !user.emailVerified) return;
+    const deletedSet = new Set(getDeletedOrderIds());
+    const q = query(collection(db, 'bookings'), where('userId', '==', user.uid));
+    const unsubscribe = onSnapshot(
+      q,
+      snapshot => {
+        const remoteDocs: any[] = [];
+        snapshot.forEach(docSnap => {
+          const mapped = mapBookingFromDb(docSnap.data(), docSnap.id);
+          const oid = String(mapped.orderId || '');
+          const did = String(mapped.id || '');
+          if (deletedSet.has(oid) || deletedSet.has(did)) return;
+          remoteDocs.push(mapped);
+        });
+        applyRemoteUserOrders(user, remoteDocs);
+      },
+      error => {
+        handleFirestoreError(error, OperationType.LIST, 'bookings');
+      }
+    );
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [user, loadUserOrders]);
+    return () => unsubscribe();
+  }, [authReady, user, applyRemoteUserOrders]);
 
-  // Real-time Supabase listener for Promoter sales & delivery updates
+  // Real-time Firestore listener for Promoter sales & delivery updates
   useEffect(() => {
-    if (!user || !myPromoter) return;
-    const channel = supabase
-      .channel(`promoter-sales-${user.uid}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'promoter_sales',
-          filter: `promoter_user_id=eq.${user.uid}`,
-        },
-        () => {
-          loadPromoterSales(user, myPromoter);
-        }
-      )
-      .subscribe();
+    if (!authReady || !user || !user.emailVerified || !myPromoter) return;
+    const q = query(
+      collection(db, 'promoter_sales'),
+      where('promoterUserId', '==', user.uid)
+    );
+    const unsubscribe = onSnapshot(
+      q,
+      () => {
+        loadPromoterSales(user, myPromoter);
+      },
+      error => {
+        handleFirestoreError(error, OperationType.LIST, 'promoter_sales');
+      }
+    );
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [user, myPromoter, loadPromoterSales]);
+    return () => unsubscribe();
+  }, [authReady, user, myPromoter, loadPromoterSales]);
 
   useEffect(() => {
     const onStoreSync = () => {
@@ -637,186 +586,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('amal_store_updated', onStoreSync);
   }, [user, loadUserOrders, loadUserPromoter]);
 
-  const signInWithGoogle = useCallback(async (redirectPath?: string) => {
+  const signInWithGoogle = useCallback(async () => {
     setSigningIn(true);
     try {
-      const inIframe = (() => {
-        try {
-          return window.self !== window.top;
-        } catch {
-          return true;
-        }
-      })();
-
-      if (inIframe) {
-        setSigningIn(false);
+      const cred = await signInWithPopup(auth, googleProvider);
+      const appUser = toAppUser(cred.user);
+      if (appUser) {
+        setUser(appUser);
+        await Promise.all([
+          loadOrCreateProfile(appUser),
+          loadUserOrders(appUser),
+          loadUserPromoter(appUser),
+        ]);
+      }
+      return { user: appUser };
+    } catch (err: any) {
+      const code = String(err?.code || '');
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
         return {
           user: null,
-          isIframeBlocked: true,
-          error:
-            'Preview വിൻഡോയിൽ Email & Password വഴി ലോഗിൻ ചെയ്യുക, അല്ലെങ്കിൽ പുതിയ ബ്രൗസർ ടാബിൽ തുറന്ന് Google ലോഗിൻ ഉപയോഗിക്കുക.',
+          error: 'Google Sign-In was cancelled before selecting an account. Please tap Continue with Google again.',
         };
       }
-
-      let targetUrl = `${window.location.origin}/`;
-      try {
-        const currentPath = window.location.pathname;
-        if (redirectPath && redirectPath.startsWith('/')) {
-          targetUrl = new URL(redirectPath, window.location.origin).toString();
-        } else if (
-          currentPath.startsWith('/admin') ||
-          currentPath.startsWith('/promoter') ||
-          currentPath.startsWith('/product/')
-        ) {
-          targetUrl = window.location.href;
-        }
-      } catch {
-        targetUrl = `${window.location.origin}/`;
+      if (code === 'auth/popup-blocked') {
+        return {
+          user: null,
+          error: 'Popup was blocked by your browser. Please allow popups for this site and tap Sign In again.',
+        };
       }
-
-      try {
-        sessionStorage.setItem('amal_oauth_pending', '1');
-      } catch {
-        // ignore
-      }
-
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: targetUrl,
-          queryParams: {
-            prompt: 'select_account',
-          },
-        },
-      });
-      if (error) {
-        try {
-          sessionStorage.removeItem('amal_oauth_pending');
-        } catch {
-          // ignore
-        }
-        setSigningIn(false);
-        return { user: null, error: error.message };
-      }
-      return { user: null };
-    } catch (err: any) {
-      setSigningIn(false);
       return {
         user: null,
-        error: err?.message || 'Google login failed. Please try again.',
+        error: err?.message || 'Google Sign-In failed. Please try again.',
       };
+    } finally {
+      setSigningIn(false);
     }
-  }, []);
-
-  const getGoogleOAuthUrl = useCallback(async (redirectPath?: string): Promise<string | null> => {
-    try {
-      let targetUrl = `${window.location.origin}/`;
-      try {
-        if (redirectPath && redirectPath.startsWith('/')) {
-          targetUrl = new URL(redirectPath, window.location.origin).toString();
-        }
-      } catch {
-        targetUrl = `${window.location.origin}/`;
-      }
-
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: targetUrl,
-          skipBrowserRedirect: true,
-          queryParams: {
-            prompt: 'select_account',
-          },
-        },
-      });
-      if (error || !data?.url) return null;
-      return data.url;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const signInWithEmail = useCallback(
-    async (email: string, password: string) => {
-      setSigningIn(true);
-      try {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: email.trim(),
-          password,
-        });
-        if (error) {
-          return { user: null, error: error.message };
-        }
-        const appUser = toAppUser(data.user);
-        if (appUser) {
-          setUser(appUser);
-          await Promise.all([
-            loadOrCreateProfile(appUser),
-            loadUserOrders(appUser),
-            loadUserPromoter(appUser),
-          ]);
-        }
-        return { user: appUser };
-      } catch (err: any) {
-        return { user: null, error: err?.message || 'Sign in failed.' };
-      } finally {
-        setSigningIn(false);
-      }
-    },
-    [loadOrCreateProfile, loadUserOrders, loadUserPromoter]
-  );
-
-  const signUpWithEmail = useCallback(
-    async (email: string, password: string, fullName?: string) => {
-      setSigningIn(true);
-      try {
-        const { data, error } = await supabase.auth.signUp({
-          email: email.trim(),
-          password,
-          options: {
-            emailRedirectTo: `${window.location.origin}/`,
-            data: {
-              full_name: (fullName || email.split('@')[0] || 'Customer').trim(),
-            },
-          },
-        });
-        if (error) {
-          return { user: null, error: error.message };
-        }
-        if (Array.isArray(data.user?.identities) && data.user.identities.length === 0) {
-          return {
-            user: null,
-            alreadyRegistered: true,
-            error: 'ഈ ഇമെയിൽ ഇതിനകം രജിസ്റ്റർ ചെയ്തതാണ്. താഴെ Sign In വഴി ലോഗിൻ ചെയ്യുക.',
-          };
-        }
-        const appUser = toAppUser(data.user);
-        if (data.session && appUser) {
-          setUser(appUser);
-          await Promise.all([
-            loadOrCreateProfile(appUser),
-            loadUserOrders(appUser),
-            loadUserPromoter(appUser),
-          ]);
-          return { user: appUser };
-        }
-        return {
-          user: null,
-          needsEmailConfirmation: true,
-          message:
-            'അക്കൗണ്ട് രജിസ്റ്റർ ആയി! നിങ്ങളുടെ Email/Gmail Inbox-ൽ വന്ന കൺഫർമേഷൻ ലിങ്കിൽ ക്ലിക്ക് ചെയ്ത ശേഷം താഴെ Sign In ചെയ്യുക.',
-        };
-      } catch (err: any) {
-        return { user: null, error: err?.message || 'Sign up failed.' };
-      } finally {
-        setSigningIn(false);
-      }
-    },
-    [loadOrCreateProfile, loadUserOrders, loadUserPromoter]
-  );
+  }, [loadOrCreateProfile, loadUserOrders, loadUserPromoter]);
 
   const logout = useCallback(async () => {
-    await supabase.auth.signOut();
+    await signOut(auth);
     localStorage.removeItem(STORAGE_KEYS.CUSTOMER_SESSION);
     localStorage.removeItem(STORAGE_KEYS.PROMOTER_SESSION);
     setUser(null);
@@ -828,14 +636,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const updateUserProfile = useCallback(
     async (patch: Partial<UserProfile>): Promise<UserProfile | null> => {
-      const { data: sessData } = await supabase.auth.getUser();
-      const current = toAppUser(sessData.user) || user;
+      const current = toAppUser(auth.currentUser) || user;
       if (!current) return null;
 
       const nextProfile: UserProfile = {
         uid: current.uid,
         email: current.email || profile?.email || '',
-        name: (patch.name ?? profile?.name ?? current.displayName ?? 'Customer').trim(),
+        name: (patch.name ?? profile?.name ?? current.displayName ?? 'Customer').trim() || 'Customer',
         photoURL: current.photoURL || profile?.photoURL || '',
         mobile: (patch.mobile ?? profile?.mobile ?? '').trim(),
         address: (patch.address ?? profile?.address ?? '').trim(),
@@ -847,12 +654,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setProfile(nextProfile);
       syncLocalProfileCache(nextProfile);
 
-      try {
-        await supabase
-          .from('users')
-          .upsert(mapUserProfileToDb(nextProfile), { onConflict: 'uid' });
-      } catch (err) {
-        console.warn('Supabase profile save err:', err);
+      if (current.emailVerified) {
+        const path = `users/${current.uid}`;
+        try {
+          await setDoc(doc(db, 'users', current.uid), mapUserProfileToDb(nextProfile), {
+            merge: true,
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, path);
+        }
       }
       return nextProfile;
     },
@@ -866,9 +676,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         'id' | 'userId' | 'email' | 'createdAt' | 'commissionPerSale' | 'paidAmount'
       >
     ): Promise<PromoterRecord | null> => {
-      const { data: sessData } = await supabase.auth.getUser();
-      const current = toAppUser(sessData.user) || user;
-      if (!current || !current.email) return null;
+      const current = toAppUser(auth.currentUser) || user;
+      if (!current || !current.email || !current.emailVerified) return null;
 
       const existing = await loadUserPromoter(current);
       if (existing) return existing;
@@ -886,10 +695,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         generatedCode = `${firstLetter}${paddedNum}${lastLetter}`;
         if (!allPromoters[generatedCode]) {
           try {
-            const { data: existingRemote } = await supabase.rpc('resolve_promoter_referral', {
-              ref_code: generatedCode,
-            });
-            if (!Array.isArray(existingRemote) || existingRemote.length === 0) break;
+            const refSnap = await getDoc(doc(db, 'promoter_refs', generatedCode));
+            if (!refSnap.exists()) break;
           } catch {
             break;
           }
@@ -903,15 +710,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         id: generatedCode,
         userId: current.uid,
         email: current.email,
-        name: input.name.trim(),
-        phone: input.phone.trim(),
-        channelName: input.channelName?.trim() || 'YouTuber / Influencer',
+        name: input.name.trim().slice(0, 120),
+        phone: input.phone.trim().slice(0, 30),
+        channelName: (input.channelName?.trim() || 'YouTuber / Influencer').slice(0, 120),
         paymentType: input.paymentType,
-        ...(input.upiId ? { upiId: input.upiId.trim() } : {}),
-        ...(input.bankName ? { bankName: input.bankName.trim() } : {}),
-        ...(input.accountNumber ? { accountNumber: input.accountNumber.trim() } : {}),
-        ...(input.ifscCode ? { ifscCode: input.ifscCode.trim().toUpperCase() } : {}),
-        ...(input.accountHolderName ? { accountHolderName: input.accountHolderName.trim() } : {}),
+        ...(input.upiId ? { upiId: input.upiId.trim().slice(0, 120) } : {}),
+        ...(input.bankName ? { bankName: input.bankName.trim().slice(0, 120) } : {}),
+        ...(input.accountNumber ? { accountNumber: input.accountNumber.trim().slice(0, 64) } : {}),
+        ...(input.ifscCode ? { ifscCode: input.ifscCode.trim().toUpperCase().slice(0, 32) } : {}),
+        ...(input.accountHolderName
+          ? { accountHolderName: input.accountHolderName.trim().slice(0, 120) }
+          : {}),
         createdAt: new Date().toISOString(),
         commissionPerSale: 100,
         paidAmount: 0,
@@ -922,9 +731,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setMyPromoter(newPromoter);
 
       try {
-        await supabase.from('promoters').upsert(mapPromoterToDb(newPromoter), { onConflict: 'id' });
+        const batch = writeBatch(db);
+        batch.set(doc(db, 'promoters', generatedCode), mapPromoterToDb(newPromoter));
+        batch.set(doc(db, 'promoter_refs', generatedCode), {
+          id: generatedCode,
+          promoterUserId: current.uid,
+          commissionPerSale: 100,
+        });
+        await batch.commit();
       } catch (err) {
-        console.warn('Promoter Supabase sync err:', err);
+        handleFirestoreError(err, OperationType.WRITE, `promoters/${generatedCode}`);
       }
 
       await updateUserProfile({
@@ -946,9 +762,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         'id' | 'userId' | 'email' | 'createdAt' | 'commissionPerSale' | 'paidAmount'
       >
     ): Promise<PromoterRecord | null> => {
-      const { data: sessData } = await supabase.auth.getUser();
-      const current = toAppUser(sessData.user) || user;
-      if (!current || !myPromoter) return null;
+      const current = toAppUser(auth.currentUser) || user;
+      if (!current || !current.emailVerified || !myPromoter) return null;
 
       const updatedPromoter: PromoterRecord = {
         id: myPromoter.id,
@@ -960,14 +775,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         paymentType: input.paymentType,
         upiId: input.paymentType === 'upi' ? (input.upiId || '').trim().slice(0, 120) : '',
         bankName: input.paymentType === 'bank' ? (input.bankName || '').trim().slice(0, 120) : '',
-        accountNumber: input.paymentType === 'bank' ? (input.accountNumber || '').trim().slice(0, 64) : '',
-        ifscCode: input.paymentType === 'bank' ? (input.ifscCode || '').trim().toUpperCase().slice(0, 32) : '',
+        accountNumber:
+          input.paymentType === 'bank' ? (input.accountNumber || '').trim().slice(0, 64) : '',
+        ifscCode:
+          input.paymentType === 'bank'
+            ? (input.ifscCode || '').trim().toUpperCase().slice(0, 32)
+            : '',
         accountHolderName:
           input.paymentType === 'bank'
             ? (input.accountHolderName?.trim() || input.name.trim()).slice(0, 120)
             : '',
         createdAt: myPromoter.createdAt || new Date().toISOString(),
-        commissionPerSale: typeof myPromoter.commissionPerSale === 'number' ? myPromoter.commissionPerSale : 100,
+        commissionPerSale:
+          typeof myPromoter.commissionPerSale === 'number' ? myPromoter.commissionPerSale : 100,
         paidAmount: typeof myPromoter.paidAmount === 'number' ? myPromoter.paidAmount : 0,
       };
 
@@ -977,22 +797,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setMyPromoter(updatedPromoter);
 
       try {
-        await supabase
-          .from('promoters')
-          .update({
-            name: updatedPromoter.name,
-            phone: updatedPromoter.phone,
-            channel_name: updatedPromoter.channelName,
-            payment_type: updatedPromoter.paymentType,
-            upi_id: updatedPromoter.upiId || '',
-            bank_name: updatedPromoter.bankName || '',
-            account_number: updatedPromoter.accountNumber || '',
-            ifsc_code: updatedPromoter.ifscCode || '',
-            account_holder_name: updatedPromoter.accountHolderName || '',
-          })
-          .eq('id', myPromoter.id);
+        await updateDoc(doc(db, 'promoters', myPromoter.id), {
+          userId: current.uid,
+          name: updatedPromoter.name,
+          phone: updatedPromoter.phone,
+          channelName: updatedPromoter.channelName || 'YouTuber / Influencer',
+          paymentType: updatedPromoter.paymentType,
+          upiId: updatedPromoter.upiId || '',
+          bankName: updatedPromoter.bankName || '',
+          accountNumber: updatedPromoter.accountNumber || '',
+          ifscCode: updatedPromoter.ifscCode || '',
+          accountHolderName: updatedPromoter.accountHolderName || '',
+        });
       } catch (err) {
-        console.warn('Promoter Supabase update fallback:', err);
+        handleFirestoreError(err, OperationType.UPDATE, `promoters/${myPromoter.id}`);
       }
 
       await updateUserProfile({
@@ -1017,7 +835,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const recordLocalOrder = useCallback((orderRecord: any) => {
     const existingOrders = getLocalOrders();
     saveAllOrders([orderRecord, ...existingOrders]);
-    setMyOrders(prev => [orderRecord, ...prev.filter(o => (o.orderId || o.id) !== orderRecord.orderId)]);
+    setMyOrders(prev => [
+      orderRecord,
+      ...prev.filter(o => (o.orderId || o.id) !== orderRecord.orderId),
+    ]);
+  }, []);
+
+  const resolveBookingDocIds = useCallback(async (order: any, uid: string): Promise<string[]> => {
+    const ids = new Set<string>();
+    if (order?.docId && !String(order.docId).startsWith('A')) {
+      ids.add(String(order.docId));
+    } else if (order?.docId) {
+      ids.add(String(order.docId));
+    }
+    if (order?.id && order.id !== order.orderId) {
+      ids.add(String(order.id));
+    }
+
+    if (ids.size === 0 && order?.orderId) {
+      try {
+        const q = query(collection(db, 'bookings'), where('userId', '==', uid));
+        const snap = await getDocs(q);
+        snap.forEach(d => {
+          if (String(d.data().orderId || '') === String(order.orderId)) {
+            ids.add(d.id);
+          }
+        });
+      } catch {
+        // ignore lookup fallback
+      }
+    }
+    return Array.from(ids);
   }, []);
 
   const cancelMyOrder = useCallback(
@@ -1034,56 +882,71 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       );
       saveAllOrders(updatedLocal);
 
-      if (order.orderId) {
+      const currentUid = auth.currentUser?.uid || user?.uid;
+      if (!currentUid) return;
+
+      const docIds = await resolveBookingDocIds(order, currentUid);
+      for (const bid of docIds) {
         try {
-          await supabase
-            .from('bookings')
-            .update({ status: 'cancelled' })
-            .eq('order_id', String(order.orderId));
+          await updateDoc(doc(db, 'bookings', bid), { status: 'cancelled' });
         } catch (err) {
-          console.warn('Supabase cancel order err:', err);
+          handleFirestoreError(err, OperationType.UPDATE, `bookings/${bid}`);
         }
       }
+
       if (order.orderId && (order.promoterId || order.referralCode)) {
         try {
-          await supabase
-            .from('promoter_sales')
-            .update({ status: 'cancelled' })
-            .eq('order_id', String(order.orderId));
+          const saleRef = doc(db, 'promoter_sales', String(order.orderId));
+          const saleSnap = await getDoc(saleRef);
+          if (saleSnap.exists()) {
+            await updateDoc(saleRef, { status: 'cancelled' });
+          }
         } catch {
-          // ignore
+          // ignore if promoter_sales doc absent
         }
       }
     },
-    [myOrders]
+    [myOrders, user, resolveBookingDocIds]
   );
 
-  const deleteMyOrder = useCallback(async (order: any) => {
-    const targetOrderId = String(order.orderId || order.id || '');
-    const docId = order.docId || order.id;
+  const deleteMyOrder = useCallback(
+    async (order: any) => {
+      const targetOrderId = String(order.orderId || order.id || '');
+      const docId = order.docId || order.id;
 
-    setMyOrders(prev =>
-      prev.filter(
-        o => String(o.orderId || '') !== targetOrderId && String(o.id || '') !== String(docId || '')
-      )
-    );
-    deleteOrderLocally(targetOrderId, docId ? String(docId) : undefined);
+      setMyOrders(prev =>
+        prev.filter(
+          o => String(o.orderId || '') !== targetOrderId && String(o.id || '') !== String(docId || '')
+        )
+      );
+      deleteOrderLocally(targetOrderId, docId ? String(docId) : undefined);
 
-    if (targetOrderId) {
-      try {
-        await supabase.from('bookings').delete().eq('order_id', targetOrderId);
-      } catch (err) {
-        console.warn('Supabase delete order err:', err);
+      const currentUid = auth.currentUser?.uid || user?.uid;
+      if (!currentUid) return;
+
+      const docIds = await resolveBookingDocIds(order, currentUid);
+      for (const bid of docIds) {
+        try {
+          await deleteDoc(doc(db, 'bookings', bid));
+        } catch (err) {
+          handleFirestoreError(err, OperationType.DELETE, `bookings/${bid}`);
+        }
       }
-    }
-    if (order.orderId && (order.promoterId || order.referralCode)) {
-      try {
-        await supabase.from('promoter_sales').delete().eq('order_id', String(order.orderId));
-      } catch {
-        // ignore
+
+      if (order.orderId && (order.promoterId || order.referralCode)) {
+        try {
+          const saleRef = doc(db, 'promoter_sales', String(order.orderId));
+          const saleSnap = await getDoc(saleRef);
+          if (saleSnap.exists()) {
+            await deleteDoc(saleRef);
+          }
+        } catch {
+          // ignore if promoter_sales doc absent
+        }
       }
-    }
-  }, []);
+    },
+    [user, resolveBookingDocIds]
+  );
 
   return (
     <AuthContext.Provider
@@ -1099,9 +962,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loadingPromoter,
         signingIn,
         signInWithGoogle,
-        getGoogleOAuthUrl,
-        signInWithEmail,
-        signUpWithEmail,
         logout,
         updateUserProfile,
         refreshMyOrders,

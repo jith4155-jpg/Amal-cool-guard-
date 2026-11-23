@@ -8,17 +8,8 @@ export default function AdminLogin() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(false);
   const [gmailStatusMsg, setGmailStatusMsg] = useState('');
-  const [showAdminEmailAuth, setShowAdminEmailAuth] = useState(() => {
-    try {
-      return window.self !== window.top;
-    } catch {
-      return false;
-    }
-  });
-  const [adminAuthEmail, setAdminAuthEmail] = useState(ADMIN_EMAIL);
-  const [adminAuthPass, setAdminAuthPass] = useState('');
   const navigate = useNavigate();
-  const { user, signInWithGoogle, signInWithEmail, signUpWithEmail, signingIn } = useAuth();
+  const { user, signInWithGoogle, signingIn } = useAuth();
 
   const isAdminGmailConnected = user?.email?.toLowerCase() === ADMIN_EMAIL;
 
@@ -36,36 +27,11 @@ export default function AdminLogin() {
     setGmailStatusMsg('');
     const res = await signInWithGoogle();
     if (res.user?.email?.toLowerCase() === ADMIN_EMAIL) {
-      setGmailStatusMsg('✓ Admin account connected for live customer order sync!');
+      setGmailStatusMsg('✓ Admin Google account connected to Firebase for live customer order sync!');
     } else if (res.user) {
       setGmailStatusMsg(
         `Signed in as ${res.user.email}. For Cloud order approvals, please sign in with ${ADMIN_EMAIL}.`
       );
-    } else {
-      if (res.isIframeBlocked) {
-        setShowAdminEmailAuth(true);
-      }
-      if (res.error) {
-        setGmailStatusMsg(res.error);
-      }
-    }
-  };
-
-  const handleAdminEmailConnect = async (mode: 'signin' | 'signup') => {
-    setGmailStatusMsg('');
-    const cleanEmail = adminAuthEmail.trim();
-    if (!cleanEmail || !adminAuthPass) {
-      setGmailStatusMsg('Please enter Admin Email and Supabase Password.');
-      return;
-    }
-    const res =
-      mode === 'signup'
-        ? await signUpWithEmail(cleanEmail, adminAuthPass, 'Amal Coolguard Admin')
-        : await signInWithEmail(cleanEmail, adminAuthPass);
-    if (res.user?.email?.toLowerCase() === ADMIN_EMAIL) {
-      setGmailStatusMsg('✓ Admin account connected to Supabase Cloud!');
-    } else if ('message' in res && typeof res.message === 'string' && res.message) {
-      setGmailStatusMsg(res.message);
     } else if (res.error) {
       setGmailStatusMsg(res.error);
     }
@@ -97,83 +63,24 @@ export default function AdminLogin() {
             }`}
           >
             {isAdminGmailConnected
-              ? `✓ Cloud Sync Ready (${user?.email})`
-              : `⚠️ Connect Admin Account (${ADMIN_EMAIL})`}
+              ? `✓ Firebase Cloud Sync Ready (${user?.email})`
+              : `⚠️ Connect Admin Google Account (${ADMIN_EMAIL})`}
           </p>
           {!isAdminGmailConnected && (
             <>
               <p className="text-[10px] text-amber-800 leading-relaxed">
                 {user?.email
-                  ? `Currently signed in as customer (${user.email}). Connect Admin account so order approvals sync live to customers.`
-                  : 'Connect Admin account so order approvals & tracking IDs update live on customer phones.'}
+                  ? `Currently signed in as (${user.email}). Connect Admin Google account so order approvals sync live to customers.`
+                  : 'Connect Admin Google account so order approvals & tracking IDs update live on customer phones.'}
               </p>
-              {(() => {
-                const isInIframe = (() => {
-                  try {
-                    return window.self !== window.top;
-                  } catch {
-                    return true;
-                  }
-                })();
-                if (isInIframe) {
-                  return null;
-                }
-                return (
-                  <>
-                    <button
-                      type="button"
-                      onClick={handleConnectAdminGmail}
-                      disabled={signingIn}
-                      className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-[11px] py-2 px-3 rounded-xl shadow-xs transition disabled:opacity-60"
-                    >
-                      {signingIn ? 'Connecting...' : '🔐 Connect Admin Google / Gmail'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowAdminEmailAuth(v => !v)}
-                      className="w-full text-[10px] font-bold text-amber-900 hover:underline text-center pt-0.5"
-                    >
-                      {showAdminEmailAuth ? 'Hide Email Password Login' : 'Or sign in with Email & Password'}
-                    </button>
-                  </>
-                );
-              })()}
-              {showAdminEmailAuth && (
-                <div className="space-y-1.5 pt-1">
-                  <input
-                    type="email"
-                    value={adminAuthEmail}
-                    onChange={e => setAdminAuthEmail(e.target.value)}
-                    placeholder={ADMIN_EMAIL}
-                    className="w-full p-2 text-[11px] border border-amber-300 rounded-lg bg-white outline-none"
-                  />
-                  <input
-                    type="password"
-                    value={adminAuthPass}
-                    onChange={e => setAdminAuthPass(e.target.value)}
-                    placeholder="Account Password (min 6 chars)"
-                    className="w-full p-2 text-[11px] border border-amber-300 rounded-lg bg-white outline-none"
-                  />
-                  <div className="flex gap-1.5">
-                    <button
-                      type="button"
-                      disabled={signingIn}
-                      onClick={() => handleAdminEmailConnect('signin')}
-                      className="flex-1 bg-slate-900 text-white text-[10px] font-bold py-1.5 rounded-lg"
-                    >
-                      Sign In
-                    </button>
-                    <button
-                      type="button"
-                      disabled={signingIn}
-                      onClick={() => handleAdminEmailConnect('signup')}
-                      className="flex-1 bg-white border border-amber-400 text-amber-900 text-[10px] font-bold py-1.5 rounded-lg"
-                    >
-                      Register
-                    </button>
-                  </div>
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={handleConnectAdminGmail}
+                disabled={signingIn}
+                className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-[11px] py-2.5 px-3 rounded-xl shadow-xs transition disabled:opacity-60"
+              >
+                {signingIn ? 'Connecting...' : '🔐 Connect Admin Google / Gmail'}
+              </button>
             </>
           )}
           {gmailStatusMsg && (
