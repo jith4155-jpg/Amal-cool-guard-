@@ -3,8 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ThemeSwitcher } from '../context/ThemeContext';
 import { useLanguage, LanguageSelector } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
-import { db } from '../firebase';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { supabase, mapProductFromDb } from '../supabase';
 import { Product } from '../data/mockProducts';
 import {
   getCatalogProducts,
@@ -42,26 +41,31 @@ export default function OrdersView() {
     window.addEventListener('amal_store_updated', syncCatalog);
     window.addEventListener('storage', syncCatalog);
 
-    const unsubscribeProducts = onSnapshot(
-      collection(db, 'products'),
-      snapshot => {
-        if (!snapshot.empty) {
-          const fetched: Product[] = snapshot.docs.map(docSnap => ({
-            id: docSnap.id,
-            ...(docSnap.data() as Omit<Product, 'id'>),
-          }));
+    const loadProducts = async () => {
+      try {
+        const { data, error } = await supabase.from('products').select('*');
+        if (!error && Array.isArray(data) && data.length > 0) {
+          const fetched = data.map(mapProductFromDb);
           const merged = mergeRemoteCatalogProducts(fetched);
           setCatalogProducts(merged);
           setBrokenOrderThumbs({});
         }
-      },
-      () => {
+      } catch {
         // Keep local catalog silently if offline
       }
-    );
+    };
+
+    loadProducts();
+
+    const channel = supabase
+      .channel('orders-view-products')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+        loadProducts();
+      })
+      .subscribe();
 
     return () => {
-      unsubscribeProducts();
+      supabase.removeChannel(channel);
       window.removeEventListener('amal_store_updated', syncCatalog);
       window.removeEventListener('storage', syncCatalog);
     };
@@ -252,7 +256,7 @@ export default function OrdersView() {
                 }`}
               >
                 {/* Header info */}
-                <div className="flex items-center justify-between border-b pb-2 mb-3">
+                <div className="flex items-center justify-between gap-2 border-b pb-2 mb-3 flex-wrap">
                   <div>
                     <p className="text-xs font-bold text-gray-500">ORDER #{targetId}</p>
                     <p className="text-[11px] text-gray-400">
@@ -263,7 +267,20 @@ export default function OrdersView() {
                         : 'Recently'}
                     </p>
                   </div>
-                  {getStatusBadge(order.status)}
+                  <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                    {!isCancelled && order.status?.toLowerCase() !== 'rejected' && (
+                      order.deliveryStatus === 'delivered' ? (
+                        <span className="bg-emerald-600 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-md">
+                          📦 DELIVERED
+                        </span>
+                      ) : order.deliveryStatus === 'shipped' ? (
+                        <span className="bg-sky-600 text-white text-[10px] font-extrabold px-2.5 py-1 rounded-md">
+                          🚚 COURIER DISPATCHED
+                        </span>
+                      ) : null
+                    )}
+                    {getStatusBadge(order.status)}
+                  </div>
                 </div>
 
                 {/* Product details */}
@@ -303,6 +320,88 @@ export default function OrdersView() {
                     </p>
                   </div>
                 </div>
+
+                {/* Live Courier & Delivery Progress Section */}
+                {!isCancelled && order.status?.toLowerCase() !== 'rejected' && (() => {
+                  const isConfirmed =
+                    order.status?.toLowerCase() === 'confirmed' ||
+                    order.status?.toLowerCase() === 'approved';
+                  const isDispatched =
+                    order.deliveryStatus === 'shipped' || order.deliveryStatus === 'delivered';
+                  const isDelivered = order.deliveryStatus === 'delivered';
+                  return (
+                    <div className="bg-sky-50/80 border border-sky-200 p-3 rounded-2xl mt-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="text-[11px] font-extrabold text-sky-950 flex items-center gap-1.5">
+                          <span>🚚</span> Delivery &amp; Courier Status (ഡെലിവറി സ്റ്റാറ്റസ്)
+                        </span>
+                        <span
+                          className={`text-[10px] font-black px-2.5 py-0.5 rounded-full ${
+                            isDelivered
+                              ? 'bg-emerald-600 text-white'
+                              : isDispatched
+                              ? 'bg-sky-600 text-white'
+                              : isConfirmed
+                              ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                              : 'bg-white text-gray-600 border border-gray-200'
+                          }`}
+                        >
+                          {isDelivered
+                            ? '✓ Delivered (ഡെലിവറി ചെയ്തു)'
+                            : isDispatched
+                            ? '🚚 Courier Sent (കൊറിയർ അയച്ചു)'
+                            : isConfirmed
+                            ? 'Ready for Courier'
+                            : 'Awaiting Confirmation'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-1.5 text-center text-[10px] font-bold">
+                        <div
+                          className={`p-2 rounded-xl border ${
+                            isConfirmed || isDispatched
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                              : 'bg-white border-gray-200 text-gray-500'
+                          }`}
+                        >
+                          <p>{isConfirmed || isDispatched ? '✓ Confirmed' : '1. Ordered'}</p>
+                        </div>
+                        <div
+                          className={`p-2 rounded-xl border ${
+                            isDispatched
+                              ? 'bg-sky-600 border-sky-700 text-white'
+                              : 'bg-white border-gray-200 text-gray-500'
+                          }`}
+                        >
+                          <p>🚚 Courier Sent</p>
+                          <p className="text-[9px] opacity-90 font-normal">കൊറിയർ അയച്ചു</p>
+                        </div>
+                        <div
+                          className={`p-2 rounded-xl border ${
+                            isDelivered
+                              ? 'bg-emerald-600 border-emerald-700 text-white'
+                              : 'bg-white border-gray-200 text-gray-500'
+                          }`}
+                        >
+                          <p>📦 Delivered</p>
+                          <p className="text-[9px] opacity-90 font-normal">ഡെലിവറി ചെയ്തു</p>
+                        </div>
+                      </div>
+
+                      {(order.courierName || order.dispatchedAt || order.deliveredAt) && (
+                        <p className="text-[10px] text-sky-900 font-semibold flex flex-wrap gap-x-3 gap-y-0.5">
+                          {order.courierName && <span>Courier: {order.courierName}</span>}
+                          {order.dispatchedAt && (
+                            <span>Dispatched: {new Date(order.dispatchedAt).toLocaleDateString()}</span>
+                          )}
+                          {order.deliveredAt && (
+                            <span>Delivered: {new Date(order.deliveredAt).toLocaleDateString()}</span>
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* Estimated Delivery Time Banner (Set by Admin) */}
                 {order.estimatedDeliveryDays && (

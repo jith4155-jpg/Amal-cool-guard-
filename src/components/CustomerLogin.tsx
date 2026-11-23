@@ -5,10 +5,25 @@ import { ThemeSwitcher } from '../context/ThemeContext';
 import { LanguageSelector } from '../context/LanguageContext';
 
 export default function CustomerLogin() {
-  const { user, authReady, profile, myOrdersCount, signingIn, signInWithGoogle, logout } = useAuth();
+  const {
+    user,
+    authReady,
+    profile,
+    myOrdersCount,
+    signingIn,
+    signInWithGoogle,
+    signInWithEmail,
+    signUpWithEmail,
+    logout,
+  } = useAuth();
   const [searchParams] = useSearchParams();
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+  const [showEmailForm, setShowEmailForm] = useState(false);
+  const [isSignUpMode, setIsSignUpMode] = useState(false);
+  const [emailInput, setEmailInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [nameInput, setNameInput] = useState('');
   const navigate = useNavigate();
 
   const redirectParam = searchParams.get('redirect') || '';
@@ -39,6 +54,38 @@ export default function CustomerLogin() {
       }, 400);
     } else if (result.error) {
       setErrorMsg(result.error);
+    }
+  };
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    const cleanEmail = emailInput.trim();
+    if (!cleanEmail || !passwordInput) {
+      setErrorMsg('Please enter both Email and Password.');
+      return;
+    }
+
+    if (isSignUpMode) {
+      const res = await signUpWithEmail(cleanEmail, passwordInput, nameInput.trim());
+      if (res.user) {
+        setSuccessMsg(`Account ready for ${res.user.email}! Redirecting...`);
+        setTimeout(() => navigate(safeRedirect, { replace: true }), 400);
+      } else if (res.message) {
+        setSuccessMsg(res.message);
+      } else if (res.error) {
+        setErrorMsg(res.error);
+      }
+    } else {
+      const res = await signInWithEmail(cleanEmail, passwordInput);
+      if (res.user) {
+        setSuccessMsg(`Signed in as ${res.user.email}! Redirecting...`);
+        setTimeout(() => navigate(safeRedirect, { replace: true }), 400);
+      } else if (res.error) {
+        setErrorMsg(res.error);
+      }
     }
   };
 
@@ -127,7 +174,7 @@ export default function CustomerLogin() {
             </button>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3.5">
             <button
               type="button"
               onClick={handleGoogleSignIn}
@@ -157,6 +204,75 @@ export default function CustomerLogin() {
               </span>
             </button>
 
+            <div className="text-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowEmailForm(prev => !prev);
+                  setErrorMsg('');
+                  setSuccessMsg('');
+                }}
+                className="text-[11px] font-bold text-blue-600 hover:underline"
+              >
+                {showEmailForm ? 'Hide Email & Password Sign-In' : 'Or use Email & Password'}
+              </button>
+            </div>
+
+            {showEmailForm && (
+              <form onSubmit={handleEmailAuth} className="space-y-2.5 bg-gray-50 p-3.5 rounded-xl border border-gray-200 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-extrabold text-gray-800">
+                    {isSignUpMode ? 'Create Account' : 'Email Sign In'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSignUpMode(v => !v);
+                      setErrorMsg('');
+                      setSuccessMsg('');
+                    }}
+                    className="text-[11px] font-bold text-blue-600 hover:underline"
+                  >
+                    {isSignUpMode ? 'Already registered? Sign In' : 'New customer? Sign Up'}
+                  </button>
+                </div>
+
+                {isSignUpMode && (
+                  <input
+                    type="text"
+                    placeholder="Full Name"
+                    value={nameInput}
+                    onChange={e => setNameInput(e.target.value)}
+                    className="w-full p-2.5 border border-gray-300 rounded-lg bg-white outline-none"
+                  />
+                )}
+                <input
+                  type="email"
+                  required
+                  placeholder="Email address (Gmail)"
+                  value={emailInput}
+                  onChange={e => setEmailInput(e.target.value)}
+                  className="w-full p-2.5 border border-gray-300 rounded-lg bg-white outline-none"
+                />
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  placeholder="Password (min 6 chars)"
+                  value={passwordInput}
+                  onChange={e => setPasswordInput(e.target.value)}
+                  className="w-full p-2.5 border border-gray-300 rounded-lg bg-white outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={signingIn}
+                  className="w-full h-10 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-lg transition disabled:opacity-60"
+                >
+                  {signingIn ? 'Please wait...' : isSignUpMode ? 'Create Account & Continue' : 'Sign In with Email'}
+                </button>
+              </form>
+            )}
+
             {errorMsg && (
               <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-[11px] text-red-700 font-bold text-center">
                 {errorMsg}
@@ -171,7 +287,7 @@ export default function CustomerLogin() {
 
             <div className="bg-gray-50 p-3 rounded-xl border border-gray-200 text-[11px] text-gray-600 space-y-1">
               <p className="font-bold text-gray-800">Secure Account Access</p>
-              <p>Your profile, saved delivery address, and order history stay strictly private to your Gmail account.</p>
+              <p>Your profile, saved delivery address, and order history stay strictly private to your account.</p>
             </div>
           </div>
         )}

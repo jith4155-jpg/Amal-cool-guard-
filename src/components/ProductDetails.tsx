@@ -1,7 +1,11 @@
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
-import { db, auth, handleFirestoreError, OperationType } from '../firebase';
-import { doc, getDoc, getDocFromServer, getDocs, collection, addDoc, updateDoc, setDoc, query, where, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import {
+  supabase,
+  toAppUser,
+  mapProductFromDb,
+  uploadDataUrlToStorage,
+} from '../supabase';
 import { Product } from '../data/mockProducts';
 import { ThemeSwitcher } from '../context/ThemeContext';
 import { useLanguage, LanguageSelector } from '../context/LanguageContext';
@@ -148,67 +152,61 @@ export default function ProductDetails() {
     window.addEventListener('amal_store_updated', handleSync);
     window.addEventListener('storage', handleSync);
 
-    const fetchRemoteSettings = async () => {
+    const fetchRemoteSettingsAndProduct = async () => {
       try {
-        const snap = await Promise.race([
-          getDoc(doc(db, 'settings', 'payment')),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000)),
-        ]);
-        if (snap.exists() && isMounted) {
-          const remoteSettings = snap.data() as StorePaymentSettings;
+        const { data: settingsRow } = await supabase
+          .from('store_settings')
+          .select('data')
+          .eq('id', 'payment')
+          .maybeSingle();
+
+        if (settingsRow?.data && isMounted) {
+          const remoteSettings = settingsRow.data as StorePaymentSettings;
           const synced = savePaymentSettingsSync(remoteSettings);
           applySettings(synced);
         }
       } catch {
         // Fallback silently to local settings
       }
-    };
 
-    let unsubscribeProduct: (() => void) | undefined;
-    if (id) {
-      if (isProductDeleted(id)) {
-        setProduct(null);
-      } else {
-        unsubscribeProduct = onSnapshot(
-          doc(db, 'products', id),
-          docSnap => {
-            if (!isMounted) return;
-            if (docSnap.exists()) {
-              const data = docSnap.data();
-              setProduct({
-                id: docSnap.id,
-                name: data.name || 'Amal Coolguard Vest',
-                price: Number(data.price) || 2499,
-                discountPrice: Number(data.discountPrice || data.price) || 1999,
-                description: data.description || 'Premium heat protection cooling vest for bike riders.',
-                imageUrl: data.imageUrl || '',
-                galleryImages:
-                  Array.isArray(data.galleryImages) && data.galleryImages.length > 0
-                    ? data.galleryImages
-                    : data.imageUrl
-                    ? [data.imageUrl]
-                    : [],
-                category: data.category || 'Coats',
-                rating: Number(data.rating) || 4.8,
-                reviewsCount: Number(data.reviewsCount) || 120,
-                features: Array.isArray(data.features) ? data.features : ['Heat Reflective', 'UV Protection', 'Lightweight & Breathable'],
-                stock: typeof data.stock === 'number' ? data.stock : undefined,
-                gstPercent: typeof data.gstPercent === 'number' ? data.gstPercent : 0,
-                deliveryCharge: typeof data.deliveryCharge === 'number' ? data.deliveryCharge : 0,
-                estimatedDeliveryDays: typeof data.estimatedDeliveryDays === 'string' ? data.estimatedDeliveryDays : '',
-              });
-            } else {
-              setProduct(findProductFromCatalog(id));
+      if (id) {
+        if (isProductDeleted(id)) {
+          if (isMounted) setProduct(null);
+        } else {
+          try {
+            const { data: prodRow } = await supabase
+              .from('products')
+              .select('*')
+              .eq('id', id)
+              .maybeSingle();
+            if (isMounted) {
+              if (prodRow) {
+                setProduct(mapProductFromDb(prodRow));
+              } else {
+                setProduct(findProductFromCatalog(id));
+              }
             }
-          },
-          () => {
+          } catch {
             if (isMounted) setProduct(findProductFromCatalog(id));
           }
-        );
+        }
       }
-    }
+    };
 
-    fetchRemoteSettings();
+    fetchRemoteSettingsAndProduct();
+
+    const prodChannel = id
+      ? supabase
+          .channel(`product-detail-${id}`)
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'products', filter: `id=eq.${id}` },
+            () => {
+              fetchRemoteSettingsAndProduct();
+            }
+          )
+          .subscribe()
+      : null;
 
     const localRev = safeJsonParse<any[]>(localStorage.getItem(`amal_reviews_${id}`), []);
     if (localRev.length > 0) {
@@ -217,7 +215,7 @@ export default function ProductDetails() {
 
     return () => {
       isMounted = false;
-      if (unsubscribeProduct) unsubscribeProduct();
+      if (prodChannel) supabase.removeChannel(prodChannel);
       window.removeEventListener('amal_store_updated', handleSync);
       window.removeEventListener('storage', handleSync);
     };
@@ -259,41 +257,52 @@ export default function ProductDetails() {
     if (!file) return;
     setUploadingScreenshot(true);
     try {
-      const { dataUrl: result } = await compressProductImageToRange(file, 20, 180);
-      setScreenshotPreview(result);
+      const { dataUrl: compressedDataUrl } = await compressProductImageToRange(file, 20, 180);
+      let finalScreenshotUrl = compressedDataUrl;
+
+      const { data: userRes } = await supabase.auth.getUser();
+      const activeUid = userRes.user?.id || user?.uid;
+      if (activeUid) {
+        const storagePath = `screenshots/${activeUid}/${submittedOrderId || 'pending'}_${Date.now()}.jpg`;
+        const uploadedUrl = await uploadDataUrlToStorage(compressedDataUrl, storagePath);
+        if (uploadedUrl) {
+          finalScreenshotUrl = uploadedUrl;
+        }
+      }
+
+      setScreenshotPreview(finalScreenshotUrl);
 
       if (submittedOrderId) {
         const currentOrders = getLocalOrders();
         const updated = currentOrders.map((o: any) =>
           o.orderId === submittedOrderId
-            ? { ...o, screenshot: result, paymentScreenshot: result, status: 'pending_verification' }
+            ? {
+                ...o,
+                screenshot: finalScreenshotUrl,
+                paymentScreenshot: finalScreenshotUrl,
+                status: 'pending_verification',
+              }
             : o
         );
         saveAllOrders(updated);
       }
 
-      let targetDocId = submittedDocId;
-      if (!targetDocId && submittedOrderId && (auth.currentUser || user)) {
-        const uid = (auth.currentUser || user)!.uid;
-        try {
-          const snap = await getDocs(
-            query(collection(db, 'bookings'), where('userId', '==', uid), where('orderId', '==', submittedOrderId))
-          );
-          if (!snap.empty) targetDocId = snap.docs[0].id;
-        } catch {
-          // ignore
+      if (submittedOrderId && activeUid) {
+        const { error: updErr } = await supabase
+          .from('bookings')
+          .update({
+            payment_screenshot: finalScreenshotUrl.slice(0, 950000),
+            status: 'pending_verification',
+          })
+          .eq('order_id', submittedOrderId)
+          .eq('user_id', activeUid);
+
+        if (!updErr) {
+          await refreshMyOrders();
         }
       }
-
-      if (targetDocId) {
-        await updateDoc(doc(db, 'bookings', targetDocId), {
-          paymentScreenshot: result.slice(0, 950000),
-          status: 'pending_verification',
-        });
-        await refreshMyOrders();
-      }
     } catch (err) {
-      console.warn('Screenshot compression err:', err);
+      console.warn('Screenshot upload/compression err:', err);
     } finally {
       setUploadingScreenshot(false);
     }
@@ -303,7 +312,8 @@ export default function ProductDetails() {
     e.preventDefault();
     if (!product) return;
 
-    const currentUser = auth.currentUser || user;
+    const { data: sessData } = await supabase.auth.getUser();
+    const currentUser = toAppUser(sessData.user) || user;
     if (!currentUser) {
       setShowOrderModal(false);
       navigate(`/login?redirect=${encodeURIComponent(`/product/${product.id}?openOrder=1`)}`);
@@ -313,25 +323,18 @@ export default function ProductDetails() {
     setSubmitting(true);
 
     // Generate sequential Order ID starting with 'A' + 6 digit counter (A000001, A000002...)
-    let currentCounter = 1;
+    let currentCounter = Number(localStorage.getItem('amal_order_sequence_counter') || '1');
     try {
-      const counterDoc = await getDocFromServer(doc(db, 'settings', 'order_counter')).catch(() =>
-        getDoc(doc(db, 'settings', 'order_counter'))
-      );
-      if (counterDoc.exists()) {
-        currentCounter = counterDoc.data().nextVal || 1;
-      } else {
-        const localVal = Number(localStorage.getItem('amal_order_sequence_counter') || '1');
-        currentCounter = localVal;
+      const { data: rpcNum, error: rpcErr } = await supabase.rpc('next_order_number');
+      if (!rpcErr && typeof rpcNum === 'number' && rpcNum >= 1) {
+        currentCounter = rpcNum;
       }
     } catch {
-      currentCounter = Number(localStorage.getItem('amal_order_sequence_counter') || '1');
+      // Fallback to local counter cleanly
     }
 
     const orderId = 'A' + String(currentCounter).padStart(6, '0');
-    const nextCounter = currentCounter + 1;
-    localStorage.setItem('amal_order_sequence_counter', String(nextCounter));
-    setDoc(doc(db, 'settings', 'order_counter'), { nextVal: nextCounter }).catch(err => console.warn('Counter sync err:', err));
+    localStorage.setItem('amal_order_sequence_counter', String(currentCounter + 1));
 
     const totals = calculateProductTotals(product);
     const amount = totals.finalTotal;
@@ -347,12 +350,21 @@ export default function ProductDetails() {
     let promoterEmail = '';
     if (activeRefCode) {
       try {
-        const promotersList = safeJsonParse<Record<string, any>>(localStorage.getItem('amal_promoters_list'), {});
+        const promotersList = safeJsonParse<Record<string, any>>(
+          localStorage.getItem('amal_promoters_list'),
+          {}
+        );
         let foundProm = promotersList[activeRefCode.toUpperCase()];
         if (!foundProm) {
-          const promSnap = await getDoc(doc(db, 'promoters', activeRefCode.toUpperCase()));
-          if (promSnap.exists()) {
-            foundProm = promSnap.data();
+          const { data: refRows } = await supabase.rpc('resolve_promoter_referral', {
+            ref_code: activeRefCode.toUpperCase(),
+          });
+          if (Array.isArray(refRows) && refRows[0]) {
+            foundProm = {
+              commissionPerSale: Number(refRows[0].commission_per_sale ?? 100),
+              userId: refRows[0].user_id || '',
+              email: refRows[0].email || '',
+            };
           }
         }
         if (foundProm) {
@@ -371,69 +383,87 @@ export default function ProductDetails() {
     const cleanPhone = (formData.phoneNumber || '0000000000').trim().slice(0, 30) || '0000000000';
     const cleanAddress = (formData.address || '').trim().slice(0, 500);
     const cleanPincode = (formData.pincode || '').trim().slice(0, 20);
+
+    let resolvedScreenshot = screenshotPreview;
+    if (resolvedScreenshot && resolvedScreenshot.startsWith('data:')) {
+      const uploadedUrl = await uploadDataUrlToStorage(
+        resolvedScreenshot,
+        `screenshots/${currentUser.uid}/${orderId}_${Date.now()}.jpg`
+      );
+      if (uploadedUrl) resolvedScreenshot = uploadedUrl;
+    }
     const safeScreenshot =
-      screenshotPreview && screenshotPreview.length <= 950000 ? screenshotPreview : null;
+      resolvedScreenshot && resolvedScreenshot.length <= 950000 ? resolvedScreenshot : null;
+
     const rawProductImg = product.imageUrl || (product.galleryImages && product.galleryImages[0]) || '';
     const safeProductImage = rawProductImg && rawProductImg.length <= 950000 ? rawProductImg : '';
 
     let createdDocId: string | null = null;
     try {
-      const docRef = await addDoc(collection(db, 'bookings'), {
-        orderId,
-        userId: currentUser.uid,
-        userEmail: (currentUser.email || '').slice(0, 200),
-        userName: (currentUser.displayName || cleanCustomerName).slice(0, 120),
-        userPhoto: (currentUser.photoURL || '').slice(0, 1000),
-        productId: String(product.id).slice(0, 128),
-        productName: (product.name || '').slice(0, 200),
-        productImage: safeProductImage,
-        productPrice: totals.basePrice,
-        gstPercent: totals.gstPercent,
-        gstAmount: totals.gstAmount,
-        gstNumber: (paymentSettings.gstNumber || '').slice(0, 64),
-        deliveryCharge: totals.deliveryFee,
-        estimatedDeliveryDays: estDelivery.slice(0, 100),
-        price: amount,
-        customerName: cleanCustomerName,
-        phoneNumber: cleanPhone,
-        address: cleanAddress,
-        pincode: cleanPincode,
-        paymentMethod: (formData.paymentMethod || 'UPI').slice(0, 50),
-        referralCode: activeRefCode ? activeRefCode.slice(0, 64) : null,
-        promoterId: activeRefCode ? activeRefCode.slice(0, 64) : null,
-        promoterUserId: activeRefCode ? promoterUserId.slice(0, 128) : '',
-        promoterEmail: activeRefCode ? promoterEmail.slice(0, 200) : '',
-        promoterCommission: activeRefCode ? commissionAmt : 0,
-        status: 'pending_verification',
-        paymentScreenshot: safeScreenshot,
-        createdAt: serverTimestamp(),
-      });
-      createdDocId = docRef.id;
-    } catch (error) {
-      try {
-        handleFirestoreError(error, OperationType.CREATE, 'bookings');
-      } catch {
-        // Fallback saved locally cleanly while logging structured error
+      const { data: insertedRow, error: insertErr } = await supabase
+        .from('bookings')
+        .insert({
+          order_id: orderId,
+          user_id: currentUser.uid,
+          user_email: (currentUser.email || '').slice(0, 200),
+          user_name: (currentUser.displayName || cleanCustomerName).slice(0, 120),
+          user_photo: (currentUser.photoURL || '').slice(0, 1000),
+          product_id: String(product.id).slice(0, 128),
+          product_name: (product.name || '').slice(0, 200),
+          product_image: safeProductImage,
+          product_price: totals.basePrice,
+          gst_percent: totals.gstPercent,
+          gst_amount: totals.gstAmount,
+          gst_number: (paymentSettings.gstNumber || '').slice(0, 64),
+          delivery_charge: totals.deliveryFee,
+          estimated_delivery_days: estDelivery.slice(0, 100),
+          price: amount,
+          customer_name: cleanCustomerName,
+          phone_number: cleanPhone,
+          address: cleanAddress,
+          pincode: cleanPincode,
+          payment_method: (formData.paymentMethod || 'UPI').slice(0, 50),
+          referral_code: activeRefCode ? activeRefCode.slice(0, 64) : null,
+          promoter_id: activeRefCode ? activeRefCode.slice(0, 64) : null,
+          promoter_user_id: activeRefCode ? promoterUserId.slice(0, 128) : '',
+          promoter_email: activeRefCode ? promoterEmail.slice(0, 200) : '',
+          promoter_commission: activeRefCode ? commissionAmt : 0,
+          delivery_status: 'pending',
+          status: 'pending_verification',
+          payment_screenshot: safeScreenshot,
+        })
+        .select('id')
+        .single();
+
+      if (!insertErr && insertedRow?.id) {
+        createdDocId = String(insertedRow.id);
+      } else if (insertErr) {
+        console.warn('Supabase booking insert warning:', insertErr.message);
       }
+    } catch (error) {
+      console.warn('Supabase booking insert exception:', error);
     }
 
     // Write PII-free referral sale summary so the owning Promoter sees live cross-device order stats
     if (activeRefCode) {
       try {
-        await setDoc(doc(db, 'promoter_sales', orderId), {
-          orderId,
-          bookingDocId: createdDocId || '',
-          buyerUserId: currentUser.uid,
-          promoterId: activeRefCode.toUpperCase(),
-          promoterUserId,
-          promoterEmail,
-          productId: product.id,
-          productName: product.name,
-          price: amount,
-          commission: commissionAmt,
-          status: 'pending_verification',
-          createdAt: serverTimestamp(),
-        });
+        await supabase.from('promoter_sales').upsert(
+          {
+            order_id: orderId,
+            booking_doc_id: createdDocId || '',
+            buyer_user_id: currentUser.uid,
+            promoter_id: activeRefCode.toUpperCase(),
+            promoter_user_id: promoterUserId,
+            promoter_email: promoterEmail,
+            product_id: product.id,
+            product_name: product.name,
+            price: amount,
+            commission: commissionAmt,
+            delivery_status: 'pending',
+            status: 'pending_verification',
+          },
+          { onConflict: 'order_id' }
+        );
       } catch (err) {
         console.warn('Promoter sale summary sync err:', err);
       }
@@ -468,6 +498,7 @@ export default function ProductDetails() {
       promoterUserId: activeRefCode ? promoterUserId : '',
       promoterEmail: activeRefCode ? promoterEmail : '',
       promoterCommission: activeRefCode ? commissionAmt : 0,
+      deliveryStatus: 'pending',
       status: 'pending_verification',
       screenshot: screenshotPreview || null,
       paymentScreenshot: screenshotPreview || null,

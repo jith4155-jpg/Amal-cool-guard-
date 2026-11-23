@@ -132,7 +132,7 @@ export function estimateDataUrlKB(dataUrl: string): number {
 
 /**
  * Automatically resizes and optimizes uploaded product photos into the 10 KB – 50 KB target band
- * (sweet spot ~25–45 KB) for instant storefront loading and lightweight Firestore storage.
+ * (sweet spot ~25–45 KB) for instant storefront loading and fast Supabase Storage/DB sync.
  */
 export async function compressProductImageToRange(
   file: File,
@@ -221,7 +221,7 @@ export async function compressProductImageToRange(
 
 /**
  * Compresses an uploaded image File into a compact JPEG Data URL (~40-80KB)
- * so multiple product gallery images & screenshots fit comfortably in localStorage & Firestore (<1MB).
+ * so multiple product gallery images & screenshots fit comfortably in localStorage & Supabase (<1MB).
  */
 export async function compressImageFile(
   file: File,
@@ -426,7 +426,7 @@ export function mergeRemoteCatalogProducts(remoteProducts: Product[]): Product[]
   const deletedSet = new Set(getDeletedProductIds());
   const filteredRemote = remoteProducts.filter(p => p && p.id && !deletedSet.has(p.id));
 
-  // Authoritative remote Firestore catalog always takes precedence across all devices/browsers
+  // Authoritative remote Supabase catalog always takes precedence across all devices/browsers
   if (filteredRemote.length > 0) {
     saveCatalogProducts(filteredRemote, false);
     return filteredRemote;
@@ -545,7 +545,7 @@ export function mergeRemoteUserOrdersIntoLocal(
     const did = String(loc.docId || loc.id || '');
     if (seenKeys.has(oid) || seenKeys.has(did)) continue;
 
-    // If a synced order (has docId) belongs to this user and is no longer returned by Firestore query,
+    // If a synced order (has docId) belongs to this user and is no longer returned by Supabase query,
     // it was deleted remotely by Admin/User — do not keep a ghost copy.
     if (matchesTargetUser(loc) && loc.docId) {
       continue;
@@ -635,30 +635,43 @@ export function deletePromoterLocally(promoterId: string) {
 }
 
 /**
+ * Ensures shareable storefront URLs NEVER expose vercel.app, mersal, or preview hosts.
+ */
+export function sanitizeStoreBaseUrl(raw?: string): string {
+  const val = (raw || '').trim().replace(/\/+$/, '');
+  const lower = val.toLowerCase();
+  if (
+    !val ||
+    !val.startsWith('http') ||
+    lower.includes('vercel.app') ||
+    lower.includes('mersal') ||
+    lower.includes('ais-') ||
+    lower.includes('aistudio') ||
+    lower.includes('.run.app') ||
+    lower.includes('webcontainer') ||
+    lower.includes('localhost') ||
+    lower.includes('127.0.0.1')
+  ) {
+    return DEFAULT_STORE_BASE_URL;
+  }
+  return val;
+}
+
+/**
  * Returns the clean storefront URL for Promoter referral sharing.
- * Never leaks AI Studio dev/preview hosts (ais-*, *.run.app, localhost).
+ * Never leaks vercel.app, mersal, or AI Studio dev/preview hosts.
  */
 export function getCleanStoreBaseUrl(): string {
   const settings = safeJsonParse<Record<string, any>>(localStorage.getItem(STORAGE_KEYS.PAYMENT_SETTINGS), {});
   const configured = typeof settings.storeBaseUrl === 'string' ? settings.storeBaseUrl.trim() : '';
-  if (configured && configured.startsWith('http')) {
-    return configured.replace(/\/+$/, '');
+  const sanitizedConfigured = sanitizeStoreBaseUrl(configured);
+  if (configured && sanitizedConfigured !== DEFAULT_STORE_BASE_URL) {
+    return sanitizedConfigured;
   }
 
   try {
-    const host = window.location.hostname.toLowerCase();
-    const isPreviewOrLocal =
-      !host ||
-      host.includes('ais-') ||
-      host.includes('aistudio') ||
-      host.endsWith('.run.app') ||
-      host.includes('webcontainer') ||
-      host === 'localhost' ||
-      host === '127.0.0.1';
-
-    if (!isPreviewOrLocal) {
-      return window.location.origin.replace(/\/+$/, '');
-    }
+    const origin = window.location.origin.replace(/\/+$/, '');
+    return sanitizeStoreBaseUrl(origin);
   } catch {
     // ignore
   }
@@ -667,7 +680,7 @@ export function getCleanStoreBaseUrl(): string {
 }
 
 export function getPromoterShareLink(promoterId: string, baseUrl?: string): string {
-  const cleanBase = (baseUrl || getCleanStoreBaseUrl()).trim().replace(/\/+$/, '');
+  const cleanBase = sanitizeStoreBaseUrl(baseUrl || getCleanStoreBaseUrl());
   return `${cleanBase}/?${encodeURIComponent(promoterId)}`;
 }
 
@@ -848,7 +861,7 @@ export function getPaymentSettings(): StorePaymentSettings {
   return {
     ...DEFAULT_PAYMENT_SETTINGS,
     ...(saved || {}),
-    storeBaseUrl: saved?.storeBaseUrl || DEFAULT_PAYMENT_SETTINGS.storeBaseUrl,
+    storeBaseUrl: sanitizeStoreBaseUrl(saved?.storeBaseUrl),
   };
 }
 
@@ -856,7 +869,7 @@ export function savePaymentSettingsSync(next: StorePaymentSettings): StorePaymen
   const clean: StorePaymentSettings = {
     ...DEFAULT_PAYMENT_SETTINGS,
     ...next,
-    storeBaseUrl: (next.storeBaseUrl || DEFAULT_STORE_BASE_URL).trim().replace(/\/+$/, ''),
+    storeBaseUrl: sanitizeStoreBaseUrl(next.storeBaseUrl),
   };
   safeSetStorage(STORAGE_KEYS.PAYMENT_SETTINGS, JSON.stringify(clean));
   notifyStoreUpdated();

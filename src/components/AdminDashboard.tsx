@@ -1,19 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { db, auth, handleFirestoreError, OperationType } from '../firebase';
 import {
-  collection,
-  getDocs,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  doc,
-  query,
-  where,
-  orderBy,
-  setDoc,
-  getDoc,
-  onSnapshot,
-} from 'firebase/firestore';
+  supabase,
+  mapProductFromDb,
+  mapProductToDb,
+  mapBookingFromDb,
+  mapPromoterFromDb,
+  uploadDataUrlToStorage,
+} from '../supabase';
 import { Product } from '../data/mockProducts';
 import { ThemeSwitcher } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
@@ -71,6 +64,15 @@ const ADMIN_EMAIL = 'libinvincent310@gmail.com';
 export default function AdminDashboard() {
   const { user: authUser, signInWithGoogle, signingIn } = useAuth();
   const isAdminGmailConnected = authUser?.email?.toLowerCase() === ADMIN_EMAIL;
+  const getCurrentAdminEmail = async (): Promise<string> => {
+    try {
+      const { data } = await supabase.auth.getUser();
+      if (data.user?.email) return data.user.email.toLowerCase();
+    } catch {
+      // fallback
+    }
+    return (authUser?.email || '').toLowerCase();
+  };
   const [activeTab, setActiveTab] = useState<'orders' | 'customers' | 'products' | 'payments' | 'promoters'>('orders');
 
   // Toast feedback state (replaces blocked window.alert)
@@ -160,7 +162,7 @@ export default function AdminDashboard() {
       const lid = String(loc.id || '');
       if (deletedOrderIds.has(oid) || deletedOrderIds.has(lid)) continue;
       if ((oid && seenIds.has(oid)) || (lid && seenIds.has(lid))) continue;
-      // Keep unsynced local-only orders without overriding live Firestore orders
+      // Keep unsynced local-only orders without overriding live Supabase orders
       combined.push(loc);
     }
 
@@ -174,50 +176,32 @@ export default function AdminDashboard() {
     fetchPromoters();
     fetchCategories();
 
-    const unsubscribeProducts = onSnapshot(
-      collection(db, 'products'),
-      snapshot => {
-        if (!snapshot.empty) {
-          const fetched = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as Product));
-          const merged = mergeRemoteCatalogProducts(fetched);
-          setProducts(merged);
-          setLoadingProducts(false);
-        }
-      },
-      () => {
-        // Offline or network transient handled gracefully
-      }
-    );
+    const prodChannel = supabase
+      .channel('admin-products-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+        fetchProducts();
+      })
+      .subscribe();
 
-    return () => unsubscribeProducts();
+    return () => {
+      supabase.removeChannel(prodChannel);
+    };
   }, []);
 
   useEffect(() => {
     fetchOrders();
     if (!isAdminGmailConnected) return;
 
-    const q = query(collection(db, 'bookings'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(
-      q,
-      snapshot => {
-        const remote = snapshot.docs.map(docSnap => ({
-          id: docSnap.id,
-          docId: docSnap.id,
-          ...docSnap.data(),
-        }));
-        applyFetchedOrders(remote);
-        setLoadingOrders(false);
-      },
-      err => {
-        try {
-          handleFirestoreError(err, OperationType.GET, 'bookings');
-        } catch {
-          // Structured error logged cleanly
-        }
-      }
-    );
+    const bookingsChannel = supabase
+      .channel('admin-bookings-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, () => {
+        fetchOrders();
+      })
+      .subscribe();
 
-    return () => unsubscribe();
+    return () => {
+      supabase.removeChannel(bookingsChannel);
+    };
   }, [authUser?.uid, isAdminGmailConnected, applyFetchedOrders]);
 
   useEffect(() => {
@@ -228,18 +212,14 @@ export default function AdminDashboard() {
 
   const fetchCategories = async () => {
     try {
-      const docRef = doc(db, 'settings', 'categories');
-      const fetchPromise = getDoc(docRef);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout')), 5000)
-      );
-      const docSnap = await Promise.race([fetchPromise, timeoutPromise]);
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (Array.isArray(data?.list) && data.list.length > 0) {
-          const synced = saveCategories(data.list);
-          setCategories(synced);
-        }
+      const { data } = await supabase
+        .from('store_settings')
+        .select('data')
+        .eq('id', 'categories')
+        .maybeSingle();
+      if (data?.data && Array.isArray(data.data.list) && data.data.list.length > 0) {
+        const synced = saveCategories(data.data.list);
+        setCategories(synced);
       }
     } catch {
       // Local categories already initialized
@@ -255,9 +235,11 @@ export default function AdminDashboard() {
     setNewCategoryInput('');
     showToast(`✓ Category "${trimmed}" added to Admin & Storefront!`);
     try {
-      await setDoc(doc(db, 'settings', 'categories'), { list: next }, { merge: true });
+      await supabase
+        .from('store_settings')
+        .upsert({ id: 'categories', data: { list: next }, updated_at: new Date().toISOString() });
     } catch (err) {
-      console.warn('Firestore categories sync err:', err);
+      console.warn('Supabase categories sync err:', err);
     }
   };
 
@@ -267,7 +249,6 @@ export default function AdminDashboard() {
     if (newProduct.category === catName) {
       setNewProduct(prev => ({ ...prev, category: next[0] || 'Coats' }));
     }
-    // Also reassign category on any products currently assigned to this deleted category
     const currentProducts = getCatalogProducts();
     let hasModifiedProducts = false;
     const updatedProducts = currentProducts.map(p => {
@@ -283,9 +264,11 @@ export default function AdminDashboard() {
     }
     showToast(`✓ Category "${catName}" removed.`);
     try {
-      await setDoc(doc(db, 'settings', 'categories'), { list: next }, { merge: true });
+      await supabase
+        .from('store_settings')
+        .upsert({ id: 'categories', data: { list: next }, updated_at: new Date().toISOString() });
     } catch (err) {
-      console.warn('Firestore categories sync err:', err);
+      console.warn('Supabase categories sync err:', err);
     }
   };
 
@@ -293,32 +276,31 @@ export default function AdminDashboard() {
     const next = clearAllCategories();
     setCategories(next);
     setNewProduct(prev => ({ ...prev, category: '' }));
-    // Also clear category tags on active products
     const currentProducts = getCatalogProducts();
     const updatedProducts = currentProducts.map(p => ({ ...p, category: '' }));
     saveCatalogProducts(updatedProducts, true);
     setProducts(updatedProducts);
     showToast('✓ All categories removed & hidden from Storefront!');
     try {
-      await setDoc(doc(db, 'settings', 'categories'), { list: [] }, { merge: true });
+      await supabase
+        .from('store_settings')
+        .upsert({ id: 'categories', data: { list: [] }, updated_at: new Date().toISOString() });
     } catch (err) {
-      console.warn('Firestore clear categories sync err:', err);
+      console.warn('Supabase clear categories sync err:', err);
     }
   };
 
   const fetchPaymentSettings = async () => {
     try {
-      const docRef = doc(db, 'settings', 'payment');
-      const fetchPromise = getDoc(docRef);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout')), 5000)
-      );
-      const docSnap = await Promise.race([fetchPromise, timeoutPromise]);
-      if (docSnap.exists()) {
-        const data = docSnap.data() as Partial<StorePaymentSettings>;
+      const { data } = await supabase
+        .from('store_settings')
+        .select('data')
+        .eq('id', 'payment')
+        .maybeSingle();
+      if (data?.data) {
         const merged = savePaymentSettingsSync({
           ...getPaymentSettings(),
-          ...data,
+          ...(data.data as Partial<StorePaymentSettings>),
         });
         setPaymentSettings(merged);
       }
@@ -343,9 +325,11 @@ export default function AdminDashboard() {
         : `🚫 ${label} is now BLOCKED on Storefront!`
     );
     try {
-      await setDoc(doc(db, 'settings', 'payment'), updated, { merge: true });
+      await supabase
+        .from('store_settings')
+        .upsert({ id: 'payment', data: updated, updated_at: new Date().toISOString() });
     } catch (err) {
-      console.warn('Firestore payment toggle err:', err);
+      console.warn('Supabase payment toggle err:', err);
     }
   };
 
@@ -353,9 +337,11 @@ export default function AdminDashboard() {
     const cleanSettings = savePaymentSettingsSync(paymentSettings);
     setPaymentSettings(cleanSettings);
     try {
-      await setDoc(doc(db, 'settings', 'payment'), cleanSettings, { merge: true });
+      await supabase
+        .from('store_settings')
+        .upsert({ id: 'payment', data: cleanSettings, updated_at: new Date().toISOString() });
     } catch (err) {
-      console.warn('Firestore set settings err:', err);
+      console.warn('Supabase set settings err:', err);
     }
     setSettingsSavedMsg(true);
     showToast('✓ Store & payment settings saved!');
@@ -366,7 +352,7 @@ export default function AdminDashboard() {
     const listToSync = (customList || products).filter(p => !isProductDeleted(p.id));
     if (!isAdminGmailConnected) {
       setPendingCloudAction({
-        label: `Sync ${listToSync.length} Products to Cloud Firestore`,
+        label: `Sync ${listToSync.length} Products to Supabase`,
         run: () => syncCatalogToCloud(customList),
       });
       return;
@@ -374,46 +360,26 @@ export default function AdminDashboard() {
 
     setSyncingCloudCatalog(true);
     try {
-      // 1. Upload all current active products to Firestore
-      for (const p of listToSync) {
-        await setDoc(
-          doc(db, 'products', p.id),
-          {
-            name: p.name,
-            price: Number(p.price),
-            discountPrice: Number(p.discountPrice || p.price),
-            deliveryCharge: Math.max(0, Number(p.deliveryCharge || 0)),
-            estimatedDeliveryDays: (p.estimatedDeliveryDays || '').trim().slice(0, 100),
-            description: (p.description || '').slice(0, 2000),
-            imageUrl: p.imageUrl || '',
-            galleryImages: (p.galleryImages || [p.imageUrl]).filter(Boolean).slice(0, 15),
-            stock: Number(p.stock || 20),
-            category: (p.category || 'Coats').slice(0, 100),
-            gstPercent: Math.max(0, Number(p.gstPercent || 0)),
-            rating: Number(p.rating || 4.8),
-            reviewsCount: Number(p.reviewsCount || 100),
-            features: (p.features || []).slice(0, 20),
-          },
-          { merge: true }
-        );
+      if (listToSync.length > 0) {
+        await supabase
+          .from('products')
+          .upsert(listToSync.map(mapProductToDb), { onConflict: 'id' });
       }
 
-      // 2. Remove any deleted product IDs from Firestore
       const deletedIds = getDeletedProductIds();
-      for (const delId of deletedIds) {
-        await deleteDoc(doc(db, 'products', delId)).catch(() => {});
+      if (deletedIds.length > 0) {
+        await supabase.from('products').delete().in('id', deletedIds);
       }
 
-      // 3. Save deletedIds to settings/catalog so all clients filter them out
-      await setDoc(
-        doc(db, 'settings', 'catalog'),
-        {
+      await supabase.from('store_settings').upsert({
+        id: 'catalog',
+        data: {
           initialized: true,
           deletedIds,
           updatedAt: new Date().toISOString(),
         },
-        { merge: true }
-      );
+        updated_at: new Date().toISOString(),
+      });
 
       showToast(`✓ Cloud Synced: ${listToSync.length} active products live on Storefront & Promoter links!`);
     } catch (err) {
@@ -426,19 +392,20 @@ export default function AdminDashboard() {
   const fetchProducts = async () => {
     setLoadingProducts(true);
     try {
-      const fetchPromise = getDocs(collection(db, 'products'));
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout')), 5000)
-      );
-      const snapshot = await Promise.race([fetchPromise, timeoutPromise]);
-      if (!snapshot.empty) {
-        const fetched = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as Product));
-        const merged = mergeRemoteCatalogProducts(fetched);
-        setProducts(merged);
-        setLoadingProducts(false);
-        return;
-      } else if (isAdminGmailConnected) {
-        syncCatalogToCloud(getCatalogProducts());
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (!error && Array.isArray(data)) {
+        if (data.length > 0) {
+          const fetched = data.map(mapProductFromDb);
+          const merged = mergeRemoteCatalogProducts(fetched);
+          setProducts(merged);
+          setLoadingProducts(false);
+          return;
+        } else if (isAdminGmailConnected && getCatalogProducts().length > 0) {
+          syncCatalogToCloud(getCatalogProducts());
+        }
       }
     } catch {
       // Handled silently - already rendered from unified local catalog
@@ -451,20 +418,16 @@ export default function AdminDashboard() {
   const fetchOrders = async () => {
     setLoadingOrders(true);
     try {
-      const q = query(collection(db, 'bookings'), orderBy('createdAt', 'desc'));
-      const fetchPromise = getDocs(q);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout')), 8000)
-      );
-      const snapshot = await Promise.race([fetchPromise, timeoutPromise]);
-      const remote = snapshot.docs.map(docSnap => ({
-        id: docSnap.id,
-        docId: docSnap.id,
-        ...docSnap.data(),
-      }));
-      applyFetchedOrders(remote);
-      setLoadingOrders(false);
-      return;
+      const { data, error } = await supabase
+        .from('bookings')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (!error && Array.isArray(data)) {
+        const remote = data.map(mapBookingFromDb);
+        applyFetchedOrders(remote);
+        setLoadingOrders(false);
+        return;
+      }
     } catch {
       // Fallback to local orders if offline or Admin Gmail not connected yet
     }
@@ -477,13 +440,13 @@ export default function AdminDashboard() {
     const localDict = getPromotersDict();
     setPromotersMap(localDict);
     try {
-      const snap = await getDocs(collection(db, 'promoters'));
-      if (!snap.empty) {
+      const { data, error } = await supabase.from('promoters').select('*');
+      if (!error && Array.isArray(data) && data.length > 0) {
         const merged = { ...localDict };
-        snap.docs.forEach(d => {
-          const data = d.data();
-          if (!merged[d.id]) {
-            merged[d.id] = { id: d.id, ...data };
+        data.forEach(row => {
+          const mapped = mapPromoterFromDb(row);
+          if (!merged[mapped.id]) {
+            merged[mapped.id] = mapped;
           }
         });
         setPromotersMap(merged);
@@ -494,7 +457,7 @@ export default function AdminDashboard() {
     }
   };
 
-  // Auto-filtered 10–50 KB image compressor supporting single & multi-file photo upload
+  // Auto-filtered 10–50 KB image compressor + direct Supabase 'Amalcoolguard' bucket upload
   const handleImageFileUpload = async (
     e: React.ChangeEvent<HTMLInputElement>,
     target: 'newMain' | 'newGallery' | 'editMain' | 'editGallery'
@@ -504,35 +467,48 @@ export default function AdminDashboard() {
 
     setUploadingPhoto(true);
     try {
-      const optimizedList: { dataUrl: string; sizeKB: number }[] = [];
+      const uploadedOrCompressed: { url: string; sizeKB: number; isCloud: boolean }[] = [];
       for (let i = 0; i < files.length; i++) {
         const result = await compressProductImageToRange(files[i], 10, 50);
-        optimizedList.push(result);
+        const cloudUrl = await uploadDataUrlToStorage(
+          result.dataUrl,
+          `products/img_${Date.now()}_${i}.jpg`
+        );
+        uploadedOrCompressed.push({
+          url: cloudUrl || result.dataUrl,
+          sizeKB: result.sizeKB,
+          isCloud: Boolean(cloudUrl),
+        });
       }
-      const compressedList = optimizedList.map(o => o.dataUrl);
-      const sizeSummary = optimizedList.map(o => `${o.sizeKB} KB`).join(', ');
+      const urlsList = uploadedOrCompressed.map(o => o.url);
+      const sizeSummary = uploadedOrCompressed.map(o => `${o.sizeKB} KB`).join(', ');
+      const anyCloud = uploadedOrCompressed.some(o => o.isCloud);
+      const storageSuffix = anyCloud ? ' → Uploaded to Amalcoolguard Bucket' : '';
 
       if (target === 'newMain') {
-        setNewProduct(prev => ({ ...prev, imageUrl: compressedList[0] }));
-        showToast(`✓ Main photo auto-filtered to ${sizeSummary} (10–50 KB)!`);
+        setNewProduct(prev => ({ ...prev, imageUrl: urlsList[0] }));
+        showToast(`✓ Main photo auto-filtered (${sizeSummary})${storageSuffix}!`);
       } else if (target === 'newGallery') {
         setNewProduct(prev => ({
           ...prev,
-          galleryImages: [...prev.galleryImages, ...compressedList],
+          galleryImages: [...prev.galleryImages, ...urlsList],
         }));
-        showToast(`✓ Added ${compressedList.length} photo(s) (${sizeSummary}) to gallery!`);
+        showToast(`✓ Added ${urlsList.length} photo(s) (${sizeSummary})${storageSuffix}!`);
       } else if (target === 'editMain' && editingProduct) {
-        setEditingProduct(prev => (prev ? { ...prev, imageUrl: compressedList[0] } : null));
-        showToast(`✓ Main photo auto-filtered to ${sizeSummary} (10–50 KB)! Click "Save Changes".`);
+        setEditingProduct(prev => (prev ? { ...prev, imageUrl: urlsList[0] } : null));
+        showToast(`✓ Main photo (${sizeSummary})${storageSuffix}! Click "Save Changes".`);
       } else if (target === 'editGallery' && editingProduct) {
         setEditingProduct(prev => {
           if (!prev) return null;
-          const existing = prev.galleryImages && prev.galleryImages.length > 0
-            ? prev.galleryImages
-            : (prev.imageUrl ? [prev.imageUrl] : []);
-          return { ...prev, galleryImages: [...existing, ...compressedList] };
+          const existing =
+            prev.galleryImages && prev.galleryImages.length > 0
+              ? prev.galleryImages
+              : prev.imageUrl
+              ? [prev.imageUrl]
+              : [];
+          return { ...prev, galleryImages: [...existing, ...urlsList] };
         });
-        showToast(`✓ Added ${compressedList.length} gallery photo(s) (${sizeSummary})! Click "Save Changes".`);
+        showToast(`✓ Added ${urlsList.length} gallery photo(s) (${sizeSummary})${storageSuffix}! Click "Save Changes".`);
       }
     } catch {
       showToast('Could not read that image file. Please try JPG/PNG.', 'error');
@@ -555,7 +531,9 @@ export default function AdminDashboard() {
     }
 
     const finalGallery = (combinedGallery.length > 0 ? combinedGallery : [finalMainImage]).slice(0, 15);
-    const prodData: Omit<Product, 'id'> = {
+    const localId = 'prod_' + Date.now();
+    const newLocalProd: Product = {
+      id: localId,
       name: newProduct.name.trim().slice(0, 200),
       price: Number(newProduct.price),
       discountPrice: Number(newProduct.discountPrice || newProduct.price),
@@ -572,20 +550,18 @@ export default function AdminDashboard() {
       features: (newProduct.features || []).slice(0, 20),
     };
 
-    // 1. Instantly register locally & update Storefront and Admin screen
-    const localId = 'prod_' + Date.now();
-    const newLocalProd: Product = { id: localId, ...prodData };
     const nextList = addCatalogProduct(newLocalProd);
     setProducts(nextList);
 
-    // If new product has a category not yet in categories list, register it
-    if (prodData.category && !categories.some(c => c.toLowerCase() === prodData.category!.toLowerCase())) {
-      const nextCats = addCategory(prodData.category);
+    if (newLocalProd.category && !categories.some(c => c.toLowerCase() === newLocalProd.category!.toLowerCase())) {
+      const nextCats = addCategory(newLocalProd.category);
       setCategories(nextCats);
-      setDoc(doc(db, 'settings', 'categories'), { list: nextCats }, { merge: true }).catch(() => {});
+      supabase
+        .from('store_settings')
+        .upsert({ id: 'categories', data: { list: nextCats }, updated_at: new Date().toISOString() })
+        .then(() => {});
     }
 
-    // Reset product creation form immediately
     setNewProduct({
       name: '',
       price: 2499,
@@ -603,23 +579,49 @@ export default function AdminDashboard() {
     setNewGalleryInput('');
     showToast('✓ New Product & photo published live to Storefront & Orders!');
 
-    // 2. Cloud Firestore sync
-    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+    const currentEmail = await getCurrentAdminEmail();
     const publishToCloud = async () => {
       setSavingProduct(true);
       try {
-        const docRef = await addDoc(collection(db, 'products'), prodData);
-        deleteCatalogProduct(localId);
-        const syncedProd: Product = { id: docRef.id, ...prodData };
-        const updatedCatalog = addCatalogProduct(syncedProd);
+        // Ensure any data URLs get uploaded to Amalcoolguard bucket now that Admin session is active
+        let resolvedMain = newLocalProd.imageUrl;
+        if (resolvedMain.startsWith('data:')) {
+          const uploaded = await uploadDataUrlToStorage(
+            resolvedMain,
+            `products/${localId}_main_${Date.now()}.jpg`
+          );
+          if (uploaded) resolvedMain = uploaded;
+        }
+        const resolvedGallery = await Promise.all(
+          (newLocalProd.galleryImages || [resolvedMain]).map(async (gUrl, idx) => {
+            if (gUrl.startsWith('data:')) {
+              const up = await uploadDataUrlToStorage(
+                gUrl,
+                `products/${localId}_gal_${idx}_${Date.now()}.jpg`
+              );
+              return up || gUrl;
+            }
+            return gUrl;
+          })
+        );
+
+        const cloudProd: Product = {
+          ...newLocalProd,
+          imageUrl: resolvedMain,
+          galleryImages: resolvedGallery,
+        };
+
+        const { error: upsertErr } = await supabase
+          .from('products')
+          .upsert(mapProductToDb(cloudProd), { onConflict: 'id' });
+        if (upsertErr) throw upsertErr;
+
+        const updatedCatalog = updateCatalogProduct(cloudProd);
         clearCatalogDirty();
         setProducts(updatedCatalog);
-        showToast('✓ Synced to Cloud Firestore!');
+        showToast('✓ Synced to Supabase Cloud & Storage!');
       } catch (err) {
-        try {
-          handleFirestoreError(err, OperationType.CREATE, 'products');
-        } catch {}
-        console.warn('Firestore addDoc warning:', err);
+        console.warn('Supabase publish product warning:', err);
       } finally {
         setSavingProduct(false);
       }
@@ -627,7 +629,7 @@ export default function AdminDashboard() {
 
     if (currentEmail !== ADMIN_EMAIL) {
       setPendingCloudAction({
-        label: `Publish Product "${prodData.name}" to Cloud`,
+        label: `Publish Product "${newLocalProd.name}" to Supabase`,
         run: publishToCloud,
       });
       return;
@@ -670,35 +672,49 @@ export default function AdminDashboard() {
     setEditingProduct(null);
     showToast('✓ Product photo & details saved live on Storefront!');
 
-    // 2. Cloud Firestore sync
-    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+    // 2. Supabase Cloud sync & Storage upload
+    const currentEmail = await getCurrentAdminEmail();
     const saveToCloud = async () => {
       setSavingProduct(true);
       try {
-        await setDoc(
-          doc(db, 'products', updated.id),
-          {
-            name: updated.name,
-            price: updated.price,
-            discountPrice: updated.discountPrice,
-            deliveryCharge: updated.deliveryCharge || 0,
-            estimatedDeliveryDays: updated.estimatedDeliveryDays || '',
-            description: updated.description,
-            imageUrl: updated.imageUrl,
-            galleryImages: updated.galleryImages,
-            stock: updated.stock,
-            category: (updated.category || categories[0] || 'Coats').slice(0, 100),
-            gstPercent: updated.gstPercent,
-          },
-          { merge: true }
+        let resolvedMain = updated.imageUrl || '';
+        if (resolvedMain.startsWith('data:')) {
+          const uploaded = await uploadDataUrlToStorage(
+            resolvedMain,
+            `products/${updated.id}_main_${Date.now()}.jpg`
+          );
+          if (uploaded) resolvedMain = uploaded;
+        }
+        const resolvedGallery = await Promise.all(
+          (updated.galleryImages || [resolvedMain]).map(async (gUrl, idx) => {
+            if (gUrl.startsWith('data:')) {
+              const up = await uploadDataUrlToStorage(
+                gUrl,
+                `products/${updated.id}_gal_${idx}_${Date.now()}.jpg`
+              );
+              return up || gUrl;
+            }
+            return gUrl;
+          })
         );
+
+        const syncedUpdated: Product = {
+          ...updated,
+          imageUrl: resolvedMain,
+          galleryImages: resolvedGallery,
+        };
+
+        const { error: upsertErr } = await supabase
+          .from('products')
+          .upsert(mapProductToDb(syncedUpdated), { onConflict: 'id' });
+        if (upsertErr) throw upsertErr;
+
+        updateCatalogProduct(syncedUpdated);
         clearCatalogDirty();
-        showToast('✓ Product changes synced to Cloud Firestore!');
+        setProducts(getCatalogProducts());
+        showToast('✓ Product changes synced to Supabase Cloud & Storage!');
       } catch (err) {
-        try {
-          handleFirestoreError(err, OperationType.UPDATE, `products/${updated.id}`);
-        } catch {}
-        console.warn('Firestore update warning:', err);
+        console.warn('Supabase update warning:', err);
       } finally {
         setSavingProduct(false);
       }
@@ -706,7 +722,7 @@ export default function AdminDashboard() {
 
     if (currentEmail !== ADMIN_EMAIL) {
       setPendingCloudAction({
-        label: `Save Changes to "${updated.name}" on Cloud`,
+        label: `Save Changes to "${updated.name}" on Supabase`,
         run: saveToCloud,
       });
       return;
@@ -722,36 +738,34 @@ export default function AdminDashboard() {
       confirmLabel: '🗑️ Delete Product',
       danger: true,
       onConfirm: async () => {
-        // 1. Immediately delete from local catalog and screen
         const nextList = deleteCatalogProduct(prod.id);
         setProducts(nextList);
         setConfirmDialog(null);
         showToast(`✓ "${prod.name}" deleted from Storefront & Catalog!`);
 
-        // 2. Cloud Firestore deletion
-        const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+        const currentEmail = await getCurrentAdminEmail();
         const deleteFromCloud = async () => {
           try {
-            await deleteDoc(doc(db, 'products', prod.id)).catch(() => {});
-            await setDoc(
-              doc(db, 'settings', 'catalog'),
-              {
+            await supabase.from('products').delete().eq('id', prod.id);
+            await supabase.from('store_settings').upsert({
+              id: 'catalog',
+              data: {
                 initialized: true,
                 deletedIds: getDeletedProductIds(),
                 updatedAt: new Date().toISOString(),
               },
-              { merge: true }
-            ).catch(() => {});
+              updated_at: new Date().toISOString(),
+            });
             clearCatalogDirty();
-            showToast(`✓ "${prod.name}" deleted from Cloud!`);
+            showToast(`✓ "${prod.name}" deleted from Supabase Cloud!`);
           } catch (err) {
-            console.warn('Firestore delete warning:', err);
+            console.warn('Supabase delete warning:', err);
           }
         };
 
         if (currentEmail !== ADMIN_EMAIL) {
           setPendingCloudAction({
-            label: `Delete Product "${prod.name}" from Cloud`,
+            label: `Delete Product "${prod.name}" from Supabase`,
             run: deleteFromCloud,
           });
           return;
@@ -774,31 +788,29 @@ export default function AdminDashboard() {
         setConfirmDialog(null);
         showToast('✓ All demo products & photos removed! Ready for your products.');
 
-        const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+        const currentEmail = await getCurrentAdminEmail();
         const deleteFromCloud = async () => {
           try {
-            for (const id of ['1', '2', '3', '4']) {
-              await deleteDoc(doc(db, 'products', id)).catch(() => {});
-            }
-            await setDoc(
-              doc(db, 'settings', 'catalog'),
-              {
+            await supabase.from('products').delete().in('id', ['1', '2', '3', '4']);
+            await supabase.from('store_settings').upsert({
+              id: 'catalog',
+              data: {
                 initialized: true,
                 deletedIds: getDeletedProductIds(),
                 updatedAt: new Date().toISOString(),
               },
-              { merge: true }
-            ).catch(() => {});
+              updated_at: new Date().toISOString(),
+            });
             clearCatalogDirty();
-            showToast('✓ Cloud catalog cleared!');
+            showToast('✓ Supabase Cloud catalog cleared!');
           } catch (err) {
-            console.warn('Firestore clear error:', err);
+            console.warn('Supabase clear error:', err);
           }
         };
 
         if (currentEmail !== ADMIN_EMAIL) {
           setPendingCloudAction({
-            label: 'Clear All Products from Cloud',
+            label: 'Clear All Products from Supabase',
             run: deleteFromCloud,
           });
           return;
@@ -809,44 +821,10 @@ export default function AdminDashboard() {
     });
   };
 
-  const findBookingDocIds = async (orderId?: string, knownDocId?: string | null): Promise<string[]> => {
-    const ids = new Set<string>();
-    const cleanOrderId = (orderId || '').trim();
-    const cleanKnownDocId = (knownDocId || '').trim();
-
-    if (cleanKnownDocId && cleanKnownDocId !== cleanOrderId) {
-      ids.add(cleanKnownDocId);
-    }
-
-    if (cleanOrderId) {
-      try {
-        const snap = await getDocs(query(collection(db, 'bookings'), where('orderId', '==', cleanOrderId)));
-        snap.docs.forEach(d => ids.add(d.id));
-      } catch (err) {
-        // Re-throw permission errors so caller prompts Admin Gmail connection
-        const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-        if (msg.includes('permission') || msg.includes('insufficient')) {
-          throw err;
-        }
-      }
-    }
-
-    if (ids.size === 0 && cleanKnownDocId) {
-      try {
-        const directSnap = await getDoc(doc(db, 'bookings', cleanKnownDocId));
-        if (directSnap.exists()) ids.add(directSnap.id);
-      } catch {
-        // ignore
-      }
-    }
-
-    return Array.from(ids);
-  };
-
   const handleConnectAdminGmail = async (retryPending = false) => {
     const res = await signInWithGoogle();
     if (res.user?.email?.toLowerCase() === ADMIN_EMAIL) {
-      showToast('✓ Admin Gmail connected! Syncing Cloud Firestore...');
+      showToast('✓ Admin Gmail connected! Syncing Supabase...');
       if (retryPending && pendingCloudAction) {
         const actionToRun = pendingCloudAction.run;
         setPendingCloudAction(null);
@@ -869,33 +847,33 @@ export default function AdminDashboard() {
     const runCloudUpdate = async () => {
       setUpdatingOrderKey(orderId);
       try {
-        const bookingIds = await findBookingDocIds(orderId, docId);
-        if (bookingIds.length === 0) {
+        const { data: updatedRows, error: updErr } = await supabase
+          .from('bookings')
+          .update({ status: newStatus })
+          .eq('order_id', orderId)
+          .select('id');
+
+        if (updErr) throw updErr;
+        if (!updatedRows || updatedRows.length === 0) {
           showToast(
-            `❌ Order #${orderId} was not found in Cloud Firestore. Ask the customer to refresh or re-book while signed in.`,
+            `❌ Order #${orderId} was not found in Supabase. Ask the customer to refresh or re-book while signed in.`,
             'error'
           );
           return;
         }
 
-        await Promise.all(
-          bookingIds.map(id => updateDoc(doc(db, 'bookings', id), { status: newStatus }))
-        );
-
-        if (orderId) {
-          try {
-            const saleSnap = await getDoc(doc(db, 'promoter_sales', orderId));
-            if (saleSnap.exists()) {
-              await updateDoc(doc(db, 'promoter_sales', orderId), { status: newStatus });
-            }
-          } catch {
-            // ignore if order wasn't a referral order
-          }
+        try {
+          await supabase
+            .from('promoter_sales')
+            .update({ status: newStatus })
+            .eq('order_id', orderId);
+        } catch {
+          // ignore if not a referral order
         }
 
         const nextOrders = orders.map(o =>
           o.orderId === orderId || o.id === orderId || (docId && o.id === docId)
-            ? { ...o, docId: bookingIds[0], status: newStatus }
+            ? { ...o, docId: String(updatedRows[0].id), status: newStatus }
             : o
         );
         setOrders(nextOrders);
@@ -903,14 +881,9 @@ export default function AdminDashboard() {
         showToast(
           `✓ Order #${orderId} ${newStatus === 'confirmed' ? 'APPROVED' : newStatus.toUpperCase()} & synced live to Customer!`
         );
-      } catch (err) {
-        try {
-          handleFirestoreError(err, OperationType.UPDATE, `bookings/${docId || orderId}`);
-        } catch {
-          // structured error logged
-        }
-        const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-        if (msg.includes('permission') || msg.includes('insufficient')) {
+      } catch (err: any) {
+        const msg = String(err?.message || err).toLowerCase();
+        if (msg.includes('permission') || msg.includes('policy') || msg.includes('rls')) {
           setPendingCloudAction({
             label: `${newStatus === 'confirmed' ? 'Approve' : 'Update'} Order #${orderId}`,
             run: () => updateOrderStatus(orderId, docId, newStatus),
@@ -920,14 +893,14 @@ export default function AdminDashboard() {
             'error'
           );
         } else {
-          showToast(`❌ Failed to update Order #${orderId} in Cloud Firestore. Please try again.`, 'error');
+          showToast(`❌ Failed to update Order #${orderId} in Supabase. Please try again.`, 'error');
         }
       } finally {
         setUpdatingOrderKey(null);
       }
     };
 
-    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+    const currentEmail = await getCurrentAdminEmail();
     if (currentEmail !== ADMIN_EMAIL) {
       setPendingCloudAction({
         label: `${newStatus === 'confirmed' ? 'Approve' : 'Update'} Order #${orderId}`,
@@ -947,44 +920,37 @@ export default function AdminDashboard() {
       confirmLabel: '🗑️ Delete Order',
       danger: true,
       onConfirm: async () => {
-        const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+        const currentEmail = await getCurrentAdminEmail();
+        const runDelete = async () => {
+          if (order.orderId) {
+            await supabase.from('bookings').delete().eq('order_id', String(order.orderId));
+            await supabase.from('promoter_sales').delete().eq('order_id', String(order.orderId));
+          } else if (order.docId || order.id) {
+            await supabase.from('bookings').delete().eq('id', String(order.docId || order.id));
+          }
+          const nextOrders = deleteOrderLocally(targetId, order.id ? String(order.id) : undefined);
+          setOrders(nextOrders);
+        };
+
         if (currentEmail !== ADMIN_EMAIL) {
           setConfirmDialog(null);
           setPendingCloudAction({
             label: `Delete Order #${targetId}`,
             run: async () => {
-              const bookingIds = await findBookingDocIds(order.orderId, order.docId || order.id);
-              await Promise.all(bookingIds.map(id => deleteDoc(doc(db, 'bookings', id))));
-              if (order.orderId) {
-                try {
-                  await deleteDoc(doc(db, 'promoter_sales', String(order.orderId)));
-                } catch {}
-              }
-              const nextOrders = deleteOrderLocally(targetId, order.id ? String(order.id) : undefined);
-              setOrders(nextOrders);
-              showToast(`✓ Order #${targetId} deleted from Cloud & Admin!`);
+              await runDelete();
+              showToast(`✓ Order #${targetId} deleted from Supabase & Admin!`);
             },
           });
           return;
         }
 
         try {
-          const bookingIds = await findBookingDocIds(order.orderId, order.docId || order.id);
-          await Promise.all(bookingIds.map(id => deleteDoc(doc(db, 'bookings', id))));
-          if (order.orderId) {
-            try {
-              await deleteDoc(doc(db, 'promoter_sales', String(order.orderId)));
-            } catch {
-              // ignore
-            }
-          }
-          const nextOrders = deleteOrderLocally(targetId, order.id ? String(order.id) : undefined);
-          setOrders(nextOrders);
+          await runDelete();
           setConfirmDialog(null);
           showToast(`✓ Order #${targetId} deleted permanently!`);
-        } catch (err) {
+        } catch {
           setConfirmDialog(null);
-          showToast(`❌ Could not delete from Cloud: check Admin Gmail connection.`, 'error');
+          showToast(`❌ Could not delete from Supabase: check Admin Gmail connection.`, 'error');
         }
       },
     });
@@ -1009,27 +975,42 @@ export default function AdminDashboard() {
     const runCloudTracking = async () => {
       setUpdatingOrderKey(orderKey);
       try {
-        const bookingIds = await findBookingDocIds(order.orderId, order.docId || order.id);
-        if (bookingIds.length === 0) {
-          showToast(`❌ Order #${orderKey} not found in Cloud Firestore.`, 'error');
+        const cleanOrderId = String(order.orderId || order.id || '').trim();
+        const { data: updatedRows, error: updErr } = await supabase
+          .from('bookings')
+          .update({
+            tracking_id: cleanTrackingId,
+            tracking_url: cleanTrackingUrl || '',
+            courier_name: cleanCourierName || '',
+          })
+          .eq('order_id', cleanOrderId)
+          .select('id');
+
+        if (updErr) throw updErr;
+        if (!updatedRows || updatedRows.length === 0) {
+          showToast(`❌ Order #${orderKey} not found in Supabase.`, 'error');
           return;
         }
 
-        await Promise.all(
-          bookingIds.map(id =>
-            updateDoc(doc(db, 'bookings', id), {
-              trackingId: cleanTrackingId,
-              trackingUrl: cleanTrackingUrl || '',
-              courierName: cleanCourierName || '',
-            })
-          )
-        );
+        if (cleanOrderId) {
+          try {
+            await supabase
+              .from('promoter_sales')
+              .update({
+                tracking_id: cleanTrackingId,
+                courier_name: cleanCourierName || '',
+              })
+              .eq('order_id', cleanOrderId);
+          } catch {
+            // ignore if not a referral order
+          }
+        }
 
         const nextOrders = orders.map(o =>
           o.orderId === order.orderId || o.id === order.id
             ? {
                 ...o,
-                docId: bookingIds[0],
+                docId: String(updatedRows[0].id),
                 trackingId: cleanTrackingId,
                 trackingUrl: cleanTrackingUrl || undefined,
                 courierName: cleanCourierName || undefined,
@@ -1038,25 +1019,22 @@ export default function AdminDashboard() {
         );
         setOrders(nextOrders);
         saveAllOrders(nextOrders);
-        showToast(`✓ Tracking ID "${cleanTrackingId}" synced live to Customer's Orders page!`);
-      } catch (err) {
-        try {
-          handleFirestoreError(err, OperationType.UPDATE, `bookings/${order.docId || order.id}`);
-        } catch {}
-        const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-        if (msg.includes('permission') || msg.includes('insufficient')) {
+        showToast(`✓ Tracking ID "${cleanTrackingId}" synced live to Customer & Promoter!`);
+      } catch (err: any) {
+        const msg = String(err?.message || err).toLowerCase();
+        if (msg.includes('permission') || msg.includes('policy') || msg.includes('rls')) {
           setPendingCloudAction({
             label: `Save Tracking ID for Order #${orderKey}`,
             run: () => handleSaveOrderTracking(order),
           });
         }
-        showToast('❌ Tracking ID failed to save in Cloud. Connect Admin Gmail first.', 'error');
+        showToast('❌ Tracking ID failed to save in Supabase. Connect Admin Gmail first.', 'error');
       } finally {
         setUpdatingOrderKey(null);
       }
     };
 
-    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+    const currentEmail = await getCurrentAdminEmail();
     if (currentEmail !== ADMIN_EMAIL) {
       setPendingCloudAction({
         label: `Save Tracking ID for Order #${orderKey}`,
@@ -1066,6 +1044,125 @@ export default function AdminDashboard() {
     }
 
     await runCloudTracking();
+  };
+
+  const updateOrderDeliveryStage = async (order: any, stage: 'shipped' | 'delivered') => {
+    const orderKey = String(order.orderId || order.id);
+    const cleanOrderId = String(order.orderId || order.id || '').trim();
+    const nowIso = new Date().toISOString();
+    const draft = trackingDrafts[orderKey];
+    const cleanCourierName = ((draft?.courierName ?? order.courierName) || '').trim().slice(0, 100);
+    const cleanTrackingId = ((draft?.trackingId ?? order.trackingId) || '').trim().slice(0, 120);
+    const nextDispatchedAt = order.dispatchedAt || nowIso;
+    const nextDeliveredAt = stage === 'delivered' ? nowIso : '';
+
+    const applyLocalDeliveryPatch = (resolvedDocId?: string) => {
+      const nextOrders = orders.map(o =>
+        o.orderId === order.orderId || o.id === order.id || (order.docId && o.docId === order.docId)
+          ? {
+              ...o,
+              ...(resolvedDocId ? { docId: resolvedDocId } : {}),
+              deliveryStatus: stage,
+              dispatchedAt: nextDispatchedAt,
+              deliveredAt: nextDeliveredAt || undefined,
+              ...(cleanCourierName ? { courierName: cleanCourierName } : {}),
+              ...(cleanTrackingId ? { trackingId: cleanTrackingId } : {}),
+            }
+          : o
+      );
+      setOrders(nextOrders);
+      saveAllOrders(nextOrders);
+    };
+
+    applyLocalDeliveryPatch();
+
+    const runCloudStage = async () => {
+      setUpdatingOrderKey(orderKey);
+      try {
+        const bookingPatch: Record<string, any> = {
+          delivery_status: stage,
+          dispatched_at: nextDispatchedAt,
+          delivered_at: stage === 'delivered' ? nextDeliveredAt : '',
+        };
+        if (cleanCourierName) bookingPatch.courier_name = cleanCourierName;
+        if (cleanTrackingId) bookingPatch.tracking_id = cleanTrackingId;
+
+        const { data: updatedRows, error: updErr } = await supabase
+          .from('bookings')
+          .update(bookingPatch)
+          .eq('order_id', cleanOrderId)
+          .select('id');
+
+        if (updErr) throw updErr;
+        if (!updatedRows || updatedRows.length === 0) {
+          showToast(`⚠️ Updated locally, but Order #${orderKey} was not found in Supabase.`, 'error');
+          return;
+        }
+
+        const refCode = String(order.referralCode || order.promoterId || '').trim().toUpperCase();
+        if (cleanOrderId && (refCode || order.promoterUserId)) {
+          try {
+            const promRecord = refCode ? promotersMap[refCode] : null;
+            await supabase.from('promoter_sales').upsert(
+              {
+                order_id: cleanOrderId.slice(0, 64),
+                booking_doc_id: String(updatedRows[0].id || '').slice(0, 128),
+                buyer_user_id: String(order.userId || '').slice(0, 128),
+                promoter_id: refCode.slice(0, 64),
+                promoter_user_id: String(order.promoterUserId || promRecord?.userId || '').slice(0, 128),
+                promoter_email: String(order.promoterEmail || promRecord?.email || '').slice(0, 200),
+                product_id: String(order.productId || '').slice(0, 128),
+                product_name: String(order.productName || 'Amal Coolguard Vest').slice(0, 200),
+                price: Number(order.price || 0),
+                commission: Number(order.promoterCommission ?? promRecord?.commissionPerSale ?? 100),
+                status: order.status || 'pending_verification',
+                delivery_status: stage,
+                dispatched_at: nextDispatchedAt,
+                delivered_at: stage === 'delivered' ? nextDeliveredAt : '',
+                ...(cleanCourierName ? { courier_name: cleanCourierName } : {}),
+                ...(cleanTrackingId ? { tracking_id: cleanTrackingId } : {}),
+              },
+              { onConflict: 'order_id' }
+            );
+          } catch (saleErr) {
+            console.warn('Promoter sale delivery sync warning:', saleErr);
+          }
+        }
+
+        applyLocalDeliveryPatch(String(updatedRows[0].id));
+        showToast(
+          stage === 'shipped'
+            ? `✓ Order #${orderKey}: Courier Dispatched (കൊറിയർ അയച്ചു) — Customer & Promoter profiles updated!`
+            : `✓ Order #${orderKey}: Marked Delivered (ഡെലിവറി ചെയ്തു) — Customer & Promoter profiles updated!`
+        );
+      } catch (err: any) {
+        const msg = String(err?.message || err).toLowerCase();
+        if (msg.includes('permission') || msg.includes('policy') || msg.includes('rls')) {
+          setPendingCloudAction({
+            label: `${stage === 'shipped' ? 'Mark Courier Dispatched' : 'Mark Delivered'} for Order #${orderKey}`,
+            run: () => updateOrderDeliveryStage(order, stage),
+          });
+        }
+        showToast('❌ Cloud delivery sync requires Admin Gmail connection.', 'error');
+      } finally {
+        setUpdatingOrderKey(null);
+      }
+    };
+
+    const currentEmail = await getCurrentAdminEmail();
+    if (currentEmail !== ADMIN_EMAIL) {
+      setPendingCloudAction({
+        label: `${stage === 'shipped' ? 'Mark Courier Dispatched' : 'Mark Delivered'} for Order #${orderKey}`,
+        run: runCloudStage,
+      });
+      showToast(
+        `Saved locally! Connect Admin Gmail (${ADMIN_EMAIL}) above to sync live to Customer & Promoter.`,
+        'error'
+      );
+      return;
+    }
+
+    await runCloudStage();
   };
 
   const handleSaveOrderDeliveryDays = async (order: any) => {
@@ -1087,32 +1184,30 @@ export default function AdminDashboard() {
     const runCloudEta = async () => {
       setUpdatingOrderKey(orderKey);
       try {
-        const bookingIds = await findBookingDocIds(order.orderId, order.docId || order.id);
-        if (bookingIds.length === 0) {
-          showToast(`❌ Order #${orderKey} not found in Cloud Firestore.`, 'error');
+        const cleanOrderId = String(order.orderId || order.id || '').trim();
+        const { data: updatedRows, error: updErr } = await supabase
+          .from('bookings')
+          .update({ estimated_delivery_days: cleanDays })
+          .eq('order_id', cleanOrderId)
+          .select('id');
+
+        if (updErr) throw updErr;
+        if (!updatedRows || updatedRows.length === 0) {
+          showToast(`❌ Order #${orderKey} not found in Supabase.`, 'error');
           return;
         }
 
-        await Promise.all(
-          bookingIds.map(id =>
-            updateDoc(doc(db, 'bookings', id), { estimatedDeliveryDays: cleanDays })
-          )
-        );
-
         const nextOrders = orders.map(o =>
           o.orderId === order.orderId || o.id === order.id
-            ? { ...o, docId: bookingIds[0], estimatedDeliveryDays: cleanDays }
+            ? { ...o, docId: String(updatedRows[0].id), estimatedDeliveryDays: cleanDays }
             : o
         );
         setOrders(nextOrders);
         saveAllOrders(nextOrders);
         showToast(`✓ Delivery time "${cleanDays}" synced live to Customer!`);
-      } catch (err) {
-        try {
-          handleFirestoreError(err, OperationType.UPDATE, `bookings/${order.docId || order.id}`);
-        } catch {}
-        const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-        if (msg.includes('permission') || msg.includes('insufficient')) {
+      } catch (err: any) {
+        const msg = String(err?.message || err).toLowerCase();
+        if (msg.includes('permission') || msg.includes('policy') || msg.includes('rls')) {
           setPendingCloudAction({
             label: `Apply ETA for Order #${orderKey}`,
             run: () => handleSaveOrderDeliveryDays(order),
@@ -1124,7 +1219,7 @@ export default function AdminDashboard() {
       }
     };
 
-    const currentEmail = (auth.currentUser?.email || authUser?.email || '').toLowerCase();
+    const currentEmail = await getCurrentAdminEmail();
     if (currentEmail !== ADMIN_EMAIL) {
       setPendingCloudAction({
         label: `Apply ETA for Order #${orderKey}`,
@@ -1175,9 +1270,12 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
       notifyStoreUpdated();
       showToast(`✓ Commission for ${promName} (${promId}) set to ₹${amt}/sale!`);
       try {
-        await setDoc(doc(db, 'promoters', promId), { commissionPerSale: amt }, { merge: true });
+        await supabase
+          .from('promoters')
+          .update({ commission_per_sale: amt })
+          .eq('id', promId);
       } catch (err) {
-        console.warn('Firestore promoter commission sync err:', err);
+        console.warn('Supabase promoter commission sync err:', err);
       }
     }
   };
@@ -1200,7 +1298,10 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
           setConfirmDialog(null);
           showToast(`✓ Payout of ₹${amount} recorded for ${prom.name}!`);
           try {
-            await setDoc(doc(db, 'promoters', prom.id), { paidAmount: updatedPaid }, { merge: true });
+            await supabase
+              .from('promoters')
+              .update({ paid_amount: updatedPaid })
+              .eq('id', prom.id);
           } catch {}
         }
       },
@@ -1219,7 +1320,7 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
         setConfirmDialog(null);
         showToast(`✓ Promoter ${prom.name} (${prom.id}) deleted!`);
         try {
-          await deleteDoc(doc(db, 'promoters', prom.id));
+          await supabase.from('promoters').delete().eq('id', prom.id);
         } catch {}
       },
     });
@@ -1428,30 +1529,41 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                     }`}
                   >
                     {/* Header */}
-                    <div className="flex items-center justify-between border-b pb-3 mb-3">
+                    <div className="flex items-center justify-between gap-2 border-b pb-3 mb-3 flex-wrap">
                       <div>
                         <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Order ID</span>
                         <p className="font-extrabold text-sm text-gray-900">{order.orderId || order.id}</p>
                       </div>
-                      <span
-                        className={`text-[11px] font-extrabold px-3 py-1 rounded-full uppercase ${
-                          order.status === 'confirmed'
-                            ? 'bg-green-100 text-green-800'
+                      <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                        {order.deliveryStatus === 'delivered' ? (
+                          <span className="text-[10px] font-extrabold px-2.5 py-1 rounded-full uppercase bg-emerald-600 text-white">
+                            📦 DELIVERED
+                          </span>
+                        ) : order.deliveryStatus === 'shipped' ? (
+                          <span className="text-[10px] font-extrabold px-2.5 py-1 rounded-full uppercase bg-sky-600 text-white">
+                            🚚 COURIER DISPATCHED
+                          </span>
+                        ) : null}
+                        <span
+                          className={`text-[11px] font-extrabold px-3 py-1 rounded-full uppercase ${
+                            order.status === 'confirmed'
+                              ? 'bg-green-100 text-green-800'
+                              : order.status === 'cancelled'
+                              ? 'bg-red-100 text-red-800'
+                              : order.status === 'rejected'
+                              ? 'bg-red-100 text-red-800'
+                              : 'bg-amber-100 text-amber-800 animate-pulse'
+                          }`}
+                        >
+                          {order.status === 'confirmed'
+                            ? '✓ APPROVED'
                             : order.status === 'cancelled'
-                            ? 'bg-red-100 text-red-800'
+                            ? '🚫 CANCELLED BY CUSTOMER'
                             : order.status === 'rejected'
-                            ? 'bg-red-100 text-red-800'
-                            : 'bg-amber-100 text-amber-800 animate-pulse'
-                        }`}
-                      >
-                        {order.status === 'confirmed'
-                          ? '✓ APPROVED'
-                          : order.status === 'cancelled'
-                          ? '🚫 CANCELLED BY CUSTOMER'
-                          : order.status === 'rejected'
-                          ? '✕ REJECTED'
-                          : '⏳ PENDING VERIFICATION'}
-                      </span>
+                            ? '✕ REJECTED'
+                            : '⏳ PENDING VERIFICATION'}
+                        </span>
+                      </div>
                     </div>
 
                     {/* Customer & Product Details Grid */}
@@ -1568,6 +1680,96 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                               ✓ Apply ETA
                             </button>
                           </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Courier & Delivery 2-Step Action Box (Dispatched to Courier vs Delivered to Customer) */}
+                    {(() => {
+                      const orderKey = String(order.orderId || order.id);
+                      const isShipped = order.deliveryStatus === 'shipped';
+                      const isDelivered = order.deliveryStatus === 'delivered';
+                      const isUpdating = updatingOrderKey === orderKey;
+                      return (
+                        <div className="bg-sky-50/80 border border-sky-200 p-3.5 rounded-2xl space-y-2.5 mb-3">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <span className="text-xs font-extrabold text-sky-950 flex items-center gap-1.5">
+                              <span>📦</span> Courier &amp; Delivery Status (കൊറിയർ &amp; ഡെലിവറി):
+                            </span>
+                            <span
+                              className={`text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase ${
+                                isDelivered
+                                  ? 'bg-emerald-600 text-white'
+                                  : isShipped
+                                  ? 'bg-sky-600 text-white'
+                                  : 'bg-white text-slate-600 border border-slate-300'
+                              }`}
+                            >
+                              {isDelivered
+                                ? '✓ Delivered'
+                                : isShipped
+                                ? '🚚 Sent via Courier'
+                                : 'Awaiting Courier'}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              disabled={isUpdating}
+                              onClick={() => updateOrderDeliveryStage(order, 'shipped')}
+                              className={`py-2.5 px-3 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 border transition shadow-xs disabled:opacity-50 ${
+                                isShipped
+                                  ? 'bg-sky-600 text-white border-sky-700 ring-2 ring-sky-300'
+                                  : isDelivered
+                                  ? 'bg-sky-100 text-sky-900 border-sky-300 hover:bg-sky-200'
+                                  : 'bg-white hover:bg-sky-600 hover:text-white text-sky-900 border-sky-300'
+                              }`}
+                            >
+                              <span>🚚</span>
+                              <span>
+                                {isShipped
+                                  ? '✓ Courier Dispatched'
+                                  : 'Courier Dispatched (കൊറിയർ അയച്ചു)'}
+                              </span>
+                            </button>
+
+                            <button
+                              type="button"
+                              disabled={isUpdating}
+                              onClick={() => updateOrderDeliveryStage(order, 'delivered')}
+                              className={`py-2.5 px-3 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 border transition shadow-xs disabled:opacity-50 ${
+                                isDelivered
+                                  ? 'bg-emerald-600 text-white border-emerald-700 ring-2 ring-emerald-300'
+                                  : 'bg-white hover:bg-emerald-600 hover:text-white text-emerald-900 border-emerald-300'
+                              }`}
+                            >
+                              <span>📦</span>
+                              <span>
+                                {isDelivered
+                                  ? '✓ Delivered to Customer'
+                                  : 'Delivered (ഡെലിവറി ചെയ്തു)'}
+                              </span>
+                            </button>
+                          </div>
+
+                          {(order.dispatchedAt || order.deliveredAt) && (
+                            <p className="text-[10px] text-sky-900 font-semibold flex flex-wrap gap-x-3 gap-y-0.5">
+                              {order.dispatchedAt && (
+                                <span>
+                                  🚚 Dispatched: {new Date(order.dispatchedAt).toLocaleDateString()}
+                                </span>
+                              )}
+                              {order.deliveredAt && (
+                                <span>
+                                  📦 Delivered: {new Date(order.deliveredAt).toLocaleDateString()}
+                                </span>
+                              )}
+                            </p>
+                          )}
+                          <p className="text-[10px] text-sky-700">
+                            Customer Profile, My Orders &amp; Promoter Profile update automatically.
+                          </p>
                         </div>
                       );
                     })()}

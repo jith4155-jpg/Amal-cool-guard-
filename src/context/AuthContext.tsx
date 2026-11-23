@@ -1,27 +1,15 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import {
-  auth,
-  db,
-  googleProvider,
-  signInWithPopup,
-  signOut,
-  onAuthStateChanged,
-  handleFirestoreError,
-  OperationType,
-  type User,
-} from '../firebase';
-import {
-  doc,
-  getDoc,
-  setDoc,
-  collection,
-  query,
-  where,
-  getDocs,
-  updateDoc,
-  deleteDoc,
-  onSnapshot,
-} from 'firebase/firestore';
+  supabase,
+  toAppUser,
+  mapBookingFromDb,
+  mapPromoterFromDb,
+  mapPromoterToDb,
+  mapPromoterSaleFromDb,
+  mapUserProfileFromDb,
+  mapUserProfileToDb,
+  type AppUser,
+} from '../supabase';
 import {
   getLocalOrders,
   saveAllOrders,
@@ -67,7 +55,7 @@ export interface PromoterRecord {
 }
 
 interface AuthContextValue {
-  user: User | null;
+  user: AppUser | null;
   authReady: boolean;
   profile: UserProfile | null;
   myOrders: any[];
@@ -77,12 +65,23 @@ interface AuthContextValue {
   myPromoterSales: any[];
   loadingPromoter: boolean;
   signingIn: boolean;
-  signInWithGoogle: () => Promise<{ user: User | null; error?: string }>;
+  signInWithGoogle: () => Promise<{ user: AppUser | null; error?: string }>;
+  signInWithEmail: (email: string, password: string) => Promise<{ user: AppUser | null; error?: string }>;
+  signUpWithEmail: (
+    email: string,
+    password: string,
+    fullName?: string
+  ) => Promise<{ user: AppUser | null; error?: string; message?: string }>;
   logout: () => Promise<void>;
   updateUserProfile: (patch: Partial<UserProfile>) => Promise<UserProfile | null>;
   refreshMyOrders: () => Promise<any[]>;
   refreshMyPromoter: () => Promise<PromoterRecord | null>;
-  registerMyPromoter: (data: Omit<PromoterRecord, 'id' | 'userId' | 'email' | 'createdAt' | 'commissionPerSale' | 'paidAmount'>) => Promise<PromoterRecord | null>;
+  registerMyPromoter: (
+    data: Omit<PromoterRecord, 'id' | 'userId' | 'email' | 'createdAt' | 'commissionPerSale' | 'paidAmount'>
+  ) => Promise<PromoterRecord | null>;
+  updateMyPromoter: (
+    data: Omit<PromoterRecord, 'id' | 'userId' | 'email' | 'createdAt' | 'commissionPerSale' | 'paidAmount'>
+  ) => Promise<PromoterRecord | null>;
   recordLocalOrder: (orderRecord: any) => void;
   cancelMyOrder: (order: any) => Promise<void>;
   deleteMyOrder: (order: any) => Promise<void>;
@@ -97,7 +96,7 @@ function getTimestampMs(createdAt: any): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function belongsToUser(order: any, user: User): boolean {
+function belongsToUser(order: any, user: AppUser): boolean {
   if (!order || !user) return false;
   if (order.userId && order.userId === user.uid) return true;
   if (
@@ -110,7 +109,7 @@ function belongsToUser(order: any, user: User): boolean {
   return false;
 }
 
-function promoterBelongsToUser(prom: any, user: User): boolean {
+function promoterBelongsToUser(prom: any, user: AppUser): boolean {
   if (!prom || !user) return false;
   if (prom.userId && prom.userId === user.uid) return true;
   if (
@@ -124,7 +123,7 @@ function promoterBelongsToUser(prom: any, user: User): boolean {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [myOrders, setMyOrders] = useState<any[]>([]);
@@ -168,8 +167,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const loadOrCreateProfile = useCallback(
-    async (firebaseUser: User): Promise<UserProfile> => {
-      const localKey = `amal_user_profile_${firebaseUser.uid}`;
+    async (appUser: AppUser): Promise<UserProfile> => {
+      const localKey = `amal_user_profile_${appUser.uid}`;
       const cachedLocal = safeJsonParse<Partial<UserProfile> | null>(
         localStorage.getItem(localKey),
         null
@@ -177,13 +176,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       let remoteData: Partial<UserProfile> | null = null;
       try {
-        const userDocRef = doc(db, 'users', firebaseUser.uid);
-        const snap = await Promise.race([
-          getDoc(userDocRef),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 6000)),
-        ]);
-        if (snap.exists()) {
-          remoteData = snap.data() as Partial<UserProfile>;
+        const { data, error } = await supabase
+          .from('users')
+          .select('*')
+          .eq('uid', appUser.uid)
+          .maybeSingle();
+        if (!error && data) {
+          remoteData = mapUserProfileFromDb(data);
         }
       } catch (err) {
         console.warn('Could not fetch remote user profile:', err);
@@ -191,14 +190,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const nowIso = new Date().toISOString();
       const mergedProfile: UserProfile = {
-        uid: firebaseUser.uid,
-        email: firebaseUser.email || remoteData?.email || cachedLocal?.email || '',
+        uid: appUser.uid,
+        email: appUser.email || remoteData?.email || cachedLocal?.email || '',
         name:
           remoteData?.name ||
           cachedLocal?.name ||
-          firebaseUser.displayName ||
-          (firebaseUser.email ? firebaseUser.email.split('@')[0] : 'Customer'),
-        photoURL: firebaseUser.photoURL || remoteData?.photoURL || cachedLocal?.photoURL || '',
+          appUser.displayName ||
+          (appUser.email ? appUser.email.split('@')[0] : 'Customer'),
+        photoURL: appUser.photoURL || remoteData?.photoURL || cachedLocal?.photoURL || '',
         mobile: remoteData?.mobile ?? cachedLocal?.mobile ?? '',
         address: remoteData?.address ?? cachedLocal?.address ?? '',
         pincode: remoteData?.pincode ?? cachedLocal?.pincode ?? '',
@@ -211,9 +210,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (!remoteData) {
         try {
-          await setDoc(doc(db, 'users', firebaseUser.uid), mergedProfile, { merge: true });
+          await supabase
+            .from('users')
+            .upsert(mapUserProfileToDb(mergedProfile), { onConflict: 'uid' });
         } catch (err) {
-          console.warn('Could not persist initial user profile to Firestore:', err);
+          console.warn('Could not persist initial user profile to Supabase:', err);
         }
       }
 
@@ -223,7 +224,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const applyRemoteUserOrders = useCallback(
-    (targetUser: User, remoteDocs: any[]): any[] => {
+    (targetUser: AppUser, remoteDocs: any[]): any[] => {
       const deletedSet = new Set(getDeletedOrderIds());
       const combinedMap = new Map<string, any>();
 
@@ -263,7 +264,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const loadUserOrders = useCallback(
-    async (targetUser: User | null): Promise<any[]> => {
+    async (targetUser: AppUser | null): Promise<any[]> => {
       if (!targetUser) {
         setMyOrders([]);
         setLoadingOrders(false);
@@ -276,22 +277,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       let fetchSucceeded = false;
 
       try {
-        const q = query(collection(db, 'bookings'), where('userId', '==', targetUser.uid));
-        const snapshot = await Promise.race([
-          getDocs(q),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 8000)),
-        ]);
+        const { data, error } = await supabase
+          .from('bookings')
+          .select('*')
+          .eq('user_id', targetUser.uid)
+          .order('created_at', { ascending: false });
 
-        fetchSucceeded = true;
-        snapshot.docs.forEach(d => {
-          const data = { id: d.id, docId: d.id, ...d.data() } as any;
-          const oid = String(data.orderId || '');
-          const did = String(data.id || '');
-          if (deletedSet.has(oid) || deletedSet.has(did)) return;
-          remoteDocs.push(data);
-        });
+        if (!error && Array.isArray(data)) {
+          fetchSucceeded = true;
+          data.forEach(row => {
+            const mapped = mapBookingFromDb(row);
+            const oid = String(mapped.orderId || '');
+            const did = String(mapped.id || '');
+            if (deletedSet.has(oid) || deletedSet.has(did)) return;
+            remoteDocs.push(mapped);
+          });
+        }
       } catch (err) {
-        console.warn('Firestore user bookings query fallback:', err);
+        console.warn('Supabase user bookings query fallback:', err);
       }
 
       if (fetchSucceeded) {
@@ -323,7 +326,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const loadPromoterSales = useCallback(
-    async (targetUser: User, prom: PromoterRecord | null) => {
+    async (targetUser: AppUser, prom: PromoterRecord | null) => {
       if (!prom) {
         setMyPromoterSales([]);
         return [];
@@ -332,41 +335,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const deletedOrderIds = new Set(getDeletedOrderIds());
       const salesMap = new Map<string, any>();
 
-      // 1. Remote PII-free promoter_sales scoped by promoterUserId or promoterEmail
+      // 1. Remote PII-free promoter_sales scoped by promoter_user_id or promoter_email
       try {
-        const qUid = query(collection(db, 'promoter_sales'), where('promoterUserId', '==', targetUser.uid));
-        const snapUid = await Promise.race([
-          getDocs(qUid),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1800)),
-        ]);
-        snapUid.docs.forEach(d => {
-          const data = { id: d.id, ...d.data() } as any;
-          const key = String(data.orderId || d.id);
-          if (!deletedOrderIds.has(key) && !deletedOrderIds.has(String(data.bookingDocId || ''))) {
-            salesMap.set(key, data);
-          }
-        });
+        const { data, error } = await supabase
+          .from('promoter_sales')
+          .select('*')
+          .eq('promoter_user_id', targetUser.uid)
+          .order('created_at', { ascending: false });
+        if (!error && Array.isArray(data)) {
+          data.forEach(row => {
+            const mapped = mapPromoterSaleFromDb(row);
+            const key = String(mapped.orderId || mapped.id);
+            if (!deletedOrderIds.has(key) && !deletedOrderIds.has(String(mapped.bookingDocId || ''))) {
+              salesMap.set(key, mapped);
+            }
+          });
+        }
       } catch (err) {
         console.warn('Promoter sales UID query fallback:', err);
       }
 
       if (targetUser.email) {
         try {
-          const qEmail = query(
-            collection(db, 'promoter_sales'),
-            where('promoterEmail', '==', targetUser.email)
-          );
-          const snapEmail = await Promise.race([
-            getDocs(qEmail),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1500)),
-          ]);
-          snapEmail.docs.forEach(d => {
-            const data = { id: d.id, ...d.data() } as any;
-            const key = String(data.orderId || d.id);
-            if (!deletedOrderIds.has(key) && !deletedOrderIds.has(String(data.bookingDocId || ''))) {
-              if (!salesMap.has(key)) salesMap.set(key, data);
-            }
-          });
+          const { data, error } = await supabase
+            .from('promoter_sales')
+            .select('*')
+            .ilike('promoter_email', targetUser.email)
+            .order('created_at', { ascending: false });
+          if (!error && Array.isArray(data)) {
+            data.forEach(row => {
+              const mapped = mapPromoterSaleFromDb(row);
+              const key = String(mapped.orderId || mapped.id);
+              if (!deletedOrderIds.has(key) && !deletedOrderIds.has(String(mapped.bookingDocId || ''))) {
+                if (!salesMap.has(key)) salesMap.set(key, mapped);
+              }
+            });
+          }
         } catch {
           // ignore
         }
@@ -381,7 +385,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!refMatch) continue;
         const key = String(ord.orderId || ord.id);
         if (deletedOrderIds.has(key) || deletedOrderIds.has(String(ord.id || ''))) continue;
-        if (!salesMap.has(key)) {
+        const existingRemote = salesMap.get(key);
+        if (!existingRemote) {
           salesMap.set(key, {
             orderId: key,
             promoterId: prom.id,
@@ -389,8 +394,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             productName: ord.productName || 'Amal Coolguard Vest',
             price: ord.price,
             commission: ord.promoterCommission ?? prom.commissionPerSale ?? 100,
+            deliveryStatus: ord.deliveryStatus || 'pending',
+            courierName: ord.courierName || '',
+            trackingId: ord.trackingId || '',
+            dispatchedAt: ord.dispatchedAt || '',
+            deliveredAt: ord.deliveredAt || '',
             status: ord.status || 'pending_verification',
             createdAt: ord.createdAt,
+          });
+        } else {
+          salesMap.set(key, {
+            ...existingRemote,
+            deliveryStatus:
+              existingRemote.deliveryStatus && existingRemote.deliveryStatus !== 'pending'
+                ? existingRemote.deliveryStatus
+                : ord.deliveryStatus || existingRemote.deliveryStatus || 'pending',
+            courierName: existingRemote.courierName || ord.courierName || '',
+            trackingId: existingRemote.trackingId || ord.trackingId || '',
+            dispatchedAt: existingRemote.dispatchedAt || ord.dispatchedAt || '',
+            deliveredAt: existingRemote.deliveredAt || ord.deliveredAt || '',
           });
         }
       }
@@ -405,7 +427,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const loadUserPromoter = useCallback(
-    async (targetUser: User | null): Promise<PromoterRecord | null> => {
+    async (targetUser: AppUser | null): Promise<PromoterRecord | null> => {
       if (!targetUser) {
         setMyPromoter(null);
         setMyPromoterSales([]);
@@ -417,34 +439,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const deletedIds = new Set(getDeletedPromoterIds());
       let found: PromoterRecord | null = null;
 
-      // 1. Check Firestore promoters owned by this exact UID or Gmail
+      // 1. Check Supabase promoters owned by this exact UID or Email
       try {
-        const qUid = query(collection(db, 'promoters'), where('userId', '==', targetUser.uid));
-        const snapUid = await Promise.race([
-          getDocs(qUid),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1800)),
-        ]);
-        const validDoc = snapUid.docs.find(d => !deletedIds.has(d.id));
-        if (validDoc) {
-          found = { id: validDoc.id, ...validDoc.data() } as PromoterRecord;
+        const { data, error } = await supabase
+          .from('promoters')
+          .select('*')
+          .eq('user_id', targetUser.uid);
+        if (!error && Array.isArray(data)) {
+          const validRow = data.find(r => !deletedIds.has(r.id));
+          if (validRow) {
+            found = mapPromoterFromDb(validRow);
+          }
         }
       } catch (err) {
-        console.warn('Firestore promoter UID query fallback:', err);
+        console.warn('Supabase promoter UID query fallback:', err);
       }
 
       if (!found && targetUser.email) {
         try {
-          const qEmail = query(
-            collection(db, 'promoters'),
-            where('email', '==', targetUser.email)
-          );
-          const snapEmail = await Promise.race([
-            getDocs(qEmail),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1500)),
-          ]);
-          const validDoc = snapEmail.docs.find(d => !deletedIds.has(d.id));
-          if (validDoc) {
-            found = { id: validDoc.id, ...validDoc.data() } as PromoterRecord;
+          const { data, error } = await supabase
+            .from('promoters')
+            .select('*')
+            .ilike('email', targetUser.email);
+          if (!error && Array.isArray(data)) {
+            const validRow = data.find(r => !deletedIds.has(r.id));
+            if (validRow) {
+              found = mapPromoterFromDb(validRow);
+            }
           }
         } catch {
           // ignore
@@ -476,13 +497,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async firebaseUser => {
-      setUser(firebaseUser);
-      if (firebaseUser) {
+    let mounted = true;
+
+    const hydrateSession = async (appUser: AppUser | null) => {
+      if (!mounted) return;
+      setUser(appUser);
+      if (appUser) {
         await Promise.all([
-          loadOrCreateProfile(firebaseUser),
-          loadUserOrders(firebaseUser),
-          loadUserPromoter(firebaseUser),
+          loadOrCreateProfile(appUser),
+          loadUserOrders(appUser),
+          loadUserPromoter(appUser),
         ]);
       } else {
         setProfile(null);
@@ -492,102 +516,184 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         localStorage.removeItem(STORAGE_KEYS.CUSTOMER_SESSION);
         localStorage.removeItem(STORAGE_KEYS.PROMOTER_SESSION);
       }
-      setAuthReady(true);
+      if (mounted) setAuthReady(true);
+    };
+
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        hydrateSession(toAppUser(data.session?.user));
+      })
+      .catch(() => {
+        if (mounted) setAuthReady(true);
+      });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      hydrateSession(toAppUser(session?.user));
     });
 
-    return () => unsubscribe();
+    return () => {
+      mounted = false;
+      authListener.subscription.unsubscribe();
+    };
   }, [loadOrCreateProfile, loadUserOrders, loadUserPromoter]);
 
-  // Real-time Firestore listener so Admin order approval / tracking / ETA syncs live to Customer Profile & Orders
+  // Real-time Supabase listener for user's bookings (Approval, Tracking, ETA, Courier Dispatched / Delivered)
   useEffect(() => {
     if (!user) return;
-    const bookingsQuery = query(collection(db, 'bookings'), where('userId', '==', user.uid));
-    const unsubscribeBookings = onSnapshot(
-      bookingsQuery,
-      snapshot => {
-        const remoteDocs = snapshot.docs.map(d => ({
-          id: d.id,
-          docId: d.id,
-          ...d.data(),
-        }));
-        applyRemoteUserOrders(user, remoteDocs);
-      },
-      err => {
-        try {
-          handleFirestoreError(err, OperationType.GET, 'bookings');
-        } catch {
-          // Structured error logged silently; fallback orders remain visible
+    const channel = supabase
+      .channel(`bookings-user-${user.uid}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'bookings',
+          filter: `user_id=eq.${user.uid}`,
+        },
+        () => {
+          loadUserOrders(user);
         }
-      }
-    );
+      )
+      .subscribe();
 
-    return () => unsubscribeBookings();
-  }, [user, applyRemoteUserOrders]);
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user, loadUserOrders]);
 
-  // Real-time Firestore listener for Promoter sales status updates (Pending -> Approved)
+  // Real-time Supabase listener for Promoter sales & delivery updates
   useEffect(() => {
     if (!user || !myPromoter) return;
-    const salesQuery = query(
-      collection(db, 'promoter_sales'),
-      where('promoterUserId', '==', user.uid)
-    );
-    const unsubscribeSales = onSnapshot(
-      salesQuery,
-      () => {
-        loadPromoterSales(user, myPromoter);
-      },
-      err => {
-        try {
-          handleFirestoreError(err, OperationType.GET, 'promoter_sales');
-        } catch {
-          // Structured error logged silently
+    const channel = supabase
+      .channel(`promoter-sales-${user.uid}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'promoter_sales',
+          filter: `promoter_user_id=eq.${user.uid}`,
+        },
+        () => {
+          loadPromoterSales(user, myPromoter);
         }
-      }
-    );
+      )
+      .subscribe();
 
-    return () => unsubscribeSales();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user, myPromoter, loadPromoterSales]);
 
   useEffect(() => {
     const onStoreSync = () => {
-      if (auth.currentUser) {
-        loadUserOrders(auth.currentUser);
-        loadUserPromoter(auth.currentUser);
+      if (user) {
+        loadUserOrders(user);
+        loadUserPromoter(user);
       }
     };
     window.addEventListener('amal_store_updated', onStoreSync);
     return () => window.removeEventListener('amal_store_updated', onStoreSync);
-  }, [loadUserOrders, loadUserPromoter]);
+  }, [user, loadUserOrders, loadUserPromoter]);
 
   const signInWithGoogle = useCallback(async () => {
     setSigningIn(true);
     try {
-      const cred = await signInWithPopup(auth, googleProvider);
-      setUser(cred.user);
-      await Promise.all([
-        loadOrCreateProfile(cred.user),
-        loadUserOrders(cred.user),
-        loadUserPromoter(cred.user),
-      ]);
-      return { user: cred.user };
-    } catch (err: any) {
-      const code = err?.code || '';
-      let msg = 'Google login failed. Please try again.';
-      if (code === 'auth/popup-closed-by-user') {
-        msg = 'ലോഗിൻ വിൻഡോ ക്ലോസ് ചെയ്തു. ദയവായി വീണ്ടും ശ്രമിക്കുക. (Sign-in popup was closed)';
-      } else if (code === 'auth/popup-blocked') {
-        msg = 'ബ്രൗസർ പോപ്പ്-അപ്പ് ബ്ലോക്ക് ചെയ്തിരിക്കുന്നു. ദയവായി Popup അനുവദിക്കുക. (Popup blocked by browser)';
-      } else if (err?.message) {
-        msg = err.message;
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.href,
+          queryParams: {
+            prompt: 'select_account',
+          },
+        },
+      });
+      if (error) {
+        setSigningIn(false);
+        return { user: null, error: error.message };
       }
-      return { user: null, error: msg };
-    } finally {
+      return { user: null };
+    } catch (err: any) {
       setSigningIn(false);
+      return {
+        user: null,
+        error: err?.message || 'Google login failed. Please try again.',
+      };
     }
-  }, [loadOrCreateProfile, loadUserOrders, loadUserPromoter]);
+  }, []);
+
+  const signInWithEmail = useCallback(
+    async (email: string, password: string) => {
+      setSigningIn(true);
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        });
+        if (error) {
+          return { user: null, error: error.message };
+        }
+        const appUser = toAppUser(data.user);
+        if (appUser) {
+          setUser(appUser);
+          await Promise.all([
+            loadOrCreateProfile(appUser),
+            loadUserOrders(appUser),
+            loadUserPromoter(appUser),
+          ]);
+        }
+        return { user: appUser };
+      } catch (err: any) {
+        return { user: null, error: err?.message || 'Sign in failed.' };
+      } finally {
+        setSigningIn(false);
+      }
+    },
+    [loadOrCreateProfile, loadUserOrders, loadUserPromoter]
+  );
+
+  const signUpWithEmail = useCallback(
+    async (email: string, password: string, fullName?: string) => {
+      setSigningIn(true);
+      try {
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+          options: {
+            data: {
+              full_name: (fullName || email.split('@')[0] || 'Customer').trim(),
+            },
+          },
+        });
+        if (error) {
+          return { user: null, error: error.message };
+        }
+        const appUser = toAppUser(data.user);
+        if (data.session && appUser) {
+          setUser(appUser);
+          await Promise.all([
+            loadOrCreateProfile(appUser),
+            loadUserOrders(appUser),
+            loadUserPromoter(appUser),
+          ]);
+          return { user: appUser };
+        }
+        return {
+          user: appUser,
+          message: 'Verification email sent! Please check your inbox and confirm your email to sign in.',
+        };
+      } catch (err: any) {
+        return { user: null, error: err?.message || 'Sign up failed.' };
+      } finally {
+        setSigningIn(false);
+      }
+    },
+    [loadOrCreateProfile, loadUserOrders, loadUserPromoter]
+  );
 
   const logout = useCallback(async () => {
-    await signOut(auth);
+    await supabase.auth.signOut();
     localStorage.removeItem(STORAGE_KEYS.CUSTOMER_SESSION);
     localStorage.removeItem(STORAGE_KEYS.PROMOTER_SESSION);
     setUser(null);
@@ -599,7 +705,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const updateUserProfile = useCallback(
     async (patch: Partial<UserProfile>): Promise<UserProfile | null> => {
-      const current = auth.currentUser;
+      const { data: sessData } = await supabase.auth.getUser();
+      const current = toAppUser(sessData.user) || user;
       if (!current) return null;
 
       const nextProfile: UserProfile = {
@@ -618,13 +725,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       syncLocalProfileCache(nextProfile);
 
       try {
-        await setDoc(doc(db, 'users', current.uid), nextProfile, { merge: true });
+        await supabase
+          .from('users')
+          .upsert(mapUserProfileToDb(nextProfile), { onConflict: 'uid' });
       } catch (err) {
-        console.warn('Firestore profile save err:', err);
+        console.warn('Supabase profile save err:', err);
       }
       return nextProfile;
     },
-    [profile, syncLocalProfileCache]
+    [user, profile, syncLocalProfileCache]
   );
 
   const registerMyPromoter = useCallback(
@@ -634,10 +743,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         'id' | 'userId' | 'email' | 'createdAt' | 'commissionPerSale' | 'paidAmount'
       >
     ): Promise<PromoterRecord | null> => {
-      const current = auth.currentUser;
+      const { data: sessData } = await supabase.auth.getUser();
+      const current = toAppUser(sessData.user) || user;
       if (!current || !current.email) return null;
 
-      // Return existing promoter if already registered under this Gmail
       const existing = await loadUserPromoter(current);
       if (existing) return existing;
 
@@ -653,10 +762,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const paddedNum = String(counterVal).padStart(2, '0');
         generatedCode = `${firstLetter}${paddedNum}${lastLetter}`;
         if (!allPromoters[generatedCode]) {
-          // Verify remote doc doesn't collide
           try {
-            const snap = await getDoc(doc(db, 'promoters', generatedCode));
-            if (!snap.exists()) break;
+            const { data: existingRemote } = await supabase.rpc('resolve_promoter_referral', {
+              ref_code: generatedCode,
+            });
+            if (!Array.isArray(existingRemote) || existingRemote.length === 0) break;
           } catch {
             break;
           }
@@ -689,9 +799,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setMyPromoter(newPromoter);
 
       try {
-        await setDoc(doc(db, 'promoters', generatedCode), newPromoter);
+        await supabase.from('promoters').upsert(mapPromoterToDb(newPromoter), { onConflict: 'id' });
       } catch (err) {
-        console.warn('Promoter Firestore sync err:', err);
+        console.warn('Promoter Supabase sync err:', err);
       }
 
       await updateUserProfile({
@@ -703,16 +813,83 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       return newPromoter;
     },
-    [loadPromoterSales, loadUserPromoter, updateUserProfile]
+    [user, loadPromoterSales, loadUserPromoter, updateUserProfile]
+  );
+
+  const updateMyPromoter = useCallback(
+    async (
+      input: Omit<
+        PromoterRecord,
+        'id' | 'userId' | 'email' | 'createdAt' | 'commissionPerSale' | 'paidAmount'
+      >
+    ): Promise<PromoterRecord | null> => {
+      const { data: sessData } = await supabase.auth.getUser();
+      const current = toAppUser(sessData.user) || user;
+      if (!current || !myPromoter) return null;
+
+      const updatedPromoter: PromoterRecord = {
+        id: myPromoter.id,
+        userId: current.uid,
+        email: current.email || myPromoter.email || '',
+        name: input.name.trim().slice(0, 120),
+        phone: input.phone.trim().slice(0, 30),
+        channelName: (input.channelName?.trim() || 'YouTuber / Influencer').slice(0, 120),
+        paymentType: input.paymentType,
+        upiId: input.paymentType === 'upi' ? (input.upiId || '').trim().slice(0, 120) : '',
+        bankName: input.paymentType === 'bank' ? (input.bankName || '').trim().slice(0, 120) : '',
+        accountNumber: input.paymentType === 'bank' ? (input.accountNumber || '').trim().slice(0, 64) : '',
+        ifscCode: input.paymentType === 'bank' ? (input.ifscCode || '').trim().toUpperCase().slice(0, 32) : '',
+        accountHolderName:
+          input.paymentType === 'bank'
+            ? (input.accountHolderName?.trim() || input.name.trim()).slice(0, 120)
+            : '',
+        createdAt: myPromoter.createdAt || new Date().toISOString(),
+        commissionPerSale: typeof myPromoter.commissionPerSale === 'number' ? myPromoter.commissionPerSale : 100,
+        paidAmount: typeof myPromoter.paidAmount === 'number' ? myPromoter.paidAmount : 0,
+      };
+
+      const allPromoters = getPromotersDict();
+      allPromoters[myPromoter.id] = updatedPromoter;
+      safeSetStorage(STORAGE_KEYS.PROMOTERS_LIST, JSON.stringify(allPromoters));
+      setMyPromoter(updatedPromoter);
+
+      try {
+        await supabase
+          .from('promoters')
+          .update({
+            name: updatedPromoter.name,
+            phone: updatedPromoter.phone,
+            channel_name: updatedPromoter.channelName,
+            payment_type: updatedPromoter.paymentType,
+            upi_id: updatedPromoter.upiId || '',
+            bank_name: updatedPromoter.bankName || '',
+            account_number: updatedPromoter.accountNumber || '',
+            ifsc_code: updatedPromoter.ifscCode || '',
+            account_holder_name: updatedPromoter.accountHolderName || '',
+          })
+          .eq('id', myPromoter.id);
+      } catch (err) {
+        console.warn('Promoter Supabase update fallback:', err);
+      }
+
+      await updateUserProfile({
+        name: updatedPromoter.name,
+        mobile: updatedPromoter.phone,
+      });
+      notifyStoreUpdated();
+
+      return updatedPromoter;
+    },
+    [user, myPromoter, updateUserProfile]
   );
 
   const refreshMyOrders = useCallback(async () => {
-    return loadUserOrders(auth.currentUser);
-  }, [loadUserOrders]);
+    return loadUserOrders(user);
+  }, [user, loadUserOrders]);
 
   const refreshMyPromoter = useCallback(async () => {
-    return loadUserPromoter(auth.currentUser);
-  }, [loadUserPromoter]);
+    return loadUserPromoter(user);
+  }, [user, loadUserPromoter]);
 
   const recordLocalOrder = useCallback((orderRecord: any) => {
     const existingOrders = getLocalOrders();
@@ -734,19 +911,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       );
       saveAllOrders(updatedLocal);
 
-      const docId = order.docId || order.id;
-      if (docId) {
+      if (order.orderId) {
         try {
-          await updateDoc(doc(db, 'bookings', String(docId)), { status: 'cancelled' });
+          await supabase
+            .from('bookings')
+            .update({ status: 'cancelled' })
+            .eq('order_id', String(order.orderId));
         } catch (err) {
-          console.warn('Firestore cancel order err:', err);
+          console.warn('Supabase cancel order err:', err);
         }
       }
       if (order.orderId && (order.promoterId || order.referralCode)) {
         try {
-          await updateDoc(doc(db, 'promoter_sales', String(order.orderId)), { status: 'cancelled' });
+          await supabase
+            .from('promoter_sales')
+            .update({ status: 'cancelled' })
+            .eq('order_id', String(order.orderId));
         } catch {
-          // ignore if promoter_sales doc doesn't exist
+          // ignore
         }
       }
     },
@@ -764,18 +946,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     );
     deleteOrderLocally(targetOrderId, docId ? String(docId) : undefined);
 
-    if (docId) {
+    if (targetOrderId) {
       try {
-        await deleteDoc(doc(db, 'bookings', String(docId)));
+        await supabase.from('bookings').delete().eq('order_id', targetOrderId);
       } catch (err) {
-        console.warn('Firestore delete order err:', err);
+        console.warn('Supabase delete order err:', err);
       }
     }
     if (order.orderId && (order.promoterId || order.referralCode)) {
       try {
-        await deleteDoc(doc(db, 'promoter_sales', String(order.orderId)));
+        await supabase.from('promoter_sales').delete().eq('order_id', String(order.orderId));
       } catch {
-        // ignore if promoter_sales doc doesn't exist
+        // ignore
       }
     }
   }, []);
@@ -794,11 +976,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loadingPromoter,
         signingIn,
         signInWithGoogle,
+        signInWithEmail,
+        signUpWithEmail,
         logout,
         updateUserProfile,
         refreshMyOrders,
         refreshMyPromoter,
         registerMyPromoter,
+        updateMyPromoter,
         recordLocalOrder,
         cancelMyOrder,
         deleteMyOrder,
@@ -811,8 +996,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
 export function useAuth() {
   const ctx = useContext(AuthContext);
-  if (!ctx) {
-    throw new Error('useAuth must be used inside an AuthProvider');
-  }
+  if (!ctx) throw new Error('useAuth must be used inside AuthProvider');
   return ctx;
 }

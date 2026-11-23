@@ -86,8 +86,8 @@ service cloud.firestore {
           'productPrice', 'gstPercent', 'gstAmount', 'gstNumber', 'deliveryCharge',
           'estimatedDeliveryDays', 'price', 'paymentMethod', 'paymentScreenshot',
           'referralCode', 'promoterId', 'promoterUserId', 'promoterEmail',
-          'promoterCommission', 'trackingId', 'trackingUrl', 'courierName', 'status',
-          'createdAt'
+          'promoterCommission', 'trackingId', 'trackingUrl', 'courierName',
+          'deliveryStatus', 'dispatchedAt', 'deliveredAt', 'status', 'createdAt'
         ]) &&
         data.orderId is string && data.orderId.size() >= 1 && data.orderId.size() <= 64 &&
         data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
@@ -95,6 +95,7 @@ service cloud.firestore {
         data.phoneNumber is string && data.phoneNumber.size() >= 1 && data.phoneNumber.size() <= 30 &&
         data.productId is string && data.productId.size() >= 1 && data.productId.size() <= 128 &&
         data.status in ['pending', 'pending_verification', 'confirmed', 'rejected', 'cancelled', 'completed'] &&
+        (!('deliveryStatus' in data) || data.deliveryStatus == null || data.deliveryStatus in ['pending', 'shipped', 'delivered']) &&
         isOptString(data, 'userEmail', 200) &&
         isOptString(data, 'userName', 120) &&
         isOptString(data, 'userPhoto', 1000) &&
@@ -118,7 +119,9 @@ service cloud.firestore {
         isOptNumber(data, 'promoterCommission') &&
         isOptString(data, 'trackingId', 120) &&
         isOptString(data, 'trackingUrl', 500) &&
-        isOptString(data, 'courierName', 100);
+        isOptString(data, 'courierName', 100) &&
+        isOptString(data, 'dispatchedAt', 100) &&
+        isOptString(data, 'deliveredAt', 100);
     }
 
     function isValidPromoter(data) {
@@ -151,6 +154,7 @@ service cloud.firestore {
         data.keys().hasOnly([
           'orderId', 'bookingDocId', 'buyerUserId', 'promoterId', 'promoterUserId',
           'promoterEmail', 'productId', 'productName', 'price', 'commission',
+          'deliveryStatus', 'courierName', 'trackingId', 'dispatchedAt', 'deliveredAt',
           'status', 'createdAt'
         ]) &&
         data.orderId is string && data.orderId.size() >= 1 && data.orderId.size() <= 64 &&
@@ -158,12 +162,17 @@ service cloud.firestore {
         data.promoterId is string && data.promoterId.size() >= 1 && data.promoterId.size() <= 64 &&
         data.productId is string && data.productId.size() >= 1 && data.productId.size() <= 128 &&
         data.status in ['pending', 'pending_verification', 'confirmed', 'rejected', 'cancelled', 'completed'] &&
+        (!('deliveryStatus' in data) || data.deliveryStatus == null || data.deliveryStatus in ['pending', 'shipped', 'delivered']) &&
         isOptString(data, 'bookingDocId', 128) &&
         isOptString(data, 'promoterUserId', 128) &&
         isOptString(data, 'promoterEmail', 200) &&
         isOptString(data, 'productName', 200) &&
         isOptNumber(data, 'price') &&
-        isOptNumber(data, 'commission');
+        isOptNumber(data, 'commission') &&
+        isOptString(data, 'courierName', 100) &&
+        isOptString(data, 'trackingId', 120) &&
+        isOptString(data, 'dispatchedAt', 100) &&
+        isOptString(data, 'deliveredAt', 100);
     }
 
     function isValidCatalogSetting(data) {
@@ -243,7 +252,13 @@ service cloud.firestore {
       );
       allow update: if isValidId(promoterId) && isVerifiedUser() && isValidPromoter(incoming()) && (
         isAdmin() ||
-        (existing().userId == request.auth.uid && incoming().userId == existing().userId)
+        (
+          (existing().userId == request.auth.uid || existing().email == request.auth.token.email) &&
+          incoming().userId == request.auth.uid &&
+          incoming().id == existing().id &&
+          (!('commissionPerSale' in existing()) || incoming().commissionPerSale == existing().commissionPerSale) &&
+          (!('paidAmount' in existing()) || incoming().paidAmount == existing().paidAmount)
+        )
       );
       allow delete: if isValidId(promoterId) && isAdmin();
     }
@@ -263,10 +278,14 @@ service cloud.firestore {
           resource.data.promoterEmail == request.auth.token.email
         )
       );
-      allow create: if isValidId(saleId) && isVerifiedUser() &&
-        isValidPromoterSale(incoming()) &&
-        incoming().buyerUserId == request.auth.uid &&
-        incoming().status in ['pending', 'pending_verification'];
+      allow create: if isValidId(saleId) && isValidPromoterSale(incoming()) && (
+        isAdmin() ||
+        (
+          isVerifiedUser() &&
+          incoming().buyerUserId == request.auth.uid &&
+          incoming().status in ['pending', 'pending_verification']
+        )
+      );
       allow update: if isValidId(saleId) && isValidPromoterSale(incoming()) && (
         isAdmin() ||
         (

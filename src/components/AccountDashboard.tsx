@@ -181,9 +181,20 @@ export default function AccountDashboard() {
   const pendingCount = myOrders.filter(
     o => !o.status || o.status === 'pending' || o.status === 'pending_verification'
   ).length;
+  const shippedOrdersCount = myOrders.filter(
+    o => o.deliveryStatus === 'shipped'
+  ).length;
+  const deliveredOrdersCount = myOrders.filter(
+    o => o.deliveryStatus === 'delivered'
+  ).length;
+  const latestActiveOrder = myOrders.find(
+    o => o.status?.toLowerCase() !== 'cancelled' && o.status?.toLowerCase() !== 'rejected'
+  );
 
   const myPromoterShareUrl = myPromoter ? getPromoterShareLink(myPromoter.id, cleanStoreBase) : '';
   const promConfirmedSales = myPromoterSales.filter(o => o.status === 'confirmed').length;
+  const promShippedSales = myPromoterSales.filter(o => o.deliveryStatus === 'shipped').length;
+  const promDeliveredSales = myPromoterSales.filter(o => o.deliveryStatus === 'delivered').length;
   const promRate = myPromoter?.commissionPerSale || 100;
   const promEarned = promConfirmedSales * promRate;
 
@@ -283,6 +294,39 @@ export default function AccountDashboard() {
             <p className="text-base font-black text-emerald-900">{confirmedCount}</p>
           </button>
         </div>
+
+        {/* Live Courier & Delivery Section inside Customer Profile */}
+        {myOrders.length > 0 && (
+          <button
+            type="button"
+            onClick={() => navigate('/orders')}
+            className="w-full text-left bg-sky-50 hover:bg-sky-100/80 border border-sky-200 p-3 rounded-xl space-y-1.5 transition"
+          >
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-[10px] font-extrabold text-sky-900 uppercase tracking-wider flex items-center gap-1">
+                <span>🚚</span> Delivery &amp; Courier Status (കൊറിയർ / ഡെലിവറി)
+              </span>
+              {latestActiveOrder?.deliveryStatus === 'delivered' ? (
+                <span className="text-[10px] font-black bg-emerald-600 text-white px-2 py-0.5 rounded-full">
+                  📦 Delivered
+                </span>
+              ) : latestActiveOrder?.deliveryStatus === 'shipped' ? (
+                <span className="text-[10px] font-black bg-sky-600 text-white px-2 py-0.5 rounded-full">
+                  🚚 Courier Dispatched
+                </span>
+              ) : (
+                <span className="text-[10px] font-bold bg-white text-slate-700 border border-slate-200 px-2 py-0.5 rounded-full">
+                  ⏳ Processing
+                </span>
+              )}
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-sky-900 font-bold gap-2 flex-wrap">
+              <span>🚚 Courier Sent: {shippedOrdersCount}</span>
+              <span>📦 Delivered: {deliveredOrdersCount}</span>
+              <span className="text-blue-700 underline ml-auto">Track →</span>
+            </div>
+          </button>
+        )}
       </div>
 
       {/* PROMOTER SECTION INSIDE PROFILE:
@@ -332,6 +376,18 @@ export default function AccountDashboard() {
             <div className="bg-amber-50 p-2 rounded-xl border border-amber-100">
               <p className="text-[10px] font-bold text-amber-700 uppercase">Earned</p>
               <p className="text-sm font-black text-amber-900">₹{promEarned}</p>
+            </div>
+          </div>
+
+          {/* Live Courier & Delivery Progress for Promoter's Referred Orders */}
+          <div className="grid grid-cols-2 gap-2 text-center">
+            <div className="bg-sky-50 p-2 rounded-xl border border-sky-200 flex items-center justify-between px-3">
+              <span className="text-[10px] font-bold text-sky-800">🚚 Courier Sent</span>
+              <span className="text-sm font-black text-sky-950">{promShippedSales}</span>
+            </div>
+            <div className="bg-emerald-50 p-2 rounded-xl border border-emerald-200 flex items-center justify-between px-3">
+              <span className="text-[10px] font-bold text-emerald-800">📦 Delivered</span>
+              <span className="text-sm font-black text-emerald-950">{promDeliveredSales}</span>
             </div>
           </div>
 

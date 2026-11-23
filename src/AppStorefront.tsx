@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
-import { db, handleFirestoreError, OperationType } from './firebase';
-import { collection, doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { supabase, mapProductFromDb } from './supabase';
 import { Link } from 'react-router-dom';
 import { Product } from './data/mockProducts';
 import { useLanguage, LanguageSelector } from './context/LanguageContext';
@@ -56,89 +55,61 @@ export default function AppStorefront() {
     window.addEventListener('amal_store_updated', handleStoreSync);
     window.addEventListener('storage', handleStoreSync);
 
-    const unsubscribeCategories = onSnapshot(
-      doc(db, 'settings', 'categories'),
-      docSnap => {
-        if (!isMounted) return;
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          if (Array.isArray(data?.list)) {
-            const synced = saveCategories(data.list);
-            setCustomCategories(synced);
-          }
-        }
-      },
-      () => {
-        // local categories already loaded
-      }
-    );
+    const loadRemoteCatalogAndSettings = async () => {
+      try {
+        const [{ data: catRow }, { data: catalogRow }, { data: prodRows }] = await Promise.all([
+          supabase.from('store_settings').select('data').eq('id', 'categories').maybeSingle(),
+          supabase.from('store_settings').select('data').eq('id', 'catalog').maybeSingle(),
+          supabase.from('products').select('*').order('created_at', { ascending: false }),
+        ]);
 
-    const unsubscribeProducts = onSnapshot(
-      collection(db, 'products'),
-      querySnapshot => {
         if (!isMounted) return;
-        if (!querySnapshot.empty) {
-          const fetched: Product[] = querySnapshot.docs.map(docSnap => {
-            const data = docSnap.data();
-            return {
-              id: docSnap.id,
-              name: data.name || 'Amal Coolguard Vest',
-              price: Number(data.price) || 2499,
-              discountPrice: Number(data.discountPrice || data.price) || 1999,
-              description: data.description || 'Cooling coat for heat protection.',
-              imageUrl: data.imageUrl || '',
-              galleryImages: Array.isArray(data.galleryImages) ? data.galleryImages : undefined,
-              category: data.category || 'Coats',
-              rating: Number(data.rating) || 4.7,
-              reviewsCount: Number(data.reviewsCount) || 85,
-              features: Array.isArray(data.features) ? data.features : undefined,
-              stock: typeof data.stock === 'number' ? data.stock : undefined,
-              gstPercent: typeof data.gstPercent === 'number' ? data.gstPercent : 0,
-              deliveryCharge: typeof data.deliveryCharge === 'number' ? data.deliveryCharge : 0,
-              estimatedDeliveryDays: typeof data.estimatedDeliveryDays === 'string' ? data.estimatedDeliveryDays : '',
-            };
-          });
+
+        if (catalogRow?.data && Array.isArray(catalogRow.data.deletedIds)) {
+          syncDeletedProductIds(catalogRow.data.deletedIds);
+        }
+
+        if (catRow?.data && Array.isArray(catRow.data.list)) {
+          const synced = saveCategories(catRow.data.list);
+          setCustomCategories(synced);
+        }
+
+        if (Array.isArray(prodRows)) {
+          const fetched = prodRows.map(mapProductFromDb);
           const merged = mergeRemoteCatalogProducts(fetched);
           if (isMounted) {
             setProducts(merged);
             setBrokenImages({});
           }
         }
-      },
-      err => {
-        try {
-          handleFirestoreError(err, OperationType.GET, 'products');
-        } catch {
-          // Structured error logged cleanly; local catalog remains active
-        }
-      }
-    );
-
-    const fetchCatalogSettingsRemote = async () => {
-      try {
-        const snap = await Promise.race([
-          getDoc(doc(db, 'settings', 'catalog')),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000)),
-        ]);
-        if (snap.exists() && isMounted) {
-          const data = snap.data();
-          if (Array.isArray(data?.deletedIds)) {
-            syncDeletedProductIds(data.deletedIds);
-            if (isMounted) {
-              setProducts(getCatalogProducts());
-            }
-          }
-        }
       } catch {
-        // ignore
+        // Local catalog remains active if network unavailable
       }
     };
 
-    fetchCatalogSettingsRemote();
+    loadRemoteCatalogAndSettings();
+
+    const productsChannel = supabase
+      .channel('storefront-products-sync')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'products' },
+        () => {
+          loadRemoteCatalogAndSettings();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'store_settings' },
+        () => {
+          loadRemoteCatalogAndSettings();
+        }
+      )
+      .subscribe();
+
     return () => {
       isMounted = false;
-      unsubscribeProducts();
-      unsubscribeCategories();
+      supabase.removeChannel(productsChannel);
       window.removeEventListener('amal_store_updated', handleStoreSync);
       window.removeEventListener('storage', handleStoreSync);
     };
