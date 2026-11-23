@@ -27,14 +27,17 @@ export default function CustomerLogin() {
   const navigate = useNavigate();
 
   const redirectParam = searchParams.get('redirect') || '';
-  const safeRedirect = redirectParam.startsWith('/') ? redirectParam : '/account';
-  const isOrderRedirect = redirectParam.includes('/product/') || redirectParam.includes('openOrder=1');
+  const isOrderRedirect = redirectParam.startsWith('/product/') && redirectParam.includes('openOrder=1');
+  const safeRedirect = isOrderRedirect ? redirectParam : '/';
 
   useEffect(() => {
-    if (authReady && user && successMsg) {
-      const timer = setTimeout(() => {
-        navigate(safeRedirect, { replace: true });
-      }, 450);
+    if (authReady && user) {
+      const timer = setTimeout(
+        () => {
+          navigate(safeRedirect, { replace: true });
+        },
+        successMsg ? 350 : 120
+      );
       return () => clearTimeout(timer);
     }
   }, [authReady, user, successMsg, navigate, safeRedirect]);
@@ -42,16 +45,16 @@ export default function CustomerLogin() {
   const handleGoogleSignIn = async () => {
     setErrorMsg('');
     setSuccessMsg('');
-    const result = await signInWithGoogle();
+    const result = await signInWithGoogle(safeRedirect);
     if (result.user) {
       setSuccessMsg(
         isOrderRedirect
           ? `Welcome ${result.user.displayName || result.user.email}! Opening booking form...`
-          : `Signed in as ${result.user.email}! Redirecting...`
+          : `Signed in as ${result.user.email}! Opening Home Page...`
       );
       setTimeout(() => {
         navigate(safeRedirect, { replace: true });
-      }, 400);
+      }, 350);
     } else if (result.error) {
       setErrorMsg(result.error);
     }
@@ -107,7 +110,7 @@ export default function CustomerLogin() {
           <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
             {isOrderRedirect
               ? 'Please sign in with your Gmail account to place an order.'
-              : 'Sign in with Gmail to view your profile, saved address, and orders.'}
+              : 'Sign in with Gmail to continue shopping on Amal Coolguard.'}
           </p>
         </div>
 
@@ -153,7 +156,7 @@ export default function CustomerLogin() {
               onClick={() => navigate(safeRedirect, { replace: true })}
               className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm transition text-xs sm:text-sm"
             >
-              {isOrderRedirect ? 'Continue to Booking Form →' : 'Open My Profile →'}
+              {isOrderRedirect ? 'Continue to Booking Form →' : 'Go to Home Page →'}
             </button>
 
             <button

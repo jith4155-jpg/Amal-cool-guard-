@@ -51,6 +51,7 @@ export default function ProductDetails() {
   const [submittedOrderId, setSubmittedOrderId] = useState<string | null>(null);
   const [submittedDocId, setSubmittedDocId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [orderErrorMsg, setOrderErrorMsg] = useState('');
   const [screenshotPreview, setScreenshotPreview] = useState<string | null>(null);
   const [uploadingScreenshot, setUploadingScreenshot] = useState(false);
 
@@ -311,10 +312,12 @@ export default function ProductDetails() {
   const handleOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!product) return;
+    setOrderErrorMsg('');
 
+    const { data: sessionWrap } = await supabase.auth.getSession();
     const { data: sessData } = await supabase.auth.getUser();
-    const currentUser = toAppUser(sessData.user) || user;
-    if (!currentUser) {
+    const currentUser = toAppUser(sessData.user || sessionWrap.session?.user) || user;
+    if (!currentUser || (!sessionWrap.session && !sessData.user)) {
       setShowOrderModal(false);
       navigate(`/login?redirect=${encodeURIComponent(`/product/${product.id}?openOrder=1`)}`);
       return;
@@ -322,19 +325,25 @@ export default function ProductDetails() {
 
     setSubmitting(true);
 
-    // Generate sequential Order ID starting with 'A' + 6 digit counter (A000001, A000002...)
-    let currentCounter = Number(localStorage.getItem('amal_order_sequence_counter') || '1');
+    // Generate sequential Order ID via atomic RPC, or unique fallback ID so multi-device orders never collide
+    const makeUniqueFallbackOrderId = () => {
+      const tsPart = String(Date.now()).slice(-6);
+      const randPart = String(Math.floor(10 + Math.random() * 89));
+      return `A${tsPart}${randPart}`;
+    };
+
+    let orderId = '';
     try {
       const { data: rpcNum, error: rpcErr } = await supabase.rpc('next_order_number');
       if (!rpcErr && typeof rpcNum === 'number' && rpcNum >= 1) {
-        currentCounter = rpcNum;
+        orderId = 'A' + String(rpcNum).padStart(6, '0');
+        localStorage.setItem('amal_order_sequence_counter', String(rpcNum + 1));
+      } else {
+        orderId = makeUniqueFallbackOrderId();
       }
     } catch {
-      // Fallback to local counter cleanly
+      orderId = makeUniqueFallbackOrderId();
     }
-
-    const orderId = 'A' + String(currentCounter).padStart(6, '0');
-    localStorage.setItem('amal_order_sequence_counter', String(currentCounter + 1));
 
     const totals = calculateProductTotals(product);
     const amount = totals.finalTotal;
@@ -343,39 +352,37 @@ export default function ProductDetails() {
       (paymentSettings.defaultDeliveryDays || '').trim() ||
       '';
 
-    // Only attribute promoter if user arrived via a referral link
-    const activeRefCode = getActiveReferralCode();
+    // Attribute promoter cleanly whenever customer entered through any referral link
+    const rawRefCode = getActiveReferralCode();
+    const activeRefCode = rawRefCode ? rawRefCode.trim().toUpperCase().slice(0, 64) : null;
     let commissionAmt = 100;
     let promoterUserId = '';
     let promoterEmail = '';
     if (activeRefCode) {
       try {
-        const promotersList = safeJsonParse<Record<string, any>>(
-          localStorage.getItem('amal_promoters_list'),
-          {}
-        );
-        let foundProm = promotersList[activeRefCode.toUpperCase()];
-        if (!foundProm) {
-          const { data: refRows } = await supabase.rpc('resolve_promoter_referral', {
-            ref_code: activeRefCode.toUpperCase(),
-          });
-          if (Array.isArray(refRows) && refRows[0]) {
-            foundProm = {
-              commissionPerSale: Number(refRows[0].commission_per_sale ?? 100),
-              userId: refRows[0].user_id || '',
-              email: refRows[0].email || '',
-            };
+        const { data: refRows } = await supabase.rpc('resolve_promoter_referral', {
+          ref_code: activeRefCode,
+        });
+        if (Array.isArray(refRows) && refRows[0]) {
+          commissionAmt = Number(refRows[0].commission_per_sale ?? 100);
+          promoterUserId = refRows[0].user_id || '';
+          promoterEmail = refRows[0].email || '';
+        } else {
+          const promotersList = safeJsonParse<Record<string, any>>(
+            localStorage.getItem('amal_promoters_list'),
+            {}
+          );
+          const foundProm = promotersList[activeRefCode];
+          if (foundProm) {
+            if (typeof foundProm.commissionPerSale === 'number') {
+              commissionAmt = foundProm.commissionPerSale;
+            }
+            promoterUserId = foundProm.userId || '';
+            promoterEmail = foundProm.email || '';
           }
-        }
-        if (foundProm) {
-          if (typeof foundProm.commissionPerSale === 'number') {
-            commissionAmt = foundProm.commissionPerSale;
-          }
-          promoterUserId = foundProm.userId || '';
-          promoterEmail = foundProm.email || '';
         }
       } catch {
-        // fallback cleanly
+        // Keep referral code attribution cleanly even if lookup failed
       }
     }
 
@@ -399,49 +406,75 @@ export default function ProductDetails() {
     const safeProductImage = rawProductImg && rawProductImg.length <= 950000 ? rawProductImg : '';
 
     let createdDocId: string | null = null;
-    try {
-      const { data: insertedRow, error: insertErr } = await supabase
-        .from('bookings')
-        .insert({
-          order_id: orderId,
-          user_id: currentUser.uid,
-          user_email: (currentUser.email || '').slice(0, 200),
-          user_name: (currentUser.displayName || cleanCustomerName).slice(0, 120),
-          user_photo: (currentUser.photoURL || '').slice(0, 1000),
-          product_id: String(product.id).slice(0, 128),
-          product_name: (product.name || '').slice(0, 200),
-          product_image: safeProductImage,
-          product_price: totals.basePrice,
-          gst_percent: totals.gstPercent,
-          gst_amount: totals.gstAmount,
-          gst_number: (paymentSettings.gstNumber || '').slice(0, 64),
-          delivery_charge: totals.deliveryFee,
-          estimated_delivery_days: estDelivery.slice(0, 100),
-          price: amount,
-          customer_name: cleanCustomerName,
-          phone_number: cleanPhone,
-          address: cleanAddress,
-          pincode: cleanPincode,
-          payment_method: (formData.paymentMethod || 'UPI').slice(0, 50),
-          referral_code: activeRefCode ? activeRefCode.slice(0, 64) : null,
-          promoter_id: activeRefCode ? activeRefCode.slice(0, 64) : null,
-          promoter_user_id: activeRefCode ? promoterUserId.slice(0, 128) : '',
-          promoter_email: activeRefCode ? promoterEmail.slice(0, 200) : '',
-          promoter_commission: activeRefCode ? commissionAmt : 0,
-          delivery_status: 'pending',
-          status: 'pending_verification',
-          payment_screenshot: safeScreenshot,
-        })
-        .select('id')
-        .single();
+    let insertErrorMessage = '';
 
-      if (!insertErr && insertedRow?.id) {
-        createdDocId = String(insertedRow.id);
-      } else if (insertErr) {
-        console.warn('Supabase booking insert warning:', insertErr.message);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const { data: insertedRow, error: insertErr } = await supabase
+          .from('bookings')
+          .insert({
+            order_id: orderId,
+            user_id: currentUser.uid,
+            user_email: (currentUser.email || '').slice(0, 200),
+            user_name: (currentUser.displayName || cleanCustomerName).slice(0, 120),
+            user_photo: (currentUser.photoURL || '').slice(0, 1000),
+            product_id: String(product.id).slice(0, 128),
+            product_name: (product.name || '').slice(0, 200),
+            product_image: safeProductImage,
+            product_price: totals.basePrice,
+            gst_percent: totals.gstPercent,
+            gst_amount: totals.gstAmount,
+            gst_number: (paymentSettings.gstNumber || '').slice(0, 64),
+            delivery_charge: totals.deliveryFee,
+            estimated_delivery_days: estDelivery.slice(0, 100),
+            price: amount,
+            customer_name: cleanCustomerName,
+            phone_number: cleanPhone,
+            address: cleanAddress,
+            pincode: cleanPincode,
+            payment_method: (formData.paymentMethod || 'UPI').slice(0, 50),
+            referral_code: activeRefCode || null,
+            promoter_id: activeRefCode || null,
+            promoter_user_id: activeRefCode ? promoterUserId.slice(0, 128) : '',
+            promoter_email: activeRefCode ? promoterEmail.slice(0, 200) : '',
+            promoter_commission: activeRefCode ? commissionAmt : 0,
+            delivery_status: 'pending',
+            status: 'pending_verification',
+            payment_screenshot: safeScreenshot,
+          })
+          .select('id')
+          .single();
+
+        if (!insertErr && insertedRow?.id) {
+          createdDocId = String(insertedRow.id);
+          insertErrorMessage = '';
+          break;
+        }
+
+        if (insertErr) {
+          const code = String((insertErr as any).code || '');
+          const msgLower = String(insertErr.message || '').toLowerCase();
+          if (code === '23505' || msgLower.includes('duplicate') || msgLower.includes('order_id')) {
+            orderId = makeUniqueFallbackOrderId();
+            continue;
+          }
+          insertErrorMessage = insertErr.message || 'Could not save order to database.';
+          break;
+        }
+      } catch (err: any) {
+        insertErrorMessage = err?.message || 'Network error while submitting order.';
+        break;
       }
-    } catch (error) {
-      console.warn('Supabase booking insert exception:', error);
+    }
+
+    if (!createdDocId) {
+      setSubmitting(false);
+      setOrderErrorMsg(
+        insertErrorMessage
+          ? `Order could not be sent to store: ${insertErrorMessage}`
+          : 'Unable to send your order to the store right now. Please sign in again and retry.'
+      );
+      return;
     }
 
     // Write PII-free referral sale summary so the owning Promoter sees live cross-device order stats
@@ -450,9 +483,9 @@ export default function ProductDetails() {
         await supabase.from('promoter_sales').upsert(
           {
             order_id: orderId,
-            booking_doc_id: createdDocId || '',
+            booking_doc_id: createdDocId,
             buyer_user_id: currentUser.uid,
-            promoter_id: activeRefCode.toUpperCase(),
+            promoter_id: activeRefCode,
             promoter_user_id: promoterUserId,
             promoter_email: promoterEmail,
             product_id: product.id,
@@ -1216,6 +1249,12 @@ export default function ProductDetails() {
                     </div>
                   )}
                 </div>
+
+                {orderErrorMsg && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs font-bold text-red-700 text-center">
+                    {orderErrorMsg}
+                  </div>
+                )}
 
                 <button
                   type="submit"

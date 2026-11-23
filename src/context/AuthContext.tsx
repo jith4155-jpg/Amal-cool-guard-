@@ -65,7 +65,7 @@ interface AuthContextValue {
   myPromoterSales: any[];
   loadingPromoter: boolean;
   signingIn: boolean;
-  signInWithGoogle: () => Promise<{ user: AppUser | null; error?: string }>;
+  signInWithGoogle: (redirectPath?: string) => Promise<{ user: AppUser | null; error?: string }>;
   signInWithEmail: (email: string, password: string) => Promise<{ user: AppUser | null; error?: string }>;
   signUpWithEmail: (
     email: string,
@@ -516,7 +516,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         localStorage.removeItem(STORAGE_KEYS.CUSTOMER_SESSION);
         localStorage.removeItem(STORAGE_KEYS.PROMOTER_SESSION);
       }
-      if (mounted) setAuthReady(true);
+      if (mounted) {
+        setAuthReady(true);
+        try {
+          sessionStorage.removeItem('amal_oauth_pending');
+        } catch {
+          // ignore
+        }
+      }
     };
 
     supabase.auth
@@ -597,19 +604,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('amal_store_updated', onStoreSync);
   }, [user, loadUserOrders, loadUserPromoter]);
 
-  const signInWithGoogle = useCallback(async () => {
+  const signInWithGoogle = useCallback(async (redirectPath?: string) => {
     setSigningIn(true);
     try {
+      let targetUrl = `${window.location.origin}/`;
+      try {
+        const currentPath = window.location.pathname;
+        if (redirectPath && redirectPath.startsWith('/')) {
+          targetUrl = new URL(redirectPath, window.location.origin).toString();
+        } else if (
+          currentPath.startsWith('/admin') ||
+          currentPath.startsWith('/promoter') ||
+          currentPath.startsWith('/product/')
+        ) {
+          targetUrl = window.location.href;
+        }
+      } catch {
+        targetUrl = `${window.location.origin}/`;
+      }
+
+      try {
+        sessionStorage.setItem('amal_oauth_pending', '1');
+      } catch {
+        // ignore
+      }
+
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: window.location.href,
+          redirectTo: targetUrl,
           queryParams: {
             prompt: 'select_account',
           },
         },
       });
       if (error) {
+        try {
+          sessionStorage.removeItem('amal_oauth_pending');
+        } catch {
+          // ignore
+        }
         setSigningIn(false);
         return { user: null, error: error.message };
       }

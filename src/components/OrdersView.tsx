@@ -134,7 +134,7 @@ export default function OrdersView() {
               type="button"
               onClick={async () => {
                 setLoginError('');
-                const res = await signInWithGoogle();
+                const res = await signInWithGoogle('/');
                 if (res.error) setLoginError(res.error);
               }}
               disabled={signingIn}
@@ -151,7 +151,7 @@ export default function OrdersView() {
 
             <button
               type="button"
-              onClick={() => navigate('/login?redirect=/orders')}
+              onClick={() => navigate('/login')}
               className="w-full h-10 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-xl text-xs transition"
             >
               Open Login Page

@@ -62,7 +62,10 @@ interface ConfirmDialogState {
 const ADMIN_EMAIL = 'libinvincent310@gmail.com';
 
 export default function AdminDashboard() {
-  const { user: authUser, signInWithGoogle, signingIn } = useAuth();
+  const { user: authUser, signInWithGoogle, signInWithEmail, signingIn } = useAuth();
+  const [adminEmailInput, setAdminEmailInput] = useState(ADMIN_EMAIL);
+  const [adminPassInput, setAdminPassInput] = useState('');
+  const [showAdminEmailBox, setShowAdminEmailBox] = useState(false);
   const isAdminGmailConnected = authUser?.email?.toLowerCase() === ADMIN_EMAIL;
   const getCurrentAdminEmail = async (): Promise<string> => {
     try {
@@ -199,7 +202,13 @@ export default function AdminDashboard() {
       })
       .subscribe();
 
+    // Auto-poll every 12s as a reliability backup so orders from all referral links always appear
+    const pollTimer = setInterval(() => {
+      fetchOrders();
+    }, 12000);
+
     return () => {
+      clearInterval(pollTimer);
       supabase.removeChannel(bookingsChannel);
     };
   }, [authUser?.uid, isAdminGmailConnected, applyFetchedOrders]);
@@ -822,9 +831,9 @@ export default function AdminDashboard() {
   };
 
   const handleConnectAdminGmail = async (retryPending = false) => {
-    const res = await signInWithGoogle();
+    const res = await signInWithGoogle('/admin/dashboard');
     if (res.user?.email?.toLowerCase() === ADMIN_EMAIL) {
-      showToast('✓ Admin Gmail connected! Syncing Supabase...');
+      showToast('✓ Admin account connected! Syncing Supabase...');
       if (retryPending && pendingCloudAction) {
         const actionToRun = pendingCloudAction.run;
         setPendingCloudAction(null);
@@ -835,9 +844,35 @@ export default function AdminDashboard() {
       fetchPromoters();
     } else if (res.user) {
       showToast(
-        `Signed in as ${res.user.email}. Please select Admin Gmail (${ADMIN_EMAIL}) for Cloud Sync.`,
+        `Signed in as ${res.user.email}. Please select Admin account (${ADMIN_EMAIL}) for Cloud Sync.`,
         'error'
       );
+    } else if (res.error) {
+      showToast(res.error, 'error');
+    }
+  };
+
+  const handleConnectAdminByEmail = async (retryPending = false) => {
+    const cleanEmail = adminEmailInput.trim();
+    if (!cleanEmail || !adminPassInput) {
+      showToast('Enter Admin Email and Password.', 'error');
+      return;
+    }
+    const res = await signInWithEmail(cleanEmail, adminPassInput);
+    if (res.user?.email?.toLowerCase() === ADMIN_EMAIL) {
+      showToast('✓ Admin account connected! Syncing live orders...');
+      setAdminPassInput('');
+      setShowAdminEmailBox(false);
+      if (retryPending && pendingCloudAction) {
+        const actionToRun = pendingCloudAction.run;
+        setPendingCloudAction(null);
+        await actionToRun();
+      }
+      fetchOrders();
+      fetchProducts();
+      fetchPromoters();
+    } else if (res.user) {
+      showToast(`Signed in as ${res.user.email}. Please sign in with ${ADMIN_EMAIL}.`, 'error');
     } else if (res.error) {
       showToast(res.error, 'error');
     }
@@ -1414,14 +1449,49 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                 : `Sign in with Admin Gmail (${ADMIN_EMAIL}) so order approvals, ETA & Tracking IDs reflect live on customer phones.`}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => handleConnectAdminGmail(false)}
-            disabled={signingIn}
-            className="w-full sm:w-auto shrink-0 bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow transition disabled:opacity-60"
-          >
-            {signingIn ? 'Connecting...' : '🔐 Connect Admin Gmail Now'}
-          </button>
+          <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto shrink-0">
+            <button
+              type="button"
+              onClick={() => handleConnectAdminGmail(false)}
+              disabled={signingIn}
+              className="w-full sm:w-auto bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow transition disabled:opacity-60"
+            >
+              {signingIn ? 'Connecting...' : '🔐 Connect Admin Google'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAdminEmailBox(v => !v)}
+              className="w-full sm:w-auto bg-white hover:bg-amber-100 text-amber-950 border border-amber-400 font-bold text-xs px-3 py-2.5 rounded-xl transition"
+            >
+              {showAdminEmailBox ? 'Close Email Login' : '✉️ Email Login'}
+            </button>
+          </div>
+          {showAdminEmailBox && (
+            <div className="w-full flex flex-col sm:flex-row gap-2 pt-2 border-t border-amber-300/70">
+              <input
+                type="email"
+                value={adminEmailInput}
+                onChange={e => setAdminEmailInput(e.target.value)}
+                placeholder={ADMIN_EMAIL}
+                className="flex-1 p-2 text-xs border border-amber-300 rounded-xl bg-white outline-none font-semibold"
+              />
+              <input
+                type="password"
+                value={adminPassInput}
+                onChange={e => setAdminPassInput(e.target.value)}
+                placeholder="Admin Supabase Password"
+                className="flex-1 p-2 text-xs border border-amber-300 rounded-xl bg-white outline-none"
+              />
+              <button
+                type="button"
+                disabled={signingIn}
+                onClick={() => handleConnectAdminByEmail(false)}
+                className="bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs px-4 py-2 rounded-xl"
+              >
+                Sign In
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -3798,6 +3868,31 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
               >
                 {signingIn ? 'Connecting Google...' : `🔐 Connect ${ADMIN_EMAIL} & Apply`}
               </button>
+              <div className="bg-gray-50 p-2.5 rounded-xl border border-gray-200 space-y-1.5 text-left">
+                <p className="text-[10px] font-bold text-gray-700">Or sign in with Admin Email & Password:</p>
+                <input
+                  type="email"
+                  value={adminEmailInput}
+                  onChange={e => setAdminEmailInput(e.target.value)}
+                  placeholder={ADMIN_EMAIL}
+                  className="w-full p-2 text-[11px] border border-gray-300 rounded-lg bg-white outline-none"
+                />
+                <input
+                  type="password"
+                  value={adminPassInput}
+                  onChange={e => setAdminPassInput(e.target.value)}
+                  placeholder="Account Password"
+                  className="w-full p-2 text-[11px] border border-gray-300 rounded-lg bg-white outline-none"
+                />
+                <button
+                  type="button"
+                  disabled={signingIn}
+                  onClick={() => handleConnectAdminByEmail(true)}
+                  className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-2 rounded-lg text-[11px]"
+                >
+                  Sign In & Apply Now
+                </button>
+              </div>
               <button
                 type="button"
                 onClick={() => setPendingCloudAction(null)}

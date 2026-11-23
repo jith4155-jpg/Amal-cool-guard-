@@ -83,7 +83,7 @@ export default function AccountDashboard() {
 
   const handleQuickLogin = async () => {
     setLoginError('');
-    const res = await signInWithGoogle();
+    const res = await signInWithGoogle('/');
     if (res.error) setLoginError(res.error);
   };
 
@@ -147,7 +147,7 @@ export default function AccountDashboard() {
 
             <button
               type="button"
-              onClick={() => navigate('/login?redirect=/account')}
+              onClick={() => navigate('/login')}
               className="w-full h-10 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-xl text-xs transition"
             >
               Open Login Page

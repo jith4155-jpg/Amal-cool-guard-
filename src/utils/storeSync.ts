@@ -701,23 +701,63 @@ const IGNORED_QUERY_KEYS = new Set([
   'lang',
   'mode',
   'v',
+  'code',
+  'state',
+  'error',
+  'error_code',
+  'error_description',
+  'type',
+  'token_hash',
+  'openorder',
+  'redirect',
 ]);
+
+function isOAuthCallbackUrl(): boolean {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const hash = window.location.hash || '';
+    if (
+      params.has('state') ||
+      params.has('error') ||
+      params.has('error_code') ||
+      hash.includes('access_token=') ||
+      hash.includes('refresh_token=')
+    ) {
+      return true;
+    }
+    const rawCode = (params.get('code') || '').trim();
+    if (rawCode && (rawCode.length > 20 || /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(rawCode))) {
+      return true;
+    }
+    return sessionStorage.getItem('amal_oauth_pending') === '1';
+  } catch {
+    return false;
+  }
+}
 
 function extractReferralCodeFromSearch(search: string): string | null {
   try {
     const urlParams = new URLSearchParams(search);
+    const rawCodeParam = (urlParams.get('code') || '').trim();
+    const isShortPromoterCodeParam =
+      Boolean(rawCodeParam) &&
+      rawCodeParam.length <= 20 &&
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(rawCodeParam) &&
+      !urlParams.has('state') &&
+      !urlParams.has('error');
+
     const explicit = (
       urlParams.get('id') ||
-      urlParams.get('code') ||
+      (isShortPromoterCodeParam ? rawCodeParam : '') ||
       urlParams.get('promoter') ||
       urlParams.get('ref') ||
       ''
     )
       .trim()
       .toUpperCase();
-    if (explicit) return explicit;
+    if (explicit && /^[A-Z0-9_-]{2,20}$/i.test(explicit)) return explicit;
 
-    // Support clean links like https://www.amalcoolguard.in/?L01N
+    // Support clean links like https://amalcoolguard.in/?A04H or ?L01N
     for (const [key, value] of urlParams.entries()) {
       const cleanKey = key.trim();
       if (
@@ -736,8 +776,8 @@ function extractReferralCodeFromSearch(search: string): string | null {
 }
 
 /**
- * Handles ?<ID> (e.g. ?L01N) / ?id=... / ?promoter=... / ?ref=... silently in the background.
- * Normal website visits & Google Search visits clear any lingering referral code.
+ * Handles ?<ID> (e.g. ?A04H) / ?id=... / ?promoter=... / ?ref=... silently in the background.
+ * Preserves referral codes across OAuth sign-in redirects; normal fresh visits clear old codes.
  */
 export function syncReferralFromUrl(isStoreHomeEntry = true): string | null {
   try {
@@ -745,9 +785,18 @@ export function syncReferralFromUrl(isStoreHomeEntry = true): string | null {
 
     if (paramCode) {
       sessionStorage.setItem(STORAGE_KEYS.SESSION_REFERRAL, paramCode);
-      localStorage.removeItem(STORAGE_KEYS.LEGACY_REFERRAL);
+      localStorage.setItem(
+        STORAGE_KEYS.LEGACY_REFERRAL,
+        JSON.stringify({ code: paramCode, savedAt: Date.now() })
+      );
       hasHandledInitialReferralEntry = true;
       return paramCode;
+    }
+
+    if (isOAuthCallbackUrl()) {
+      const existing = getActiveReferralCode();
+      hasHandledInitialReferralEntry = true;
+      return existing;
     }
 
     // If the user opened the homepage on a fresh entry (e.g. direct URL or Google Search) without any ID param
@@ -759,7 +808,7 @@ export function syncReferralFromUrl(isStoreHomeEntry = true): string | null {
     }
 
     hasHandledInitialReferralEntry = true;
-    return sessionStorage.getItem(STORAGE_KEYS.SESSION_REFERRAL);
+    return getActiveReferralCode();
   } catch {
     return null;
   }
@@ -769,7 +818,27 @@ export function getActiveReferralCode(): string | null {
   try {
     const paramCode = extractReferralCodeFromSearch(window.location.search);
     if (paramCode) return paramCode;
-    return sessionStorage.getItem(STORAGE_KEYS.SESSION_REFERRAL);
+
+    const sessionCode = (sessionStorage.getItem(STORAGE_KEYS.SESSION_REFERRAL) || '').trim().toUpperCase();
+    if (sessionCode) return sessionCode;
+
+    const rawBackup = localStorage.getItem(STORAGE_KEYS.LEGACY_REFERRAL);
+    if (rawBackup) {
+      try {
+        const parsed = JSON.parse(rawBackup) as { code?: string; savedAt?: number };
+        const ageMs = Date.now() - Number(parsed?.savedAt || 0);
+        if (parsed?.code && ageMs >= 0 && ageMs < 48 * 60 * 60 * 1000) {
+          const clean = String(parsed.code).trim().toUpperCase();
+          sessionStorage.setItem(STORAGE_KEYS.SESSION_REFERRAL, clean);
+          return clean;
+        }
+      } catch {
+        // Legacy plain string format fallback
+        const clean = rawBackup.trim().toUpperCase();
+        if (/^[A-Z0-9_-]{2,20}$/.test(clean)) return clean;
+      }
+    }
+    return null;
   } catch {
     return null;
   }
