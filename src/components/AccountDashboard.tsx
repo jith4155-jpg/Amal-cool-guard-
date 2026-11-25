@@ -1,11 +1,20 @@
 import { useNavigate, Link } from 'react-router-dom';
 import { useState, useEffect, useCallback } from 'react';
+import { collection, doc, getDoc, getDocs, onSnapshot } from 'firebase/firestore';
+import { db, mapLiveConfigFromDb, mapLiveItemFromDb } from '../firebase';
 import { Product } from '../data/mockProducts';
+import LiveShowcaseSection from './LiveShowcaseSection';
 import {
   getCatalogProducts,
-  getCleanStoreBaseUrl,
   getPromoterShareLink,
   safeJsonParse,
+  getLiveConfig,
+  saveLiveConfig,
+  getLiveItems,
+  mergeRemoteLiveItems,
+  syncDeletedLiveItemIds,
+  type LiveSaleConfig,
+  type LiveSaleItem,
 } from '../utils/storeSync';
 import { ThemeSwitcher } from '../context/ThemeContext';
 import { useLanguage, LanguageSelector } from '../context/LanguageContext';
@@ -34,6 +43,9 @@ export default function AccountDashboard() {
   const [savedProducts, setSavedProducts] = useState<Product[]>([]);
   const [loginError, setLoginError] = useState('');
   const [copiedPromLink, setCopiedPromLink] = useState(false);
+  const [liveConfig, setLiveConfig] = useState<LiveSaleConfig>(() => getLiveConfig());
+  const [liveItems, setLiveItems] = useState<LiveSaleItem[]>(() => getLiveItems());
+  const [showProfileLiveTab, setShowProfileLiveTab] = useState(true);
 
   const wishlistKey = user ? `amal_wishlist_${user.uid}` : '';
   const cleanStoreBase = 'https://amalcoolguard.in';
@@ -62,6 +74,58 @@ export default function AccountDashboard() {
       refreshMyOrders();
     }
   }, [authReady, user, refreshMyOrders]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const syncLocal = () => {
+      if (!isMounted) return;
+      setLiveConfig(getLiveConfig());
+      setLiveItems(getLiveItems());
+    };
+    window.addEventListener('amal_store_updated', syncLocal);
+    window.addEventListener('storage', syncLocal);
+
+    const loadInitialLive = async () => {
+      try {
+        const [cfgSnap, itemsSnap] = await Promise.all([
+          getDoc(doc(db, 'settings', 'live')),
+          getDocs(collection(db, 'live_items')),
+        ]);
+        if (!isMounted) return;
+        if (cfgSnap.exists()) {
+          const d = cfgSnap.data();
+          if (Array.isArray(d?.deletedLiveIds)) syncDeletedLiveItemIds(d.deletedLiveIds);
+          setLiveConfig(saveLiveConfig(mapLiveConfigFromDb(d), false));
+        }
+        if (!itemsSnap.empty) {
+          setLiveItems(mergeRemoteLiveItems(itemsSnap.docs.map(d => mapLiveItemFromDb(d.data(), d.id))));
+        }
+      } catch {
+        // ignore
+      }
+    };
+    loadInitialLive();
+
+    const unsubCfg = onSnapshot(doc(db, 'settings', 'live'), snap => {
+      if (!isMounted || !snap.exists()) return;
+      const d = snap.data();
+      if (Array.isArray(d?.deletedLiveIds)) syncDeletedLiveItemIds(d.deletedLiveIds);
+      setLiveConfig(saveLiveConfig(mapLiveConfigFromDb(d), false));
+      setLiveItems(getLiveItems());
+    });
+    const unsubItems = onSnapshot(collection(db, 'live_items'), snap => {
+      if (!isMounted) return;
+      setLiveItems(mergeRemoteLiveItems(snap.docs.map(d => mapLiveItemFromDb(d.data(), d.id))));
+    });
+
+    return () => {
+      isMounted = false;
+      unsubCfg();
+      unsubItems();
+      window.removeEventListener('amal_store_updated', syncLocal);
+      window.removeEventListener('storage', syncLocal);
+    };
+  }, []);
 
   const removeFromWishlist = (productId: string) => {
     if (!wishlistKey) return;
@@ -169,6 +233,41 @@ export default function AccountDashboard() {
               </div>
               <span className="text-purple-700 font-bold shrink-0">›</span>
             </Link>
+          </div>
+
+          {/* Lower Profile Section: Live Option & Active Live Offers */}
+          <div className="mt-5 space-y-3">
+            <button
+              type="button"
+              onClick={() => setShowProfileLiveTab(prev => !prev)}
+              className="w-full flex items-center justify-between p-4 bg-white rounded-2xl border border-rose-200 shadow-xs hover:bg-rose-50/50 transition"
+            >
+              <div className="flex items-center gap-2.5">
+                <span
+                  className={`inline-flex items-center gap-1.5 text-[10px] font-black uppercase px-2 py-0.5 rounded ${
+                    liveConfig.active ? 'bg-rose-600 text-white' : 'bg-gray-200 text-gray-700'
+                  }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${liveConfig.active ? 'bg-white animate-ping' : 'bg-gray-500'}`} />
+                  {liveConfig.headerLabel || 'LIVE'}
+                </span>
+                <div className="text-left">
+                  <p className="font-extrabold text-xs text-gray-900">Live Offers &amp; Sale Deals</p>
+                  <p className="text-[11px] text-gray-500">
+                    {liveConfig.active
+                      ? `${liveItems.filter(i => i.visible !== false).length} Live items • ${liveConfig.defaultDiscountPercent || 0}% Offer`
+                      : 'No live sale active right now'}
+                  </p>
+                </div>
+              </div>
+              <span className="text-xs font-extrabold text-rose-700">
+                {showProfileLiveTab ? 'Hide ▴' : 'View Live ▾'}
+              </span>
+            </button>
+
+            {showProfileLiveTab && liveConfig.active && (
+              <LiveShowcaseSection config={liveConfig} items={liveItems} variant="profile" />
+            )}
           </div>
         </div>
       </div>
@@ -517,6 +616,56 @@ export default function AccountDashboard() {
           <p className="text-xs text-gray-400 italic">
             No delivery address saved for {user.email} yet. Save an address for faster checkout.
           </p>
+        )}
+      </div>
+
+      {/* Lower Profile Section: "Live" Tab / Option + Active Live Items & Offers */}
+      <div className="mx-4 mt-4 space-y-3">
+        <button
+          type="button"
+          onClick={() => setShowProfileLiveTab(prev => !prev)}
+          className="w-full flex items-center justify-between p-4 bg-white rounded-2xl border border-rose-200 shadow-sm hover:bg-rose-50/40 transition"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <span
+              className={`inline-flex items-center gap-1.5 text-[10px] font-black uppercase px-2.5 py-1 rounded-md shrink-0 ${
+                liveConfig.active ? 'bg-rose-600 text-white' : 'bg-gray-200 text-gray-700'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  liveConfig.active ? 'bg-white animate-ping' : 'bg-gray-500'
+                }`}
+              />
+              <span>{liveConfig.headerLabel || 'LIVE'}</span>
+            </span>
+            <div className="text-left min-w-0">
+              <p className="font-extrabold text-sm text-gray-900 truncate">
+                Live Offers &amp; Percentage Deals
+              </p>
+              <p className="text-[11px] text-gray-500 truncate">
+                {liveConfig.active
+                  ? `${liveItems.filter(i => i.visible !== false).length} active live deals • ${liveConfig.defaultDiscountPercent || 0}% Off`
+                  : 'Check back soon for Live flash deals'}
+              </p>
+            </div>
+          </div>
+          <span className="text-xs font-extrabold text-rose-700 shrink-0 whitespace-nowrap">
+            {showProfileLiveTab ? 'Hide ▴' : 'Open Live ▾'}
+          </span>
+        </button>
+
+        {showProfileLiveTab && (
+          liveConfig.active ? (
+            <LiveShowcaseSection config={liveConfig} items={liveItems} variant="profile" />
+          ) : (
+            <div className="bg-white border border-gray-200 rounded-2xl p-5 text-center space-y-1.5">
+              <p className="text-xs font-extrabold text-gray-800">No Live Sale Active Right Now</p>
+              <p className="text-[11px] text-gray-500">
+                When Admin activates a Live offer session (10%, 20% off &amp; flash models), it will appear right here automatically.
+              </p>
+            </div>
+          )
         )}
       </div>
 

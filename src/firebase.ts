@@ -1,9 +1,23 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, type User as FirebaseAuthUser } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
-import { getStorage, ref as storageRef, uploadString, getDownloadURL } from 'firebase/storage';
+import {
+  getStorage,
+  ref as storageRef,
+  uploadString,
+  uploadBytes,
+  getDownloadURL,
+} from 'firebase/storage';
 import firebaseConfig from '../firebase-applet-config.json';
 import { Product } from './data/mockProducts';
+import { type CategoryItem, getCategoryAutoImage, slugifyCategoryId } from './utils/categoryArt';
+import {
+  DEFAULT_LIVE_CONFIG,
+  type LiveBoxTheme,
+  type LiveSaleBox,
+  type LiveSaleConfig,
+  type LiveSaleItem,
+} from './utils/liveTypes';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -113,6 +127,23 @@ export async function uploadDataUrlToStorage(
   }
 }
 
+export async function uploadMediaFileToStorage(
+  file: File,
+  objectPath: string
+): Promise<string | null> {
+  try {
+    const cleanPath = objectPath.replace(/^\/+/, '');
+    const fileRef = storageRef(storage, cleanPath);
+    await uploadBytes(fileRef, file, {
+      contentType: file.type || 'video/mp4',
+    });
+    return await getDownloadURL(fileRef);
+  } catch (err) {
+    console.warn('Firebase Storage media upload skipped:', err);
+    return null;
+  }
+}
+
 function normalizeTimestampValue(val: any): string | undefined {
   if (!val) return undefined;
   if (typeof val === 'string') return val;
@@ -122,6 +153,10 @@ function normalizeTimestampValue(val: any): string | undefined {
 }
 
 export function mapProductFromDb(row: Record<string, any>, docId?: string): Product {
+  const validPlacement =
+    row.placement === 'banner' || row.placement === 'deals' || row.placement === 'spotlight'
+      ? row.placement
+      : 'grid';
   return {
     id: String(docId || row.id || ''),
     name: String(row.name || 'Amal Coolguard Vest'),
@@ -131,6 +166,11 @@ export function mapProductFromDb(row: Record<string, any>, docId?: string): Prod
     imageUrl: String(row.imageUrl || ''),
     galleryImages: Array.isArray(row.galleryImages) ? row.galleryImages : undefined,
     category: String(row.category || 'Coats'),
+    tag: row.tag ? String(row.tag) : undefined,
+    placement: validPlacement,
+    sectionLabel: row.sectionLabel ? String(row.sectionLabel).trim() : '',
+    visible: row.visible !== false,
+    isDemo: Boolean(row.isDemo),
     rating: Number(row.rating) || 4.8,
     reviewsCount: Number(row.reviewsCount) || 1,
     features: Array.isArray(row.features) ? row.features : undefined,
@@ -142,6 +182,10 @@ export function mapProductFromDb(row: Record<string, any>, docId?: string): Prod
 }
 
 export function mapProductToDb(prod: Product) {
+  const validPlacement =
+    prod.placement === 'banner' || prod.placement === 'deals' || prod.placement === 'spotlight'
+      ? prod.placement
+      : 'grid';
   return {
     name: String(prod.name || '').slice(0, 200),
     price: Math.max(0, Number(prod.price || 0)),
@@ -153,6 +197,11 @@ export function mapProductToDb(prod: Product) {
       .filter(Boolean)
       .slice(0, 15),
     category: String(prod.category || 'Coats').slice(0, 100),
+    tag: String(prod.tag || '').trim().slice(0, 60),
+    placement: validPlacement,
+    sectionLabel: String(prod.sectionLabel || '').trim().slice(0, 80),
+    visible: prod.visible !== false,
+    isDemo: Boolean(prod.isDemo),
     rating: Number(prod.rating || 4.8),
     reviewsCount: Number(prod.reviewsCount || 1),
     features: (prod.features || []).map(f => String(f || '').slice(0, 200)).slice(0, 20),
@@ -160,6 +209,37 @@ export function mapProductToDb(prod: Product) {
     gstPercent: Math.max(0, Number(prod.gstPercent || 0)),
     deliveryCharge: Math.max(0, Number(prod.deliveryCharge || 0)),
     estimatedDeliveryDays: String(prod.estimatedDeliveryDays || '').trim().slice(0, 100),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function mapCategoryFromDb(row: Record<string, any>, docId?: string): CategoryItem {
+  const name = String(row.name || 'Category').trim();
+  return {
+    id: String(docId || row.id || slugifyCategoryId(name)),
+    name,
+    imageUrl: String(row.imageUrl || '').trim() || getCategoryAutoImage(name),
+    visible: row.visible !== false,
+    sortOrder: Number(row.sortOrder ?? 99),
+    isDemo: Boolean(row.isDemo),
+    subTags: Array.isArray(row.subTags)
+      ? row.subTags.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 15)
+      : undefined,
+    updatedAt: normalizeTimestampValue(row.updatedAt),
+  };
+}
+
+export function mapCategoryToDb(cat: CategoryItem) {
+  const cleanName = String(cat.name || 'Category').trim().slice(0, 100);
+  const cleanId = String(cat.id || slugifyCategoryId(cleanName)).slice(0, 128);
+  return {
+    id: cleanId,
+    name: cleanName,
+    imageUrl: String(cat.imageUrl || getCategoryAutoImage(cleanName)).slice(0, 950000),
+    visible: cat.visible !== false,
+    sortOrder: Number(cat.sortOrder ?? 99),
+    isDemo: Boolean(cat.isDemo),
+    subTags: (cat.subTags || []).map(s => String(s || '').trim().slice(0, 60)).filter(Boolean).slice(0, 15),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -306,5 +386,134 @@ export function mapPromoterSaleFromDb(row: Record<string, any>, docId?: string) 
     deliveredAt: String(row.deliveredAt ?? ''),
     status: String(row.status ?? 'pending_verification'),
     createdAt: normalizeTimestampValue(row.createdAt) || new Date().toISOString(),
+  };
+}
+
+export function mapLiveConfigFromDb(row: Record<string, any>): LiveSaleConfig {
+  const validTheme = (t: any): LiveBoxTheme =>
+    t === 'amber' || t === 'blue' || t === 'emerald' ? t : 'crimson';
+  const rawBoxes = Array.isArray(row.liveBoxes) ? row.liveBoxes : DEFAULT_LIVE_CONFIG.liveBoxes;
+  const boxes: LiveSaleBox[] = rawBoxes
+    .filter((b: any) => b && (b.title || b.offerBadge))
+    .slice(0, 20)
+    .map((b: any, i: number) => ({
+      id: String(b.id || `box_${i + 1}`).slice(0, 64),
+      sectionName: String(b.sectionName || '').trim().slice(0, 80),
+      title: String(b.title || 'Live Deal').slice(0, 100),
+      subtitle: String(b.subtitle || '').slice(0, 140),
+      offerBadge: String(b.offerBadge || 'LIVE OFFER').slice(0, 40),
+      offerPercent: Number(b.offerPercent || 0),
+      offerAmount: Number(b.offerAmount || 0),
+      ctaText: String(b.ctaText || 'Shop Live').slice(0, 40),
+      theme: validTheme(b.theme),
+    }));
+
+  return {
+    active: Boolean(row.active),
+    headerLabel: String(row.headerLabel || 'LIVE').trim() || 'LIVE',
+    subtitle: String(row.subtitle ?? DEFAULT_LIVE_CONFIG.subtitle),
+    durationHours: Math.max(0, Number(row.durationHours ?? 2)),
+    durationMinutes: Math.max(0, Number(row.durationMinutes ?? 0)),
+    durationText: String(row.durationText ?? ''),
+    startedAt: normalizeTimestampValue(row.startedAt) || '',
+    endsAt: normalizeTimestampValue(row.endsAt) || '',
+    defaultDiscountPercent: Math.max(0, Number(row.defaultDiscountPercent ?? 20)),
+    defaultOfferAmount: Math.max(0, Number(row.defaultOfferAmount ?? 0)),
+    liveBoxes: boxes,
+    updatedAt: normalizeTimestampValue(row.updatedAt),
+  };
+}
+
+export function mapLiveConfigToDb(cfg: LiveSaleConfig, deletedLiveIds: string[] = []) {
+  return {
+    active: Boolean(cfg.active),
+    headerLabel: (String(cfg.headerLabel || 'LIVE').trim() || 'LIVE').slice(0, 80),
+    subtitle: String(cfg.subtitle || '').slice(0, 200),
+    durationHours: Math.max(0, Number(cfg.durationHours || 0)),
+    durationMinutes: Math.max(0, Number(cfg.durationMinutes || 0)),
+    durationText: String(cfg.durationText || '').slice(0, 100),
+    startedAt: String(cfg.startedAt || '').slice(0, 100),
+    endsAt: String(cfg.endsAt || '').slice(0, 100),
+    defaultDiscountPercent: Math.max(0, Number(cfg.defaultDiscountPercent || 0)),
+    defaultOfferAmount: Math.max(0, Number(cfg.defaultOfferAmount || 0)),
+    liveBoxes: (cfg.liveBoxes || []).slice(0, 20).map((b, i) => ({
+      id: String(b.id || `box_${i + 1}`).slice(0, 64),
+      sectionName: String(b.sectionName || '').trim().slice(0, 80),
+      title: String(b.title || 'Live Deal').slice(0, 100),
+      subtitle: String(b.subtitle || '').slice(0, 140),
+      offerBadge: String(b.offerBadge || 'LIVE OFFER').slice(0, 40),
+      offerPercent: Math.max(0, Number(b.offerPercent || 0)),
+      offerAmount: Math.max(0, Number(b.offerAmount || 0)),
+      ctaText: String(b.ctaText || 'Shop Live').slice(0, 40),
+      theme: b.theme || 'crimson',
+    })),
+    deletedLiveIds: deletedLiveIds.map(String).filter(Boolean).slice(0, 200),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function mapLiveItemFromDb(row: Record<string, any>, docId?: string): LiveSaleItem {
+  const category = String(row.category || 'Coats').trim();
+  const images = Array.isArray(row.images)
+    ? row.images.map((s: any) => String(s || '').trim()).filter(Boolean)
+    : [];
+  const videos = Array.isArray(row.videos)
+    ? row.videos.map((s: any) => String(s || '').trim()).filter(Boolean)
+    : [];
+  return {
+    id: String(docId || row.id || ''),
+    boxId: row.boxId ? String(row.boxId).trim() : '',
+    sectionName: row.sectionName ? String(row.sectionName).trim() : '',
+    title: String(row.title || 'Live Deal Item'),
+    modelName: String(row.modelName || ''),
+    category,
+    originalPrice: Math.max(0, Number(row.originalPrice || 0)),
+    offerPrice: Math.max(0, Number(row.offerPrice ?? row.originalPrice ?? 0)),
+    discountPercent: Math.max(0, Number(row.discountPercent || 0)),
+    offerAmount: Math.max(0, Number(row.offerAmount || 0)),
+    tag: String(row.tag || ''),
+    description: String(row.description || ''),
+    images: images.length > 0 ? images : [getCategoryAutoImage(category)],
+    videos,
+    linkedProductId: row.linkedProductId ? String(row.linkedProductId) : '',
+    visible: row.visible !== false,
+    sortOrder: Number(row.sortOrder ?? 99),
+    createdAt: normalizeTimestampValue(row.createdAt),
+    updatedAt: normalizeTimestampValue(row.updatedAt),
+  };
+}
+
+export function mapLiveItemToDb(item: LiveSaleItem) {
+  const cleanId = String(item.id || `live_${Date.now()}`).slice(0, 128);
+  const category = String(item.category || 'Coats').trim().slice(0, 100);
+  const cleanImages = (item.images || [])
+    .map(s => String(s || '').trim().slice(0, 950000))
+    .filter(Boolean)
+    .slice(0, 15);
+  const cleanVideos = (item.videos || [])
+    .map(s => String(s || '').trim().slice(0, 950000))
+    .filter(Boolean)
+    .slice(0, 10);
+
+  return {
+    id: cleanId,
+    boxId: String(item.boxId || '').trim().slice(0, 64),
+    sectionName: String(item.sectionName || '').trim().slice(0, 80),
+    title: (String(item.title || 'Live Deal').trim() || 'Live Deal').slice(0, 200),
+    modelName: String(item.modelName || '').trim().slice(0, 120),
+    category,
+    originalPrice: Math.max(0, Number(item.originalPrice || 0)),
+    offerPrice: Math.max(0, Number(item.offerPrice || 0)),
+    discountPercent: Math.max(0, Number(item.discountPercent || 0)),
+    offerAmount: Math.max(0, Number(item.offerAmount || 0)),
+    tag: String(item.tag || '').trim().slice(0, 80),
+    description: String(item.description || '').trim().slice(0, 2000),
+    images: cleanImages,
+    videos: cleanVideos,
+    linkedProductId: String(item.linkedProductId || '').trim().slice(0, 128),
+    visible: item.visible !== false,
+    sortOrder: Number(item.sortOrder ?? 99),
+    createdAt: String(item.createdAt || new Date().toISOString()).slice(0, 100),
+    updatedAt: new Date().toISOString(),
   };
 }

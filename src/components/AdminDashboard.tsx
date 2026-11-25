@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   collection,
@@ -19,16 +19,29 @@ import {
   db,
   handleFirestoreError,
   mapBookingFromDb,
+  mapCategoryFromDb,
+  mapCategoryToDb,
+  mapLiveConfigFromDb,
+  mapLiveItemFromDb,
   mapProductFromDb,
   mapProductToDb,
   mapPromoterFromDb,
   OperationType,
   uploadDataUrlToStorage,
 } from '../firebase';
-import { Product } from '../data/mockProducts';
+import AdminLiveTab from './AdminLiveTab';
+import { Product, ProductPlacement } from '../data/mockProducts';
 import { ThemeSwitcher } from '../context/ThemeContext';
 import {
-  compressProductImageToRange,
+  type CategoryItem,
+  getCategoryAutoImage,
+  getProductAutoGallery,
+  STARTER_CATEGORIES,
+  STARTER_DEMO_PRODUCTS,
+} from '../utils/categoryArt';
+import {
+  compressImageToTargetKB,
+  getImageExtensionFromDataUrl,
   estimateDataUrlKB,
   getCatalogProducts,
   isProductDeleted,
@@ -40,6 +53,7 @@ import {
   resolveOrderProductImage,
   restoreDefaultCatalogProducts,
   clearAllCatalogProducts,
+  clearDemoProducts,
   getLocalOrders,
   saveAllOrders,
   deleteOrderLocally,
@@ -54,16 +68,29 @@ import {
   DEFAULT_STORE_BASE_URL,
   notifyStoreUpdated,
   safeJsonParse,
-  getCategories,
-  saveCategories,
-  addCategory,
-  deleteCategory,
+  getCategoryItems,
+  saveCategoryItems,
+  mergeRemoteCategoryItems,
+  addOrUpdateCategoryItem,
+  toggleCategoryVisibility,
+  deleteCategoryItem,
+  clearDemoCategories,
+  restoreStarterCategories,
   clearAllCategories,
+  getDeletedCategoryIds,
+  syncDeletedCategoryIds,
   saveCatalogProducts,
   getPaymentSettings,
   savePaymentSettingsSync,
   StorePaymentSettings,
   calculateProductTotals,
+  getLiveConfig,
+  saveLiveConfig,
+  getLiveItems,
+  mergeRemoteLiveItems,
+  syncDeletedLiveItemIds,
+  type LiveSaleConfig,
+  type LiveSaleItem,
 } from '../utils/storeSync';
 
 export type PaymentSettings = StorePaymentSettings;
@@ -94,6 +121,10 @@ function buildPaymentSettingsPayload(settings: StorePaymentSettings) {
     blockAccountWishlist: Boolean(settings.blockAccountWishlist),
     blockAccountCoupons: Boolean(settings.blockAccountCoupons),
     blockAccountHelp: Boolean(settings.blockAccountHelp),
+    sectionTitleBanner: String(settings.sectionTitleBanner || '').trim().slice(0, 80),
+    sectionTitleDeals: String(settings.sectionTitleDeals || '').trim().slice(0, 80),
+    sectionTitleSpotlight: String(settings.sectionTitleSpotlight || '').trim().slice(0, 80),
+    sectionTitleGrid: String(settings.sectionTitleGrid || '').trim().slice(0, 80),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -107,7 +138,7 @@ export default function AdminDashboard() {
     }
   }, [navigate]);
 
-  const [activeTab, setActiveTab] = useState<'orders' | 'customers' | 'products' | 'payments' | 'promoters'>('orders');
+  const [activeTab, setActiveTab] = useState<'orders' | 'customers' | 'products' | 'live' | 'promoters' | 'payments'>('orders');
 
   // Toast feedback state (replaces blocked window.alert)
   const [toast, setToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
@@ -126,12 +157,19 @@ export default function AdminDashboard() {
   const [printLabelOrder, setPrintLabelOrder] = useState<any | null>(null);
   const [showPickupQuickModal, setShowPickupQuickModal] = useState(false);
 
-  // Unified catalog, orders, promoters & dynamic categories state
+  // Unified catalog, orders, promoters & rich dynamic categories state
   const [products, setProducts] = useState<Product[]>(() => getCatalogProducts());
   const [orders, setOrders] = useState<any[]>(() => getLocalOrders());
   const [promotersMap, setPromotersMap] = useState<Record<string, any>>(() => getPromotersDict());
-  const [categories, setCategories] = useState<string[]>(() => getCategories());
+  const [categoryItems, setCategoryItems] = useState<CategoryItem[]>(() => getCategoryItems());
+  const [liveConfig, setLiveConfig] = useState<LiveSaleConfig>(() => getLiveConfig());
+  const [liveItems, setLiveItems] = useState<LiveSaleItem[]>(() => getLiveItems());
+  const categories = categoryItems.map(c => c.name);
   const [newCategoryInput, setNewCategoryInput] = useState('');
+  const [newCategoryImage, setNewCategoryImage] = useState('');
+  const [newCategorySubTags, setNewCategorySubTags] = useState('');
+  const [editingCategory, setEditingCategory] = useState<CategoryItem | null>(null);
+  const [editCatSubTagsInput, setEditCatSubTagsInput] = useState('');
   const [customerRefreshTick, setCustomerRefreshTick] = useState(0);
 
   const [loadingOrders, setLoadingOrders] = useState(false);
@@ -150,19 +188,43 @@ export default function AdminDashboard() {
   // Payment & store settings state
   const [paymentSettings, setPaymentSettings] = useState<StorePaymentSettings>(() => getPaymentSettings());
   const [settingsSavedMsg, setSettingsSavedMsg] = useState(false);
+  const [savingSectionTitles, setSavingSectionTitles] = useState(false);
+  const [adminSectionFilter, setAdminSectionFilter] = useState<string>('all');
+  const newProductFormRef = useRef<HTMLDivElement | null>(null);
 
   // Product Creation state
-  const [newProduct, setNewProduct] = useState({
+  const [newProduct, setNewProduct] = useState<{
+    name: string;
+    price: number;
+    discountPrice: number;
+    deliveryCharge: number;
+    estimatedDeliveryDays: string;
+    description: string;
+    imageUrl: string;
+    galleryImages: string[];
+    stock: number;
+    category: string;
+    tag: string;
+    sectionLabel: string;
+    placement: ProductPlacement;
+    visible: boolean;
+    gstPercent: number;
+    features: string[];
+  }>({
     name: '',
     price: 2499,
-    discountPrice: 1999,
+    discountPrice: 1499,
     deliveryCharge: 0,
-    estimatedDeliveryDays: '',
+    estimatedDeliveryDays: '3-5 Days',
     description: '',
     imageUrl: '',
-    galleryImages: [] as string[],
+    galleryImages: [],
     stock: 25,
-    category: getCategories()[0] || 'Coats',
+    category: getCategoryItems()[0]?.name || 'Coats',
+    tag: 'Best Seller',
+    sectionLabel: '',
+    placement: 'grid',
+    visible: true,
     gstPercent: 0,
     features: ['Heat Reflective Fabric', 'UV Sun Protection', 'Lightweight & Breathable'],
   });
@@ -236,8 +298,53 @@ export default function AdminDashboard() {
       }
     );
 
+    const unsubCategories = onSnapshot(
+      collection(db, 'categories'),
+      snapshot => {
+        if (!snapshot.empty) {
+          const fetchedCats = snapshot.docs.map(d => mapCategoryFromDb(d.data(), d.id));
+          setCategoryItems(mergeRemoteCategoryItems(fetchedCats));
+        }
+      },
+      err => {
+        console.warn('Firestore categories listener warning:', err);
+      }
+    );
+
+    const unsubLiveConfig = onSnapshot(
+      doc(db, 'settings', 'live'),
+      snap => {
+        if (snap.exists()) {
+          const data = snap.data();
+          if (Array.isArray(data?.deletedLiveIds)) {
+            syncDeletedLiveItemIds(data.deletedLiveIds);
+          }
+          setLiveConfig(saveLiveConfig(mapLiveConfigFromDb(data), false));
+        }
+      },
+      err => {
+        console.warn('Firestore live config listener warning:', err);
+      }
+    );
+
+    const unsubLiveItems = onSnapshot(
+      collection(db, 'live_items'),
+      snap => {
+        if (!snap.empty) {
+          const fetchedLive = snap.docs.map(d => mapLiveItemFromDb(d.data(), d.id));
+          setLiveItems(mergeRemoteLiveItems(fetchedLive));
+        }
+      },
+      err => {
+        console.warn('Firestore live items listener warning:', err);
+      }
+    );
+
     return () => {
       unsubProducts();
+      unsubCategories();
+      unsubLiveConfig();
+      unsubLiveItems();
     };
   }, []);
 
@@ -291,86 +398,227 @@ export default function AdminDashboard() {
     };
   }, [applyFetchedOrders]);
 
+  const syncCategoriesToCloud = async (itemsToSync: CategoryItem[]) => {
+    const batch = writeBatch(db);
+    itemsToSync.forEach(item => {
+      batch.set(doc(db, 'categories', item.id), mapCategoryToDb(item), { merge: true });
+    });
+    const deletedIds = getDeletedCategoryIds();
+    deletedIds.forEach(delId => {
+      if (delId) batch.delete(doc(db, 'categories', String(delId)));
+    });
+    batch.set(doc(db, 'settings', 'categories'), {
+      list: itemsToSync.filter(c => c.visible !== false).map(c => c.name),
+      deletedCategoryIds: deletedIds,
+      initialized: true,
+      updatedAt: new Date().toISOString(),
+    });
+    await batch.commit();
+  };
+
   const fetchCategories = async () => {
     try {
-      const snap = await getDoc(doc(db, 'settings', 'categories'));
-      const data = snap.exists() ? snap.data() : null;
-      if (data && Array.isArray(data.list) && data.list.length > 0) {
-        const synced = saveCategories(data.list);
-        setCategories(synced);
+      const [settingsSnap, collSnap] = await Promise.all([
+        getDoc(doc(db, 'settings', 'categories')),
+        getDocs(collection(db, 'categories')),
+      ]);
+      if (settingsSnap.exists()) {
+        const sData = settingsSnap.data();
+        if (Array.isArray(sData?.deletedCategoryIds)) {
+          syncDeletedCategoryIds(sData.deletedCategoryIds);
+        }
+      }
+      if (!collSnap.empty) {
+        const remote = collSnap.docs.map(d => mapCategoryFromDb(d.data(), d.id));
+        setCategoryItems(mergeRemoteCategoryItems(remote));
+      } else {
+        const localItems = getCategoryItems();
+        setCategoryItems(localItems);
+        if (localItems.length > 0) {
+          syncCategoriesToCloud(localItems).catch(() => {});
+        }
       }
     } catch {
-      // Local categories already initialized
+      setCategoryItems(getCategoryItems());
     }
   };
 
   const handleAddCustomCategory = async () => {
     const trimmed = newCategoryInput.trim();
     if (!trimmed) return;
-    const next = addCategory(trimmed);
-    setCategories(next);
-    setNewProduct(prev => ({ ...prev, category: trimmed }));
+
+    const parsedSubTags = newCategorySubTags
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    let resolvedImg = newCategoryImage.trim() || getCategoryAutoImage(trimmed);
+    const { items, saved } = addOrUpdateCategoryItem({
+      name: trimmed,
+      imageUrl: resolvedImg,
+      subTags: parsedSubTags.length > 0 ? parsedSubTags : undefined,
+      visible: true,
+      isDemo: false,
+    });
+
+    setCategoryItems(items);
+    setNewProduct(prev => ({ ...prev, category: saved.name }));
     setNewCategoryInput('');
-    showToast(`✓ Category "${trimmed}" added to Admin & Storefront!`);
+    setNewCategoryImage('');
+    setNewCategorySubTags('');
+    showToast(
+      newCategoryImage.trim()
+        ? `✓ Category "${saved.name}" added with custom image!`
+        : `✓ Category "${saved.name}" added with auto-matched artwork!`
+    );
 
     try {
-      await setDoc(doc(db, 'settings', 'categories'), {
-        list: next,
-        updatedAt: new Date().toISOString(),
-      });
+      if (resolvedImg.startsWith('data:image/') && !resolvedImg.startsWith('data:image/svg')) {
+        const ext = getImageExtensionFromDataUrl(resolvedImg);
+        const uploaded = await uploadDataUrlToStorage(
+          resolvedImg,
+          `categories/${saved.id}_${Date.now()}.${ext}`
+        );
+        if (uploaded) {
+          resolvedImg = uploaded;
+          const resaved = addOrUpdateCategoryItem({ ...saved, imageUrl: uploaded });
+          setCategoryItems(resaved.items);
+          await syncCategoriesToCloud(resaved.items);
+          return;
+        }
+      }
+      await syncCategoriesToCloud(items);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/categories');
+      handleFirestoreError(err, OperationType.WRITE, 'categories');
     }
   };
 
-  const handleDeleteCustomCategory = async (catName: string) => {
-    const next = deleteCategory(catName);
-    setCategories(next);
-    if (newProduct.category === catName) {
-      setNewProduct(prev => ({ ...prev, category: next[0] || 'Coats' }));
-    }
-    const currentProducts = getCatalogProducts();
-    let hasModifiedProducts = false;
-    const updatedProducts = currentProducts.map(p => {
-      if (p.category && p.category.trim().toLowerCase() === catName.trim().toLowerCase()) {
-        hasModifiedProducts = true;
-        return { ...p, category: next[0] || '' };
+  const handleToggleCategoryVisibility = async (cat: CategoryItem) => {
+    const { items, toggled } = toggleCategoryVisibility(cat.id);
+    setCategoryItems(items);
+    if (toggled) {
+      showToast(
+        toggled.visible
+          ? `✓ "${toggled.name}" is now VISIBLE on Home & Categories!`
+          : `🚫 "${toggled.name}" is now HIDDEN from Home & Categories!`
+      );
+      try {
+        await syncCategoriesToCloud(items);
+      } catch (err) {
+        console.warn('Firestore toggle category warning:', err);
       }
-      return p;
-    });
-    if (hasModifiedProducts) {
-      saveCatalogProducts(updatedProducts, true);
-      setProducts(updatedProducts);
     }
-    showToast(`✓ Category "${catName}" removed.`);
+  };
+
+  const handleSaveEditedCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingCategory || !editingCategory.name.trim()) return;
+
+    const oldItem = categoryItems.find(c => c.id === editingCategory.id);
+    const parsedSubTags = editCatSubTagsInput
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    let resolvedImg =
+      (editingCategory.imageUrl || '').trim() || getCategoryAutoImage(editingCategory.name);
+
+    const { items, saved } = addOrUpdateCategoryItem({
+      ...editingCategory,
+      name: editingCategory.name.trim(),
+      imageUrl: resolvedImg,
+      subTags: parsedSubTags,
+    });
+
+    setCategoryItems(items);
+
+    // If renamed, keep existing products aligned with the renamed category
+    if (oldItem && oldItem.name.trim().toLowerCase() !== saved.name.trim().toLowerCase()) {
+      const currentProds = getCatalogProducts();
+      let changed = false;
+      const updatedProds = currentProds.map(p => {
+        if ((p.category || '').trim().toLowerCase() === oldItem.name.trim().toLowerCase()) {
+          changed = true;
+          return { ...p, category: saved.name };
+        }
+        return p;
+      });
+      if (changed) {
+        saveCatalogProducts(updatedProds, true);
+        setProducts(updatedProds);
+      }
+    }
+
+    setEditingCategory(null);
+    showToast(`✓ Category "${saved.name}" updated!`);
 
     try {
-      await setDoc(doc(db, 'settings', 'categories'), {
-        list: next,
-        updatedAt: new Date().toISOString(),
-      });
+      if (resolvedImg.startsWith('data:image/') && !resolvedImg.startsWith('data:image/svg')) {
+        const ext = getImageExtensionFromDataUrl(resolvedImg);
+        const uploaded = await uploadDataUrlToStorage(
+          resolvedImg,
+          `categories/${saved.id}_${Date.now()}.${ext}`
+        );
+        if (uploaded) {
+          const resaved = addOrUpdateCategoryItem({ ...saved, imageUrl: uploaded });
+          setCategoryItems(resaved.items);
+          await syncCategoriesToCloud(resaved.items);
+          return;
+        }
+      }
+      await syncCategoriesToCloud(items);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/categories');
+      handleFirestoreError(err, OperationType.WRITE, 'categories');
+    }
+  };
+
+  const handleDeleteCustomCategory = async (cat: CategoryItem) => {
+    const { items } = deleteCategoryItem(cat.id);
+    setCategoryItems(items);
+    if (newProduct.category === cat.name) {
+      setNewProduct(prev => ({ ...prev, category: items[0]?.name || 'Coats' }));
+    }
+    showToast(`✓ Category "${cat.name}" deleted!`);
+
+    try {
+      await syncCategoriesToCloud(items);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'categories');
+    }
+  };
+
+  const handleClearDemoCategories = async () => {
+    const next = clearDemoCategories();
+    setCategoryItems(next);
+    showToast('✓ Demo categories cleared!');
+    try {
+      await syncCategoriesToCloud(next);
+    } catch (err) {
+      console.warn('Clear demo categories error:', err);
+    }
+  };
+
+  const handleRestoreStarterCategories = async () => {
+    const next = restoreStarterCategories();
+    setCategoryItems(next);
+    showToast(`✓ Restored ${STARTER_CATEGORIES.length} starter categories!`);
+    try {
+      await syncCategoriesToCloud(next);
+    } catch (err) {
+      console.warn('Restore starter categories error:', err);
     }
   };
 
   const handleClearAllCategories = async () => {
-    const next = clearAllCategories();
-    setCategories(next);
+    clearAllCategories();
+    setCategoryItems([]);
     setNewProduct(prev => ({ ...prev, category: '' }));
-    const currentProducts = getCatalogProducts();
-    const updatedProducts = currentProducts.map(p => ({ ...p, category: '' }));
-    saveCatalogProducts(updatedProducts, true);
-    setProducts(updatedProducts);
     showToast('✓ All categories removed & hidden from Storefront!');
 
     try {
-      await setDoc(doc(db, 'settings', 'categories'), {
-        list: [],
-        updatedAt: new Date().toISOString(),
-      });
+      await syncCategoriesToCloud([]);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/categories');
+      handleFirestoreError(err, OperationType.WRITE, 'categories');
     }
   };
 
@@ -390,7 +638,7 @@ export default function AdminDashboard() {
   };
 
   const togglePaymentGateway = async (
-    key: 'enableCOD' | 'enableUPI' | 'enableCard',
+    key: 'enableCOD' | 'enableUPI' | 'enableCard' | 'enablePaymentGateway',
     label: string
   ) => {
     const updated = savePaymentSettingsSync({
@@ -520,10 +768,10 @@ export default function AdminDashboard() {
     }
   };
 
-  // Auto-filtered 10–50 KB image compressor + direct Firebase Storage upload
+  // Auto-compressed ~10 KB image compressor + direct Firebase Storage upload
   const handleImageFileUpload = async (
     e: React.ChangeEvent<HTMLInputElement>,
-    target: 'newMain' | 'newGallery' | 'editMain' | 'editGallery'
+    target: 'newMain' | 'newGallery' | 'editMain' | 'editGallery' | 'newCat' | 'editCat'
   ) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -532,10 +780,12 @@ export default function AdminDashboard() {
     try {
       const uploadedOrCompressed: { url: string; sizeKB: number; isCloud: boolean }[] = [];
       for (let i = 0; i < files.length; i++) {
-        const result = await compressProductImageToRange(files[i], 10, 50);
+        const result = await compressImageToTargetKB(files[i], 10);
+        const folder = target === 'newCat' || target === 'editCat' ? 'categories' : 'products';
+        const ext = getImageExtensionFromDataUrl(result.dataUrl);
         const cloudUrl = await uploadDataUrlToStorage(
           result.dataUrl,
-          `products/img_${Date.now()}_${i}.jpg`
+          `${folder}/img_${Date.now()}_${i}.${ext}`
         );
         uploadedOrCompressed.push({
           url: cloudUrl || result.dataUrl,
@@ -554,6 +804,7 @@ export default function AdminDashboard() {
       } else if (target === 'newGallery') {
         setNewProduct(prev => ({
           ...prev,
+          imageUrl: prev.imageUrl || urlsList[0],
           galleryImages: [...prev.galleryImages, ...urlsList],
         }));
         showToast(`✓ Added ${urlsList.length} photo(s) (${sizeSummary})${storageSuffix}!`);
@@ -572,6 +823,12 @@ export default function AdminDashboard() {
           return { ...prev, galleryImages: [...existing, ...urlsList] };
         });
         showToast(`✓ Added ${urlsList.length} gallery photo(s) (${sizeSummary})${storageSuffix}! Click "Save Changes".`);
+      } else if (target === 'newCat') {
+        setNewCategoryImage(urlsList[0]);
+        showToast(`✓ Category photo uploaded (${sizeSummary})${storageSuffix}!`);
+      } else if (target === 'editCat' && editingCategory) {
+        setEditingCategory(prev => (prev ? { ...prev, imageUrl: urlsList[0] } : null));
+        showToast(`✓ Category photo updated (${sizeSummary})${storageSuffix}! Click Save.`);
       }
     } catch {
       showToast('Could not read that image file. Please try JPG/PNG.', 'error');
@@ -587,11 +844,9 @@ export default function AdminDashboard() {
 
     const extraTypedGallery = newGalleryInput.trim() ? [newGalleryInput.trim()] : [];
     const combinedGallery = [...newProduct.galleryImages, ...extraTypedGallery].filter(Boolean);
-    const finalMainImage = (newProduct.imageUrl.trim() || combinedGallery[0] || '').slice(0, 950000);
-    if (!finalMainImage) {
-      showToast('Please upload or paste at least one product photo before publishing.', 'error');
-      return;
-    }
+    const chosenCat = (newProduct.category || categories[0] || 'Coats').slice(0, 100);
+    const autoFallback = getCategoryAutoImage(chosenCat);
+    const finalMainImage = (newProduct.imageUrl.trim() || combinedGallery[0] || autoFallback).slice(0, 950000);
 
     const finalGallery = (combinedGallery.length > 0 ? combinedGallery : [finalMainImage]).slice(0, 15);
     const localId = 'prod_' + Date.now();
@@ -602,11 +857,16 @@ export default function AdminDashboard() {
       discountPrice: Number(newProduct.discountPrice || newProduct.price),
       deliveryCharge: Math.max(0, Number(newProduct.deliveryCharge || 0)),
       estimatedDeliveryDays: newProduct.estimatedDeliveryDays.trim().slice(0, 100),
-      description: (newProduct.description.trim() || 'Premium heat protection cooling coat by Amal Coolguard.').slice(0, 2000),
+      description: (newProduct.description.trim() || 'Premium heat protection cooling gear by Amal Coolguard.').slice(0, 2000),
       imageUrl: finalMainImage,
       galleryImages: finalGallery,
       stock: Number(newProduct.stock || 20),
-      category: (newProduct.category || categories[0] || 'Coats').slice(0, 100),
+      category: chosenCat,
+      tag: newProduct.tag.trim().slice(0, 60),
+      sectionLabel: newProduct.sectionLabel.trim().slice(0, 80),
+      placement: newProduct.placement || 'grid',
+      visible: newProduct.visible !== false,
+      isDemo: false,
       gstPercent: Math.max(0, Number(newProduct.gstPercent || 0)),
       rating: 4.9,
       reviewsCount: 1,
@@ -617,30 +877,35 @@ export default function AdminDashboard() {
     setProducts(nextList);
 
     if (newLocalProd.category && !categories.some(c => c.toLowerCase() === newLocalProd.category!.toLowerCase())) {
-      const nextCats = addCategory(newLocalProd.category);
-      setCategories(nextCats);
-      setDoc(doc(db, 'settings', 'categories'), {
-        list: nextCats,
-        updatedAt: new Date().toISOString(),
-      }).catch(() => {});
+      const { items } = addOrUpdateCategoryItem({
+        name: newLocalProd.category,
+        imageUrl: getCategoryAutoImage(newLocalProd.category),
+        visible: true,
+      });
+      setCategoryItems(items);
+      syncCategoriesToCloud(items).catch(() => {});
     }
 
     setNewProduct({
       name: '',
       price: 2499,
-      discountPrice: 1999,
+      discountPrice: 1499,
       deliveryCharge: 0,
-      estimatedDeliveryDays: '',
+      estimatedDeliveryDays: '3-5 Days',
       description: '',
       imageUrl: '',
       galleryImages: [],
       stock: 25,
       category: categories[0] || 'Coats',
+      tag: 'Best Seller',
+      sectionLabel: '',
+      placement: 'grid',
+      visible: true,
       gstPercent: 0,
       features: ['Heat Reflective Fabric', 'UV Sun Protection', 'Lightweight & Breathable'],
     });
     setNewGalleryInput('');
-    showToast('✓ New Product & photo published live to Storefront & Orders!');
+    showToast('✓ New Product & multi-photo gallery published live to Storefront!');
 
     const publishToCloud = async () => {
       setSavingProduct(true);
@@ -650,7 +915,7 @@ export default function AdminDashboard() {
         if (resolvedMain.startsWith('data:')) {
           const uploaded = await uploadDataUrlToStorage(
             resolvedMain,
-            `products/${localId}_main_${Date.now()}.jpg`
+            `products/${localId}_main_${Date.now()}.${getImageExtensionFromDataUrl(resolvedMain)}`
           );
           if (uploaded) resolvedMain = uploaded;
         }
@@ -659,7 +924,7 @@ export default function AdminDashboard() {
             if (gUrl.startsWith('data:')) {
               const up = await uploadDataUrlToStorage(
                 gUrl,
-                `products/${localId}_gal_${idx}_${Date.now()}.jpg`
+                `products/${localId}_gal_${idx}_${Date.now()}.${getImageExtensionFromDataUrl(gUrl)}`
               );
               return up || gUrl;
             }
@@ -715,6 +980,7 @@ export default function AdminDashboard() {
       estimatedDeliveryDays: (editingProduct.estimatedDeliveryDays || '').trim().slice(0, 100),
       description: (editingProduct.description || 'Premium heat protection cooling coat by Amal Coolguard.').slice(0, 2000),
       stock: Number(editingProduct.stock || 0),
+      sectionLabel: (editingProduct.sectionLabel || '').trim().slice(0, 80),
       gstPercent: Math.max(0, Number(editingProduct.gstPercent || 0)),
       imageUrl: resolvedMainImage,
       galleryImages: resolvedGallery,
@@ -735,7 +1001,7 @@ export default function AdminDashboard() {
         if (resolvedMain.startsWith('data:')) {
           const uploaded = await uploadDataUrlToStorage(
             resolvedMain,
-            `products/${updated.id}_main_${Date.now()}.jpg`
+            `products/${updated.id}_main_${Date.now()}.${getImageExtensionFromDataUrl(resolvedMain)}`
           );
           if (uploaded) resolvedMain = uploaded;
         }
@@ -744,7 +1010,7 @@ export default function AdminDashboard() {
             if (gUrl.startsWith('data:')) {
               const up = await uploadDataUrlToStorage(
                 gUrl,
-                `products/${updated.id}_gal_${idx}_${Date.now()}.jpg`
+                `products/${updated.id}_gal_${idx}_${Date.now()}.${getImageExtensionFromDataUrl(gUrl)}`
               );
               return up || gUrl;
             }
@@ -811,22 +1077,93 @@ export default function AdminDashboard() {
     });
   };
 
+  const handleToggleProductVisibility = async (prod: Product) => {
+    const nextVisible = prod.visible === false;
+    const updated: Product = { ...prod, visible: nextVisible };
+    const nextList = updateCatalogProduct(updated);
+    setProducts(nextList);
+    showToast(
+      nextVisible
+        ? `✓ "${prod.name}" is now VISIBLE on Home & Categories!`
+        : `🚫 "${prod.name}" is now HIDDEN from Storefront!`
+    );
+    try {
+      await setDoc(doc(db, 'products', prod.id), mapProductToDb(updated), { merge: true });
+      clearCatalogDirty();
+    } catch (err) {
+      console.warn('Toggle product visibility sync warning:', err);
+    }
+  };
+
+  const handleClearDemoProducts = () => {
+    setConfirmDialog({
+      title: 'ഡെമോ കാർഡുകൾ മാത്രം ഒഴിവാക്കുക? (Remove Demo Items)',
+      message:
+        'സ്റ്റാർട്ടർ ഡെമോ കാർഡുകൾ മാത്രം നീക്കം ചെയ്യണോ? നിങ്ങൾ സ്വയം ആഡ് ചെയ്ത പ്രോഡക്റ്റുകൾ സുരക്ഷിതമായി നിലനിൽക്കും.',
+      confirmLabel: '🧹 Remove Demo Items',
+      danger: true,
+      onConfirm: async () => {
+        const demoIds = Array.from(
+          new Set([
+            ...products.filter(p => p.isDemo || String(p.id).startsWith('demo_')).map(p => p.id),
+            ...STARTER_DEMO_PRODUCTS.map(p => p.id),
+          ])
+        );
+        const next = clearDemoProducts();
+        setProducts(next);
+        setConfirmDialog(null);
+        showToast('✓ Starter demo cards removed! Your own products remain active.');
+
+        try {
+          const batch = writeBatch(db);
+          demoIds.forEach(id => batch.delete(doc(db, 'products', id)));
+          batch.set(doc(db, 'settings', 'catalog'), {
+            initialized: true,
+            deletedIds: getDeletedProductIds(),
+            updatedAt: new Date().toISOString(),
+          });
+          await batch.commit();
+          clearCatalogDirty();
+        } catch (err) {
+          console.warn('Clear demo products warning:', err);
+        }
+      },
+    });
+  };
+
+  const handleRestoreDemoProducts = async () => {
+    const next = restoreDefaultCatalogProducts();
+    setProducts(next);
+    showToast('✓ Starter demo showcase cards restored!');
+    await syncCatalogToCloud(next);
+  };
+
   const handleClearAllProducts = () => {
     setConfirmDialog({
       title: 'ഡെമോ ഉൽപ്പന്നങ്ങൾ എല്ലാം ഒഴിവാക്കുക? (Clear All Products)',
-      message: 'നിലവിലുള്ള എല്ലാ ഡെമോ ഉൽപ്പന്നങ്ങളും ഫോട്ടോകളും കാറ്റലോഗിൽ നിന്നും സ്റ്റോർഫ്രണ്ടിൽ നിന്നും പൂർണ്ണമായി ഒഴിവാക്കണോ? പുതിയ ഉൽപ്പന്നങ്ങൾ നിങ്ങൾക്ക് തനിയെ ചേർക്കാവുന്നതാണ്.',
+      message: 'നിലവിലുള്ള എല്ലാ ഉൽപ്പന്നങ്ങളും ഫോട്ടോകളും കാറ്റലോഗിൽ നിന്നും സ്റ്റോർഫ്രണ്ടിൽ നിന്നും പൂർണ്ണമായി ഒഴിവാക്കണോ? പുതിയ ഉൽപ്പന്നങ്ങൾ നിങ്ങൾക്ക് തനിയെ ചേർക്കാവുന്നതാണ്.',
       confirmLabel: '🗑️ Clear All Products',
       danger: true,
       onConfirm: async () => {
+        const allIdsToRemove = Array.from(
+          new Set([
+            ...products.map(p => p.id),
+            ...STARTER_DEMO_PRODUCTS.map(p => p.id),
+            '1',
+            '2',
+            '3',
+            '4',
+          ])
+        );
         const next = clearAllCatalogProducts();
         setProducts(next);
         setConfirmDialog(null);
-        showToast('✓ All demo products & photos removed! Ready for your products.');
+        showToast('✓ All products & photos removed! Ready for your products.');
 
         const deleteFromCloud = async () => {
           try {
             const batch = writeBatch(db);
-            ['1', '2', '3', '4'].forEach(id => batch.delete(doc(db, 'products', id)));
+            allIdsToRemove.forEach(id => batch.delete(doc(db, 'products', id)));
             batch.set(doc(db, 'settings', 'catalog'), {
               initialized: true,
               deletedIds: getDeletedProductIds(),
@@ -1353,6 +1690,11 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
           { id: 'orders', label: '📦 Customer Orders', badge: pendingCount ? `${pendingCount} Pending` : `${orders.length}` },
           { id: 'customers', label: '👥 Registered Customers', badge: 'Manage' },
           { id: 'products', label: '🏷️ Products & Multi-Images', badge: `${products.length}` },
+          {
+            id: 'live',
+            label: '🔴 Live Sale & Offers',
+            badge: liveConfig.active ? `${liveItems.length} LIVE` : `OFF (${liveItems.length})`,
+          },
           { id: 'promoters', label: '🤝 Affiliates & Promoters', badge: `${Object.keys(promotersMap).length}` },
           { id: 'payments', label: '💳 Store & Payment Settings', badge: 'Controls' },
         ].map(tab => (
@@ -1961,82 +2303,328 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
       {/* TAB 3: PRODUCTS & CATEGORIES */}
       {activeTab === 'products' && (
         <div className="space-y-6">
-          {/* Dynamic Categories Manager */}
-          <div className="bg-white p-5 rounded-3xl shadow-sm border border-gray-200 space-y-3">
+          {/* Dynamic Categories Manager with Auto-Image Preview & Visibility Controls */}
+          <div className="bg-white p-5 rounded-3xl shadow-sm border border-gray-200 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <h2 className="text-sm font-extrabold text-gray-900 flex items-center gap-2">
-                  <span>🗂️</span> Store Categories Manager (പുതിയ കാറ്റഗറികൾ ആഡ് ചെയ്യുക - Electronics, Electrical, Coats...)
+                  <span>🗂️</span> Store Categories Manager (Auto-Image + ON/OFF Visibility)
                 </h2>
                 <p className="text-xs text-gray-500">
-                  Add unlimited custom categories here. They appear on the top bar of the website & inside Search.
+                  Type a category name and its photo is matched automatically, or upload your own. Toggle OFF to hide a category from Home &amp; Categories.
                 </p>
               </div>
-              <span className="text-[11px] bg-blue-50 text-blue-700 font-bold px-3 py-1 rounded-full self-start sm:self-auto">
-                {categories.length} Active Categories
-              </span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[11px] bg-blue-50 text-blue-700 font-bold px-3 py-1 rounded-full tabular-nums">
+                  {categoryItems.filter(c => c.visible !== false).length} / {categoryItems.length} Visible
+                </span>
+                {categoryItems.some(c => c.isDemo) && (
+                  <button
+                    type="button"
+                    onClick={handleClearDemoCategories}
+                    className="text-[11px] font-bold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-3 py-1 rounded-full transition"
+                  >
+                    🧹 Clear Demo
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleRestoreStarterCategories}
+                  className="text-[11px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-3 py-1 rounded-full transition"
+                >
+                  ✨ Restore 18 Starter
+                </button>
+                {categoryItems.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearAllCategories}
+                    className="text-[11px] font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 px-3 py-1 rounded-full transition"
+                  >
+                    🗑️ Clear All
+                  </button>
+                )}
+              </div>
             </div>
 
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="Type category name e.g. Electronics, Electrical, Accessories..."
-                value={newCategoryInput}
-                onChange={e => setNewCategoryInput(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleAddCustomCategory();
-                  }
-                }}
-                className="flex-1 p-3 text-xs border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50 font-semibold"
-              />
+            {/* Add Category Row with Inline Image Upload / Picker + Live Preview + Add Button */}
+            <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200 space-y-2.5">
+              <div className="flex flex-col lg:flex-row items-stretch lg:items-center gap-2.5">
+                {/* Preview & Direct Image Picker alongside Name Input */}
+                <div className="flex items-center gap-2.5 shrink-0">
+                  <div className="relative w-14 h-14 rounded-xl bg-transparent border border-slate-200 overflow-hidden shrink-0 shadow-2xs">
+                    <img
+                      src={newCategoryImage.trim() || getCategoryAutoImage(newCategoryInput || 'Category')}
+                      alt="Category preview"
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover object-center"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1 shrink-0">
+                    <label
+                      title="Upload Category Image (auto-compressed ~10 KB)"
+                      className="inline-flex items-center justify-center gap-1.5 bg-white border border-gray-300 rounded-lg px-2.5 py-1.5 text-[11px] font-extrabold text-gray-800 hover:bg-blue-50 hover:border-blue-300 cursor-pointer whitespace-nowrap transition shadow-2xs"
+                    >
+                      <span>📷 Category Image</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={e => handleImageFileUpload(e, 'newCat')}
+                        className="hidden"
+                      />
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-semibold text-blue-700 whitespace-nowrap">
+                        {newCategoryImage.trim() ? 'Custom photo (~10 KB)' : 'Auto-matched art'}
+                      </span>
+                      {newCategoryImage.trim() && (
+                        <button
+                          type="button"
+                          onClick={() => setNewCategoryImage('')}
+                          className="text-[10px] font-bold text-red-600 hover:underline whitespace-nowrap"
+                        >
+                          Reset Auto
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Category Name Input + Add Category Button */}
+                <div className="flex-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder="Category name (e.g. Mobile Chargers, Shirts, Electrical...)"
+                    value={newCategoryInput}
+                    onChange={e => setNewCategoryInput(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddCustomCategory();
+                      }
+                    }}
+                    className="flex-1 p-2.5 text-xs border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-white font-semibold"
+                  />
+
+                  <button
+                    type="button"
+                    disabled={uploadingPhoto}
+                    onClick={handleAddCustomCategory}
+                    className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-extrabold text-xs px-5 py-2.5 rounded-xl shadow-xs shrink-0 transition whitespace-nowrap cursor-pointer"
+                  >
+                    + Add Category
+                  </button>
+                </div>
+              </div>
+
+              {/* Optional Sub-Tags & Image URL Strip */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  placeholder="Sub-tags comma separated (e.g. Fast Charge, Type-C)"
+                  value={newCategorySubTags}
+                  onChange={e => setNewCategorySubTags(e.target.value)}
+                  className="w-full p-2 text-xs border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                />
+                <input
+                  type="text"
+                  placeholder="Optional custom image URL (or use Category Image button above)"
+                  value={newCategoryImage}
+                  onChange={e => setNewCategoryImage(e.target.value)}
+                  className="w-full p-2 text-xs border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                />
+              </div>
+            </div>
+
+            {/* Compact Small Category Cards Grid with ON/OFF Toggle, Edit & Delete */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 pt-1">
+              {categoryItems.map(cat => {
+                const isVisible = cat.visible !== false;
+                return (
+                  <div
+                    key={cat.id}
+                    className={`flex items-center justify-between gap-2 p-2 rounded-xl border transition shadow-2xs ${
+                      isVisible
+                        ? 'bg-white border-gray-200'
+                        : 'bg-gray-50 border-gray-200 opacity-65'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-11 h-11 rounded-lg overflow-hidden bg-transparent border border-gray-200 shrink-0">
+                        <img
+                          src={cat.imageUrl || getCategoryAutoImage(cat.name)}
+                          alt={cat.name}
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover object-center"
+                        />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-extrabold text-gray-900 truncate">{cat.name}</p>
+                        <p className="text-[10px] text-gray-500 truncate">
+                          {isVisible ? 'Visible' : 'Hidden'}
+                          {cat.isDemo ? ' · Demo' : ''}
+                          {cat.subTags && cat.subTags.length > 0 ? ` · ${cat.subTags.length} tags` : ''}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleCategoryVisibility(cat)}
+                        title={isVisible ? 'Hide from Storefront' : 'Show on Storefront'}
+                        className={`px-2 py-1 rounded-lg text-[10px] font-extrabold border transition whitespace-nowrap ${
+                          isVisible
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                            : 'bg-gray-200 text-gray-700 border-gray-300 hover:bg-gray-300'
+                        }`}
+                      >
+                        {isVisible ? 'ON' : 'OFF'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingCategory({ ...cat });
+                          setEditCatSubTagsInput((cat.subTags || []).join(', '));
+                        }}
+                        title={`Edit ${cat.name}`}
+                        className="w-7 h-7 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 flex items-center justify-center text-xs shrink-0"
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteCustomCategory(cat)}
+                        title={`Delete ${cat.name}`}
+                        className="w-7 h-7 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 flex items-center justify-center text-xs font-bold shrink-0"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Storefront Sections & Named Cards Manager */}
+          <div className="bg-white p-5 rounded-3xl shadow-sm border border-indigo-200 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-extrabold text-gray-900 flex items-center gap-2">
+                  <span>🏷️</span> Storefront Sections &amp; Named Cards Manager
+                </h2>
+                <p className="text-xs text-gray-500">
+                  Give each Home section a clear custom name and click &ldquo;+ Upload Card&rdquo; to add products directly into that named section.
+                </p>
+              </div>
               <button
                 type="button"
-                onClick={handleAddCustomCategory}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs px-5 py-3 rounded-xl shadow shrink-0 transition"
+                disabled={savingSectionTitles}
+                onClick={async () => {
+                  setSavingSectionTitles(true);
+                  await savePaymentSettings();
+                  setSavingSectionTitles(false);
+                }}
+                className="h-9 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-extrabold text-xs rounded-xl shadow-xs transition whitespace-nowrap self-start sm:self-auto cursor-pointer"
               >
-                + Add Category
+                {savingSectionTitles ? 'Saving Names...' : '💾 Save Section Names'}
               </button>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              {categories.map(cat => (
-                <div
-                  key={cat}
-                  className="inline-flex items-center gap-1.5 bg-slate-100 border border-slate-200 text-slate-800 text-xs font-bold px-3 py-1.5 rounded-full"
-                >
-                  <span>{cat}</span>
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteCustomCategory(cat)}
-                    className="text-red-500 hover:text-red-700 font-black text-xs ml-0.5"
-                    title={`Remove ${cat}`}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+              {([
+                {
+                  placement: 'banner' as ProductPlacement,
+                  field: 'sectionTitleBanner' as const,
+                  defaultTitle: 'Hero Promo Banner',
+                  placeholder: 'e.g. Featured Summer Gear',
+                  badgeColor: 'bg-blue-50 text-blue-700 border-blue-200',
+                },
+                {
+                  placement: 'deals' as ProductPlacement,
+                  field: 'sectionTitleDeals' as const,
+                  defaultTitle: 'Amal Value Deals',
+                  placeholder: 'e.g. Amal Value Deals',
+                  badgeColor: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+                },
+                {
+                  placement: 'spotlight' as ProductPlacement,
+                  field: 'sectionTitleSpotlight' as const,
+                  defaultTitle: 'In the Spotlight',
+                  placeholder: 'e.g. In the Spotlight',
+                  badgeColor: 'bg-amber-50 text-amber-800 border-amber-200',
+                },
+                {
+                  placement: 'grid' as ProductPlacement,
+                  field: 'sectionTitleGrid' as const,
+                  defaultTitle: 'Suggested For You',
+                  placeholder: 'e.g. Suggested For You',
+                  badgeColor: 'bg-slate-100 text-slate-700 border-slate-300',
+                },
+              ]).map(sec => {
+                const count = products.filter(
+                  p => (p.placement || 'grid') === sec.placement
+                ).length;
+                const currentTitle = String(paymentSettings[sec.field] || '');
+                return (
+                  <div
+                    key={sec.placement}
+                    className="bg-slate-50 border border-slate-200 rounded-2xl p-3 space-y-2 flex flex-col justify-between"
                   >
-                    ✕
-                  </button>
-                </div>
-              ))}
-              {categories.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleClearAllCategories}
-                  className="inline-flex items-center gap-1 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 px-3 py-1 rounded-full transition ml-auto"
-                  title="Clear all categories"
-                >
-                  🗑️ Clear All Categories (എല്ലാം ഒഴിവാക്കുക)
-                </button>
-              )}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span
+                          className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md border uppercase ${sec.badgeColor}`}
+                        >
+                          {sec.placement}
+                        </span>
+                        <span className="text-[11px] font-bold text-gray-600 tabular-nums">
+                          {count} {count === 1 ? 'card' : 'cards'}
+                        </span>
+                      </div>
+                      <input
+                        type="text"
+                        maxLength={80}
+                        placeholder={sec.placeholder}
+                        value={currentTitle}
+                        onChange={e =>
+                          setPaymentSettings(prev => ({
+                            ...prev,
+                            [sec.field]: e.target.value,
+                          }))
+                        }
+                        className="w-full p-2 border border-gray-300 rounded-xl bg-white font-bold text-gray-900 outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const chosenLabel = currentTitle.trim() || sec.defaultTitle;
+                        setNewProduct(prev => ({
+                          ...prev,
+                          placement: sec.placement,
+                          sectionLabel: prev.sectionLabel.trim() ? prev.sectionLabel : chosenLabel,
+                        }));
+                        newProductFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        showToast(`Selected "${chosenLabel}" — upload or fill product details below!`);
+                      }}
+                      className="w-full py-1.5 px-2.5 rounded-xl bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 font-extrabold text-[11px] transition cursor-pointer"
+                    >
+                      + Upload Card to Section
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
           {/* Add Product Form */}
-          <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-200">
+          <div ref={newProductFormRef} className="bg-white p-6 rounded-3xl shadow-sm border border-gray-200">
             <h2 className="text-base font-extrabold text-gray-900 mb-1 flex items-center gap-2">
               <span>➕</span> Add New Amal Coolguard Product (പ്രോഡക്റ്റ് ആഡ് ചെയ്യുക)
             </h2>
             <p className="text-xs text-gray-500 mb-4">
-              Upload one or multiple product photos (automatically compressed for fast saving), choose category, offer price, and optional delivery charge.
+              Upload one or multiple product photos (automatically compressed for fast saving), choose category, section/card name, offer price, and optional delivery charge.
             </p>
 
             {uploadingPhoto && (
@@ -2245,19 +2833,162 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                   </button>
                 </div>
 
-                {/* Main Image Upload & Link */}
+                {/* Offer Tag, Home Section Placement, Custom Card/Section Name & Storefront Visibility */}
+                <div className="col-span-1 md:col-span-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
+                  <div>
+                    <label className="block font-bold text-slate-800 mb-1">
+                      Offer Tag / Badge (കാർഡിലെ ടാഗ്)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Best Seller, Min. 40% Off"
+                      value={newProduct.tag}
+                      onChange={e => setNewProduct({ ...newProduct, tag: e.target.value })}
+                      className="w-full p-2.5 border border-slate-300 rounded-xl bg-white outline-none font-bold"
+                    />
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {['Best Seller', 'Min. 40% Off', 'New Launch', 'Hot Deal'].map(preset => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => setNewProduct(prev => ({ ...prev, tag: preset }))}
+                          className="text-[10px] font-bold px-2 py-0.5 rounded bg-white border border-slate-300 hover:border-blue-400 text-slate-700"
+                        >
+                          {preset}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-800 mb-1">
+                      Home Section Placement
+                    </label>
+                    <select
+                      value={newProduct.placement}
+                      onChange={e =>
+                        setNewProduct({
+                          ...newProduct,
+                          placement: e.target.value as ProductPlacement,
+                        })
+                      }
+                      className="w-full p-2.5 border border-slate-300 rounded-xl bg-white outline-none font-bold"
+                    >
+                      <option value="grid">
+                        {paymentSettings.sectionTitleGrid?.trim() || 'Standard Grid (Suggested For You)'}
+                      </option>
+                      <option value="banner">
+                        {paymentSettings.sectionTitleBanner?.trim() || 'Top Hero Promo Banner'}
+                      </option>
+                      <option value="deals">
+                        {paymentSettings.sectionTitleDeals?.trim() || 'Amal Value Deals Strip'}
+                      </option>
+                      <option value="spotlight">
+                        {paymentSettings.sectionTitleSpotlight?.trim() || 'Spotlight Highlight Card'}
+                      </option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-800 mb-1">
+                      Card / Section Name (Label)
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={80}
+                      placeholder="e.g. Summer Coats Box"
+                      value={newProduct.sectionLabel}
+                      onChange={e => setNewProduct({ ...newProduct, sectionLabel: e.target.value })}
+                      className="w-full p-2.5 border border-slate-300 rounded-xl bg-white outline-none font-bold"
+                    />
+                    {(() => {
+                      const labelSuggestions = Array.from(
+                        new Set(
+                          [
+                            paymentSettings.sectionTitleBanner,
+                            paymentSettings.sectionTitleDeals,
+                            paymentSettings.sectionTitleSpotlight,
+                            ...products.map(p => p.sectionLabel),
+                          ]
+                            .map(v => (v || '').trim())
+                            .filter(Boolean)
+                        )
+                      ).slice(0, 4);
+                      if (labelSuggestions.length === 0) return null;
+                      return (
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {labelSuggestions.map(lbl => (
+                            <button
+                              key={lbl}
+                              type="button"
+                              onClick={() => setNewProduct(prev => ({ ...prev, sectionLabel: lbl }))}
+                              className="text-[10px] font-bold px-2 py-0.5 rounded bg-white border border-indigo-200 hover:border-indigo-400 text-indigo-700 truncate max-w-[120px]"
+                            >
+                              {lbl}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="flex flex-col justify-between">
+                    <label className="block font-bold text-slate-800 mb-1">
+                      Storefront Visibility
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setNewProduct(prev => ({ ...prev, visible: !prev.visible }))
+                      }
+                      className={`h-10 px-4 rounded-xl font-extrabold text-xs border transition flex items-center justify-center gap-2 ${
+                        newProduct.visible
+                          ? 'bg-emerald-600 text-white border-emerald-700'
+                          : 'bg-gray-200 text-gray-700 border-gray-300'
+                      }`}
+                    >
+                      <span>{newProduct.visible ? '✓ VISIBLE ON STORE' : '🚫 HIDDEN (OFF)'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Main Image Upload & Link + Auto-Match Helper */}
                 <div className="col-span-1 md:col-span-2 bg-blue-50/60 p-4 rounded-2xl border border-blue-100 space-y-2">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <label className="block font-bold text-blue-900">Main Product Image (Auto-Filtered 10–50 KB):</label>
-                    {newProduct.imageUrl.startsWith('data:') && (
-                      <span className="text-[10px] font-bold bg-emerald-600 text-white px-2 py-0.5 rounded">
-                        ✓ {estimateDataUrlKB(newProduct.imageUrl)} KB
-                      </span>
-                    )}
+                    <label className="block font-bold text-blue-900">
+                      Main Product Image (Auto-Compressed ~10 KB):
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const slides = getProductAutoGallery(
+                            newProduct.name || newProduct.category || 'Amal Product',
+                            newProduct.category || 'Coats',
+                            newProduct.tag || 'Best Seller'
+                          );
+                          setNewProduct(prev => ({
+                            ...prev,
+                            imageUrl: slides[0],
+                            galleryImages: slides,
+                          }));
+                          showToast('✓ Auto-matched 5 showcase slides to category & title!');
+                        }}
+                        className="text-[11px] font-extrabold bg-white hover:bg-blue-100 text-blue-700 border border-blue-300 px-3 py-1 rounded-lg transition"
+                      >
+                        ✨ Auto-Match 5 Photos
+                      </button>
+                      {(newProduct.imageUrl.startsWith('data:image/jpeg') ||
+                        newProduct.imageUrl.startsWith('data:image/webp')) && (
+                        <span className="text-[10px] font-bold bg-emerald-600 text-white px-2 py-0.5 rounded">
+                          ✓ {estimateDataUrlKB(newProduct.imageUrl)} KB
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <div>
-                      <span className="text-[10px] font-bold text-gray-500 block mb-1">Upload Photo File (Auto-sized 10–50 KB):</span>
+                      <span className="text-[10px] font-bold text-gray-500 block mb-1">Upload Photo File (Auto-compressed ~10 KB):</span>
                       <input
                         type="file"
                         accept="image/*"
@@ -2278,8 +3009,8 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                   </div>
                   {newProduct.imageUrl && (
                     <div className="flex items-center gap-3 mt-2">
-                      <div className="relative w-20 h-20 bg-gray-200 rounded-xl overflow-hidden border">
-                        <img src={newProduct.imageUrl} alt="preview" className="w-full h-full object-cover" />
+                      <div className="relative w-20 h-20 bg-transparent rounded-xl overflow-hidden border border-gray-200">
+                        <img src={newProduct.imageUrl} alt="preview" className="w-full h-full object-cover object-center" />
                       </div>
                       <button
                         type="button"
@@ -2292,16 +3023,18 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                   )}
                 </div>
 
-                {/* Additional Angle Photos (Gallery) */}
+                {/* Additional Angle Photos (5–6+ Photos Gallery) */}
                 <div className="col-span-1 md:col-span-2 bg-purple-50/60 p-4 rounded-2xl border border-purple-100 space-y-3">
-                  <label className="block font-bold text-purple-900">
-                    Multiple Photos / Angle Gallery (Auto-Filtered 10–50 KB per photo):
-                  </label>
-                  <p className="text-[11px] text-purple-800">
-                    Uploaded photos are automatically optimized to 10–50 KB for fast loading across mobile and desktop.
-                  </p>
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <label className="block font-bold text-purple-900">
+                      Multi-Photo Card Gallery — Upload 5 to 6+ Photos ({newProduct.galleryImages.length} added):
+                    </label>
+                    <span className="text-[10px] font-bold text-purple-700">
+                      All photos appear inside Product Details when clicked
+                    </span>
+                  </div>
 
-                  <div className="flex gap-2 items-center">
+                  <div className="flex gap-2 items-center flex-wrap">
                     <input
                       type="file"
                       accept="image/*"
@@ -2336,11 +3069,16 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                     </button>
                   </div>
 
-                  {newProduct.galleryImages.length > 0 && (
-                    <div className="flex gap-2 overflow-x-auto pt-2">
-                      {newProduct.galleryImages.map((img, idx) => (
-                        <div key={idx} className="relative w-16 h-16 rounded-lg overflow-hidden border border-purple-300 flex-shrink-0">
-                          <img src={img} alt="gallery" className="w-full h-full object-cover" />
+                  {/* 6-Slot Visual Multi-Photo Strip */}
+                  <div className="grid grid-cols-6 gap-2 pt-1">
+                    {Array.from({ length: Math.max(6, newProduct.galleryImages.length) }).map((_, idx) => {
+                      const img = newProduct.galleryImages[idx];
+                      return img ? (
+                        <div
+                          key={idx}
+                          className="relative aspect-square rounded-xl overflow-hidden border border-purple-300 bg-transparent"
+                        >
+                          <img src={img} alt={`slot-${idx + 1}`} className="w-full h-full object-cover object-center" />
                           <button
                             type="button"
                             onClick={() =>
@@ -2354,10 +3092,24 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                           >
                             ✕
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => setNewProduct(prev => ({ ...prev, imageUrl: img }))}
+                            className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[9px] font-bold py-0.5 text-center"
+                          >
+                            ★ Main
+                          </button>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                      ) : (
+                        <div
+                          key={idx}
+                          className="aspect-square rounded-xl border border-dashed border-purple-300 bg-white/70 flex items-center justify-center text-[10px] font-bold text-purple-400"
+                        >
+                          #{idx + 1}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 <div className="col-span-1 md:col-span-2">
@@ -2371,6 +3123,38 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                   />
                 </div>
               </div>
+
+              {/* Live Storefront Card Preview */}
+              {(newProduct.name.trim() || newProduct.imageUrl) && (() => {
+                const pv = calculateProductTotals(newProduct);
+                const pvImg =
+                  newProduct.imageUrl.trim() ||
+                  newProduct.galleryImages[0] ||
+                  getCategoryAutoImage(newProduct.category || 'Coats');
+                return (
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 flex items-center gap-3">
+                    <div className="w-16 h-16 rounded-xl bg-transparent border border-gray-200 overflow-hidden shrink-0">
+                      <img src={pvImg} alt="Card Preview" className="w-full h-full object-cover object-center" />
+                    </div>
+                    <div className="min-w-0 flex-1 text-xs">
+                      <p className="text-[10px] font-bold uppercase text-blue-700 truncate">
+                        Live Preview · {newProduct.category}
+                        {newProduct.sectionLabel ? ` · 🏷️ ${newProduct.sectionLabel}` : ''}
+                        {newProduct.tag ? ` · ${newProduct.tag}` : ''} · {newProduct.placement}
+                      </p>
+                      <p className="font-extrabold text-gray-900 truncate">
+                        {newProduct.name || 'New Product Title'}
+                      </p>
+                      <p className="font-extrabold text-gray-900 tabular-nums mt-0.5">
+                        ₹{pv.finalTotal}{' '}
+                        {pv.originalTotal > pv.finalTotal && (
+                          <span className="text-gray-400 line-through font-normal">₹{pv.originalTotal}</span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()}
 
               <button
                 type="submit"
@@ -2394,6 +3178,24 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                 </p>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
+                {products.some(p => p.isDemo || String(p.id).startsWith('demo_')) && (
+                  <button
+                    type="button"
+                    onClick={handleClearDemoProducts}
+                    className="inline-flex items-center gap-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-bold px-3 py-1.5 rounded-xl transition shadow-xs"
+                  >
+                    <span>🧹</span>
+                    <span>Remove Demo Cards</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleRestoreDemoProducts}
+                  className="inline-flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-bold px-3 py-1.5 rounded-xl transition shadow-xs"
+                >
+                  <span>✨</span>
+                  <span>Restore Demo Cards</span>
+                </button>
                 {products.length > 0 && (
                   <button
                     type="button"
@@ -2402,7 +3204,7 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                     title="Remove all products and photos"
                   >
                     <span>🗑️</span>
-                    <span>Clear All Products (ഉൽപ്പന്നങ്ങൾ ഒഴിവാക്കുക)</span>
+                    <span>Clear All Products</span>
                   </button>
                 )}
                 <button
@@ -2417,85 +3219,210 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
               </div>
             </div>
 
-            {loadingProducts && products.length === 0 ? (
-              <div className="p-8 bg-white rounded-2xl text-center text-xs text-gray-500">Loading products...</div>
-            ) : products.length === 0 ? (
-              <div className="p-10 bg-white rounded-2xl text-center text-xs text-gray-500 border border-dashed border-gray-300 space-y-2">
-                <div className="text-2xl mb-1">📦</div>
-                <p className="font-bold text-gray-700">നിലവിൽ കാറ്റലോഗിൽ ഉൽപ്പന്നങ്ങളൊന്നുമില്ല (No products in catalog).</p>
-                <p className="text-[11px] text-gray-500">ഡെമോ പരസ്യങ്ങളും ഫോട്ടോകളും പൂർണ്ണമായി നീക്കം ചെയ്തു. മുകളിലുള്ള ഫോമിൽ നിന്ന് നിങ്ങൾക്ക് പുതിയ പ്രോഡക്റ്റുകൾ ആഡ് ചെയ്യാം.</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {products.map(p => {
-                  const totals = calculateProductTotals(p);
-                  return (
-                  <div key={p.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-200 space-y-3 flex flex-col justify-between">
-                    <div>
-                      <div className="relative w-full h-44 bg-gray-100 rounded-xl overflow-hidden mb-2">
-                        <img src={p.imageUrl} alt={p.name} className="w-full h-full object-cover" />
-                        <span className="absolute top-2 right-2 bg-blue-600 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full">
-                          {p.category || 'Coats'}
-                        </span>
-                      </div>
-                      <h3 className="font-bold text-sm text-gray-900 leading-snug">{p.name}</h3>
-                      <div className="flex items-baseline gap-2 mt-1 flex-wrap">
-                        <span className="font-extrabold text-blue-700 text-base">
-                          ₹{totals.finalTotal}
-                        </span>
-                        {totals.originalTotal > totals.finalTotal && (
-                          <span className="text-xs text-gray-400 line-through">
-                            ₹{totals.originalTotal}
-                          </span>
-                        )}
-                        <span className="text-[10px] font-bold text-emerald-700">
-                          {totals.gstPercent > 0 ? `+${totals.gstPercent}% GST (₹${totals.gstAmount}) ` : ''}
-                          {totals.deliveryFee > 0
-                            ? `• Del ₹${totals.deliveryFee}`
-                            : '• Free Delivery'}
-                        </span>
-                      </div>
-                      {p.estimatedDeliveryDays && (
-                        <p className="text-[10px] font-bold text-amber-700 mt-1">
-                          ⏱️ Est. Delivery: {p.estimatedDeliveryDays}
-                        </p>
-                      )}
-                      <p className="text-[11px] text-gray-500 line-clamp-2 mt-1">{p.description}</p>
+            {(() => {
+              const uniqueSectionLabels = Array.from(
+                new Set(products.map(p => (p.sectionLabel || '').trim()).filter(Boolean))
+              );
+              const placementTitleMap: Record<string, string> = {
+                banner: paymentSettings.sectionTitleBanner?.trim() || 'Hero Banner',
+                deals: paymentSettings.sectionTitleDeals?.trim() || 'Amal Value Deals',
+                spotlight: paymentSettings.sectionTitleSpotlight?.trim() || 'In the Spotlight',
+                grid: paymentSettings.sectionTitleGrid?.trim() || 'Standard Grid',
+              };
+              const filteredAdminProducts = products.filter(p => {
+                if (adminSectionFilter === 'all') return true;
+                if (adminSectionFilter.startsWith('placement:')) {
+                  return (p.placement || 'grid') === adminSectionFilter.slice('placement:'.length);
+                }
+                if (adminSectionFilter.startsWith('label:')) {
+                  return (p.sectionLabel || '').trim() === adminSectionFilter.slice('label:'.length);
+                }
+                return true;
+              });
 
-                      {p.galleryImages && p.galleryImages.length > 0 && (
-                        <p className="text-[10px] text-purple-700 font-bold mt-2">
-                          📷 {p.galleryImages.length} Gallery Photo{p.galleryImages.length > 1 ? 's' : ''}
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="flex gap-2 pt-2 border-t">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingProduct({
-                            ...p,
-                            galleryImages: p.galleryImages && p.galleryImages.length > 0 ? [...p.galleryImages] : [p.imageUrl],
-                          });
-                          setEditGalleryInput('');
-                        }}
-                        className="flex-1 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold py-2 rounded-xl shadow transition"
-                      >
-                        ✏️ Edit Product
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => requestDeleteProduct(p)}
-                        className="flex-1 bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2 rounded-xl shadow transition"
-                      >
-                        🗑️ Delete
-                      </button>
-                    </div>
+              if (loadingProducts && products.length === 0) {
+                return (
+                  <div className="p-8 bg-white rounded-2xl text-center text-xs text-gray-500">
+                    Loading products...
                   </div>
                 );
-                })}
-              </div>
-            )}
+              }
+
+              if (products.length === 0) {
+                return (
+                  <div className="p-10 bg-white rounded-2xl text-center text-xs text-gray-500 border border-dashed border-gray-300 space-y-2">
+                    <div className="text-2xl mb-1">📦</div>
+                    <p className="font-bold text-gray-700">
+                      നിലവിൽ കാറ്റലോഗിൽ ഉൽപ്പന്നങ്ങളൊന്നുമില്ല (No products in catalog).
+                    </p>
+                    <p className="text-[11px] text-gray-500">
+                      ഡെമോ പരസ്യങ്ങളും ഫോട്ടോകളും പൂർണ്ണമായി നീക്കം ചെയ്തു. മുകളിലുള്ള ഫോമിൽ നിന്ന് നിങ്ങൾക്ക് പുതിയ പ്രോഡക്റ്റുകൾ ആഡ് ചെയ്യാം.
+                    </p>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="space-y-3">
+                  {/* Named Section / Placement Filter Pills */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1">
+                    <button
+                      type="button"
+                      onClick={() => setAdminSectionFilter('all')}
+                      className={`h-8 px-3 rounded-xl text-xs font-extrabold border whitespace-nowrap transition cursor-pointer ${
+                        adminSectionFilter === 'all'
+                          ? 'bg-slate-900 text-white border-slate-900'
+                          : 'bg-white text-gray-700 border-gray-200 hover:border-blue-400'
+                      }`}
+                    >
+                      All ({products.length})
+                    </button>
+                    {(['banner', 'deals', 'spotlight', 'grid'] as const).map(pl => {
+                      const key = `placement:${pl}`;
+                      const cnt = products.filter(p => (p.placement || 'grid') === pl).length;
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setAdminSectionFilter(key)}
+                          className={`h-8 px-3 rounded-xl text-xs font-extrabold border whitespace-nowrap transition cursor-pointer ${
+                            adminSectionFilter === key
+                              ? 'bg-blue-600 text-white border-blue-700'
+                              : 'bg-white text-gray-700 border-gray-200 hover:border-blue-400'
+                          }`}
+                        >
+                          {placementTitleMap[pl]} ({cnt})
+                        </button>
+                      );
+                    })}
+                    {uniqueSectionLabels.map(lbl => {
+                      const key = `label:${lbl}`;
+                      const cnt = products.filter(p => (p.sectionLabel || '').trim() === lbl).length;
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setAdminSectionFilter(key)}
+                          className={`h-8 px-3 rounded-xl text-xs font-extrabold border whitespace-nowrap transition cursor-pointer ${
+                            adminSectionFilter === key
+                              ? 'bg-indigo-600 text-white border-indigo-700'
+                              : 'bg-indigo-50 text-indigo-800 border-indigo-200 hover:border-indigo-400'
+                          }`}
+                        >
+                          🏷️ {lbl} ({cnt})
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {filteredAdminProducts.map(p => {
+                      const totals = calculateProductTotals(p);
+                      const isVisible = p.visible !== false;
+                      const sectionBadgeTitle = placementTitleMap[p.placement || 'grid'] || 'Standard Grid';
+                      return (
+                        <div
+                          key={p.id}
+                          className={`bg-white p-4 rounded-2xl shadow-sm border space-y-3 flex flex-col justify-between transition ${
+                            isVisible ? 'border-gray-200' : 'border-gray-200 opacity-70'
+                          }`}
+                        >
+                          <div>
+                            <div className="relative w-full h-44 bg-transparent rounded-xl overflow-hidden mb-2 border border-gray-200/60">
+                              <img src={p.imageUrl} alt={p.name} className="w-full h-full object-cover object-center" />
+                              <button
+                                type="button"
+                                onClick={() => handleToggleProductVisibility(p)}
+                                className={`absolute top-2 left-2 text-[10px] font-extrabold px-2.5 py-1 rounded-lg border shadow-xs transition ${
+                                  isVisible
+                                    ? 'bg-emerald-600 text-white border-emerald-700'
+                                    : 'bg-gray-800 text-white border-gray-900'
+                                }`}
+                              >
+                                {isVisible ? 'VISIBLE ON' : 'HIDDEN OFF'}
+                              </button>
+                              <span className="absolute top-2 right-2 bg-blue-600 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full">
+                                {p.category || 'Coats'}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                              <span className="text-[10px] font-extrabold bg-slate-100 text-slate-700 border border-slate-200 px-2 py-0.5 rounded-md truncate">
+                                {sectionBadgeTitle}
+                              </span>
+                              {p.sectionLabel && (
+                                <span className="text-[10px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200 px-2 py-0.5 rounded-md truncate">
+                                  🏷️ {p.sectionLabel}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider truncate">
+                              {p.tag || 'No Tag'}
+                              {p.isDemo ? ' · Demo' : ''}
+                            </p>
+                            <h3 className="font-bold text-sm text-gray-900 leading-snug mt-0.5">{p.name}</h3>
+                            <div className="flex items-baseline gap-2 mt-1 flex-wrap tabular-nums">
+                              <span className="font-extrabold text-blue-700 text-base">
+                                ₹{totals.finalTotal}
+                              </span>
+                              {totals.originalTotal > totals.finalTotal && (
+                                <span className="text-xs text-gray-400 line-through">
+                                  ₹{totals.originalTotal}
+                                </span>
+                              )}
+                              <span className="text-[10px] font-bold text-emerald-700">
+                                {totals.gstPercent > 0 ? `+${totals.gstPercent}% GST (₹${totals.gstAmount}) ` : ''}
+                                {totals.deliveryFee > 0
+                                  ? `• Del ₹${totals.deliveryFee}`
+                                  : '• Free Delivery'}
+                              </span>
+                            </div>
+                            {p.estimatedDeliveryDays && (
+                              <p className="text-[10px] font-bold text-amber-700 mt-1">
+                                ⏱️ Est. Delivery: {p.estimatedDeliveryDays}
+                              </p>
+                            )}
+                            <p className="text-[11px] text-gray-500 line-clamp-2 mt-1">{p.description}</p>
+
+                            {p.galleryImages && p.galleryImages.length > 0 && (
+                              <p className="text-[10px] text-purple-700 font-bold mt-2">
+                                📷 {p.galleryImages.length} Gallery Photo{p.galleryImages.length > 1 ? 's' : ''}
+                              </p>
+                            )}
+                          </div>
+
+                          <div className="flex gap-2 pt-2 border-t">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingProduct({
+                                  ...p,
+                                  sectionLabel: p.sectionLabel || '',
+                                  galleryImages:
+                                    p.galleryImages && p.galleryImages.length > 0
+                                      ? [...p.galleryImages]
+                                      : [p.imageUrl],
+                                });
+                                setEditGalleryInput('');
+                              }}
+                              className="flex-1 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold py-2 rounded-xl shadow transition"
+                            >
+                              ✏️ Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => requestDeleteProduct(p)}
+                              className="flex-1 bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2 rounded-xl shadow transition"
+                            >
+                              🗑️ Delete
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -2625,6 +3552,66 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                   }`}
                 />
               </button>
+            </div>
+
+            {/* Payment Gateway Code / Key / Script Slot */}
+            <div className="bg-gradient-to-br from-amber-50 to-orange-50 p-4 rounded-2xl border border-amber-300 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-extrabold text-xs text-amber-950 flex items-center gap-1.5">
+                    <span>⚡</span> Automated Payment Gateway Code / Key / Script (ഓട്ടോമാറ്റിക് പെയ്മെന്റ് ഗേറ്റ്‌വേ കോഡ്/സ്ക്രിപ്റ്റ്)
+                  </p>
+                  <p className="text-[11px] text-amber-900 mt-0.5">
+                    Paste your gateway code, API key, SDK script, or merchant secret below to enable instant automated checkout without manual screenshot uploads.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => togglePaymentGateway('enablePaymentGateway', 'Automated Payment Gateway')}
+                  className={`px-3 py-1.5 rounded-full text-[11px] font-extrabold transition shrink-0 ${
+                    paymentSettings.enablePaymentGateway
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'bg-gray-400 text-white'
+                  }`}
+                >
+                  {paymentSettings.enablePaymentGateway ? 'GATEWAY ON (ACTIVE) ✓' : 'GATEWAY OFF (DISABLED) ✕'}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                <div>
+                  <label className="block font-bold text-amber-900 mb-1">Gateway Name / Provider</label>
+                  <input
+                    type="text"
+                    value={paymentSettings.paymentGatewayName || 'Razorpay / Custom Gateway'}
+                    onChange={e => setPaymentSettings({ ...paymentSettings, paymentGatewayName: e.target.value })}
+                    className="w-full p-2.5 border border-amber-300 rounded-xl bg-white font-bold text-gray-900 outline-none"
+                    placeholder="e.g. Razorpay, Stripe, Paytm, Custom SDK"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-amber-900 mb-1">Gateway Mode</label>
+                  <select
+                    value={paymentSettings.paymentGatewayMode || 'test'}
+                    onChange={e => setPaymentSettings({ ...paymentSettings, paymentGatewayMode: e.target.value as 'test' | 'live' })}
+                    className="w-full p-2.5 border border-amber-300 rounded-xl bg-white font-bold text-gray-900 outline-none"
+                  >
+                    <option value="test">Test / Sandbox Mode</option>
+                    <option value="live">Live / Production Mode</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-amber-900 mb-1">Payment Gateway Code / Key / Script / SDK Snippet</label>
+                <textarea
+                  rows={4}
+                  value={paymentSettings.paymentGatewayCode || ''}
+                  onChange={e => setPaymentSettings({ ...paymentSettings, paymentGatewayCode: e.target.value })}
+                  className="w-full p-3 border border-amber-300 rounded-xl bg-white font-mono text-xs text-gray-900 outline-none"
+                  placeholder="Paste Razorpay rzp_live_... key, script snippet, merchant token, or custom gateway config code here..."
+                />
+              </div>
             </div>
 
             {/* Merchant UPI ID Input */}
@@ -2766,6 +3753,46 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
               </div>
             </div>
 
+            {/* Store Sections & Features Visibility Toggles */}
+            <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-200 space-y-3">
+              <p className="font-extrabold text-xs text-emerald-950 flex items-center gap-1">
+                <span>👁️</span> Hide / Show Store Sections &amp; Features (ON / OFF):
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                {[
+                  { key: 'enableLocationBar', label: '📍 Location / GPS Bar' },
+                  { key: 'enableLoginButton', label: '👤 Customer Login Button' },
+                  { key: 'enableWhatsAppWidget', label: '💬 WhatsApp Support Widget' },
+                  { key: 'enableHeroBanner', label: '🖼️ Hero Banner Section' },
+                  { key: 'enableValueDeals', label: '⚡ Value Deals Section' },
+                  { key: 'enableSpotlight', label: '✨ Spotlight Section' },
+                  { key: 'enableSuggestedGrid', label: '🛍️ Suggested Grid Section' },
+                ].map(item => {
+                  const isActive = (paymentSettings as any)[item.key] !== false;
+                  return (
+                    <div key={item.key} className="flex items-center justify-between bg-white p-3 rounded-xl border border-emerald-100">
+                      <span className="font-bold text-gray-800">{item.label}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPaymentSettings(prev => ({
+                            ...prev,
+                            [item.key]: !(prev as any)[item.key],
+                          }))
+                        }
+                        className={`px-3 py-1 rounded-full text-[10px] font-extrabold transition ${
+                          isActive ? 'bg-emerald-600 text-white shadow-xs' : 'bg-gray-400 text-white'
+                        }`}
+                      >
+                        {isActive ? 'SHOWN (ON) ✓' : 'HIDDEN (OFF) ✕'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
             <button
               type="button"
               onClick={savePaymentSettings}
@@ -2788,11 +3815,12 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                     message: 'Add back any deleted starter Amal Coolguard products to your catalog?',
                     confirmLabel: '🔄 Restore Defaults',
                     danger: false,
-                    onConfirm: () => {
+                    onConfirm: async () => {
                       const next = restoreDefaultCatalogProducts();
                       setProducts(next);
                       setConfirmDialog(null);
-                      showToast('✓ Default sample products restored!');
+                      showToast('✓ Starter demo showcase cards restored!');
+                      await syncCatalogToCloud(next);
                     },
                   })
                 }
@@ -3077,6 +4105,20 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
         </div>
       )}
 
+      {/* TAB 5: LIVE SALE & OFFERS MANAGEMENT */}
+      {activeTab === 'live' && (
+        <AdminLiveTab
+          products={products}
+          categories={categories}
+          liveConfig={liveConfig}
+          setLiveConfig={setLiveConfig}
+          liveItems={liveItems}
+          setLiveItems={setLiveItems}
+          showToast={showToast}
+          requestConfirm={setConfirmDialog}
+        />
+      )}
+
       {/* EDIT PRODUCT MODAL */}
       {editingProduct && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-[200] p-4">
@@ -3135,6 +4177,79 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                     onChange={e => setEditingProduct({ ...editingProduct, stock: Number(e.target.value) })}
                     className="w-full p-2.5 border rounded-xl outline-none bg-gray-50"
                   />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                <div>
+                  <label className="block font-bold text-gray-700 mb-1">Offer Tag</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Best Seller"
+                    value={editingProduct.tag || ''}
+                    onChange={e => setEditingProduct({ ...editingProduct, tag: e.target.value })}
+                    className="w-full p-2 border rounded-lg outline-none bg-white font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-gray-700 mb-1">Home Placement</label>
+                  <select
+                    value={editingProduct.placement || 'grid'}
+                    onChange={e =>
+                      setEditingProduct({
+                        ...editingProduct,
+                        placement: e.target.value as ProductPlacement,
+                      })
+                    }
+                    className="w-full p-2 border rounded-lg outline-none bg-white font-bold"
+                  >
+                    <option value="grid">
+                      {paymentSettings.sectionTitleGrid?.trim() || 'Standard Grid'}
+                    </option>
+                    <option value="banner">
+                      {paymentSettings.sectionTitleBanner?.trim() || 'Hero Banner'}
+                    </option>
+                    <option value="deals">
+                      {paymentSettings.sectionTitleDeals?.trim() || 'Value Deals'}
+                    </option>
+                    <option value="spotlight">
+                      {paymentSettings.sectionTitleSpotlight?.trim() || 'Spotlight'}
+                    </option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-bold text-gray-700 mb-1">
+                    Custom Card / Section Name
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={80}
+                    placeholder="e.g. Summer Coats Box"
+                    value={editingProduct.sectionLabel || ''}
+                    onChange={e =>
+                      setEditingProduct({ ...editingProduct, sectionLabel: e.target.value })
+                    }
+                    className="w-full p-2 border rounded-lg outline-none bg-white font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-gray-700 mb-1">Visibility</label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setEditingProduct({
+                        ...editingProduct,
+                        visible: editingProduct.visible === false,
+                      })
+                    }
+                    className={`w-full p-2 rounded-lg font-extrabold border ${
+                      editingProduct.visible !== false
+                        ? 'bg-emerald-600 text-white border-emerald-700'
+                        : 'bg-gray-200 text-gray-700 border-gray-300'
+                    }`}
+                  >
+                    {editingProduct.visible !== false ? 'VISIBLE ON' : 'HIDDEN OFF'}
+                  </button>
                 </div>
               </div>
 
@@ -3270,8 +4385,8 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                 </div>
 
                 {editingProduct.imageUrl && (
-                  <div className="w-20 h-20 rounded-xl overflow-hidden border bg-white">
-                    <img src={editingProduct.imageUrl} alt="Main" className="w-full h-full object-cover" />
+                  <div className="w-20 h-20 rounded-xl overflow-hidden border border-gray-200 bg-transparent">
+                    <img src={editingProduct.imageUrl} alt="Main" className="w-full h-full object-cover object-center" />
                   </div>
                 )}
 
@@ -3334,8 +4449,8 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
 
                 <div className="flex gap-2.5 overflow-x-auto pt-1 pb-1">
                   {(editingProduct.galleryImages || []).map((img, idx) => (
-                    <div key={idx} className="relative w-16 h-16 rounded-lg overflow-hidden border border-purple-300 flex-shrink-0 bg-white">
-                      <img src={img} alt="gal" className="w-full h-full object-cover" />
+                    <div key={idx} className="relative w-16 h-16 rounded-lg overflow-hidden border border-purple-300 flex-shrink-0 bg-transparent">
+                      <img src={img} alt="gal" className="w-full h-full object-cover object-center" />
                       <button
                         type="button"
                         onClick={() =>
@@ -3384,6 +4499,131 @@ AMOUNT: ₹${order.price || 2499} (${order.paymentMethod || 'UPI'})${gstLine}${
                 <button
                   type="button"
                   onClick={() => setEditingProduct(null)}
+                  className="flex-1 bg-gray-200 text-gray-800 font-bold py-3 rounded-xl text-xs"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT CATEGORY MODAL */}
+      {editingCategory && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-[210] p-4">
+          <div className="bg-white w-full max-w-md rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex justify-between items-center border-b pb-3">
+              <h3 className="font-extrabold text-base text-gray-900">✏️ Edit Category</h3>
+              <button
+                type="button"
+                onClick={() => setEditingCategory(null)}
+                className="text-gray-400 hover:text-gray-700 font-bold text-xl"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditedCategory} className="space-y-3 text-xs">
+              <div className="flex items-center gap-3 bg-slate-50 p-3 rounded-2xl border border-slate-200">
+                <div className="w-16 h-16 rounded-xl overflow-hidden bg-transparent border border-gray-200 shrink-0">
+                  <img
+                    src={editingCategory.imageUrl || getCategoryAutoImage(editingCategory.name)}
+                    alt={editingCategory.name}
+                    className="w-full h-full object-cover object-center"
+                  />
+                </div>
+                <div className="space-y-1.5 flex-1">
+                  <label className="inline-block bg-blue-600 hover:bg-blue-700 text-white font-bold px-3 py-1.5 rounded-lg cursor-pointer">
+                    📷 Upload Photo
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={e => handleImageFileUpload(e, 'editCat')}
+                      className="hidden"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setEditingCategory(prev =>
+                        prev ? { ...prev, imageUrl: getCategoryAutoImage(prev.name) } : null
+                      )
+                    }
+                    className="block text-[11px] font-bold text-blue-700 hover:underline"
+                  >
+                    ✨ Reset to Auto-Matched Artwork
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-gray-700 mb-1">Category Name</label>
+                <input
+                  type="text"
+                  required
+                  value={editingCategory.name}
+                  onChange={e => {
+                    const nextName = e.target.value;
+                    setEditingCategory(prev => (prev ? { ...prev, name: nextName } : null));
+                  }}
+                  className="w-full p-2.5 border rounded-xl outline-none bg-gray-50 font-bold"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-gray-700 mb-1">Image URL</label>
+                <input
+                  type="text"
+                  value={editingCategory.imageUrl}
+                  onChange={e =>
+                    setEditingCategory(prev => (prev ? { ...prev, imageUrl: e.target.value } : null))
+                  }
+                  className="w-full p-2.5 border rounded-xl outline-none bg-gray-50"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-gray-700 mb-1">Sub-Tags (comma separated)</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Fast Chargers, Cables, Adapters"
+                  value={editCatSubTagsInput}
+                  onChange={e => setEditCatSubTagsInput(e.target.value)}
+                  className="w-full p-2.5 border rounded-xl outline-none bg-gray-50"
+                />
+              </div>
+
+              <div className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border">
+                <span className="font-bold text-gray-700">Show on Storefront</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setEditingCategory(prev =>
+                      prev ? { ...prev, visible: prev.visible === false } : null
+                    )
+                  }
+                  className={`px-3 py-1.5 rounded-lg font-extrabold text-xs border ${
+                    editingCategory.visible !== false
+                      ? 'bg-emerald-600 text-white border-emerald-700'
+                      : 'bg-gray-200 text-gray-700 border-gray-300'
+                  }`}
+                >
+                  {editingCategory.visible !== false ? 'VISIBLE ON' : 'HIDDEN OFF'}
+                </button>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={uploadingPhoto}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-3 rounded-xl text-xs shadow"
+                >
+                  💾 Save Category
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingCategory(null)}
                   className="flex-1 bg-gray-200 text-gray-800 font-bold py-3 rounded-xl text-xs"
                 >
                   Cancel

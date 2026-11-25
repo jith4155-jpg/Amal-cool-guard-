@@ -1,5 +1,5 @@
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   addDoc,
   collection,
@@ -16,6 +16,7 @@ import {
   db,
   toAppUser,
   mapProductFromDb,
+  mapLiveItemFromDb,
   uploadDataUrlToStorage,
   OperationType,
   handleFirestoreError,
@@ -24,6 +25,13 @@ import { Product } from '../data/mockProducts';
 import { ThemeSwitcher } from '../context/ThemeContext';
 import { useLanguage, LanguageSelector } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
+import LocationPickerModal from './LocationPickerModal';
+import { CardPaginationDots } from './MultiSlideCardMedia';
+import {
+  getSavedDeliveryLocation,
+  getSavedLocationDisplayLabel,
+  isPlaceholderLocation,
+} from '../utils/locationSync';
 import {
   getCatalogProducts,
   isProductDeleted,
@@ -38,7 +46,12 @@ import {
   StorePaymentSettings,
   calculateProductTotals,
   safeJsonParse,
+  getLiveItems,
+  liveItemToProduct,
+  getYoutubeEmbedUrl,
 } from '../utils/storeSync';
+
+type DetailedProduct = Product & { liveVideos?: string[]; isLiveDeal?: boolean };
 
 export default function ProductDetails() {
   const { id } = useParams<{ id: string }>();
@@ -47,7 +60,12 @@ export default function ProductDetails() {
   const { t } = useLanguage();
   const { user, authReady, profile, updateUserProfile, recordLocalOrder, refreshMyOrders } = useAuth();
 
-  const findProductFromCatalog = (targetId?: string): Product | null => {
+  const findProductFromCatalog = (targetId?: string): DetailedProduct | null => {
+    if (targetId && targetId.startsWith('live_')) {
+      const liveId = targetId.slice(5);
+      const foundLive = getLiveItems().find(i => i.id === liveId || `live_${i.id}` === targetId);
+      if (foundLive) return liveItemToProduct(foundLive);
+    }
     const catalog = getCatalogProducts();
     if (!targetId) return catalog[0] || null;
     if (isProductDeleted(targetId)) return null;
@@ -55,7 +73,7 @@ export default function ProductDetails() {
   };
 
   // Synchronous initial product state lookup from Admin-synced catalog
-  const [product, setProduct] = useState<Product | null>(() => findProductFromCatalog(id));
+  const [product, setProduct] = useState<DetailedProduct | null>(() => findProductFromCatalog(id));
   const [paymentSettings, setPaymentSettings] = useState<StorePaymentSettings>(() => getPaymentSettings());
   const [loading] = useState(false);
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
@@ -72,13 +90,13 @@ export default function ProductDetails() {
   const [copiedUpi, setCopiedUpi] = useState(false);
   const [showPriceBreakdown, setShowPriceBreakdown] = useState(false);
   const [cardPreview, setCardPreview] = useState({ number: '', expiry: '', cvv: '' });
-  const [selectedLocation] = useState<string>(() => {
-    try {
-      return localStorage.getItem('amal_user_location') || 'Kerala, India';
-    } catch {
-      return 'Kerala, India';
-    }
-  });
+  const [selectedLocation, setSelectedLocation] = useState<string>(() =>
+    getSavedLocationDisplayLabel()
+  );
+  const [showLocationModal, setShowLocationModal] = useState(false);
+  const addressEditedRef = useRef(false);
+  const pincodeEditedRef = useRef(false);
+  const galleryTouchStartXRef = useRef<number | null>(null);
 
   const openCheckout = () => {
     setOrderErrorMsg('');
@@ -123,16 +141,22 @@ export default function ProductDetails() {
     return '';
   };
 
-  // Customer order form state with auto-fill from logged in user profile
+  // Customer order form state with auto-fill from detected GPS/Map location & logged in user profile
   const [formData, setFormData] = useState(() => {
     try {
       const initSettings = getPaymentSettings();
       const session = safeJsonParse<any>(localStorage.getItem('amal_customer_session'), null);
+      const savedLoc = getSavedDeliveryLocation();
+      const savedAddr =
+        savedLoc?.fullAddress && !isPlaceholderLocation(savedLoc.fullAddress)
+          ? savedLoc.fullAddress
+          : '';
+      const savedPin = savedLoc?.pincode || '';
       return {
         customerName: profile?.name || user?.displayName || session?.name || '',
         phoneNumber: profile?.mobile || session?.mobile || '',
-        address: profile?.address || session?.address || '',
-        pincode: profile?.pincode || session?.pincode || '',
+        address: savedAddr || profile?.address || session?.address || '',
+        pincode: savedPin || profile?.pincode || session?.pincode || '',
         paymentMethod: resolveDefaultPaymentMethod(initSettings),
         merchantUpiId: initSettings.merchantUpiId || 'amalcoolguard@upi',
         whatsappNumber: initSettings.whatsappNumber || '6238113451',
@@ -150,15 +174,21 @@ export default function ProductDetails() {
     }
   });
 
-  // Sync customer form fields when authenticated user profile loads
+  // Sync customer form fields when authenticated user profile or saved location loads
   useEffect(() => {
-    if (!user) return;
+    const savedLoc = getSavedDeliveryLocation();
+    const savedAddr =
+      savedLoc?.fullAddress && !isPlaceholderLocation(savedLoc.fullAddress)
+        ? savedLoc.fullAddress
+        : '';
+    const savedPin = savedLoc?.pincode || '';
+
     setFormData(prev => ({
       ...prev,
-      customerName: prev.customerName || profile?.name || user.displayName || '',
+      customerName: prev.customerName || profile?.name || user?.displayName || '',
       phoneNumber: prev.phoneNumber || profile?.mobile || '',
-      address: prev.address || profile?.address || '',
-      pincode: prev.pincode || profile?.pincode || '',
+      address: prev.address || savedAddr || profile?.address || '',
+      pincode: prev.pincode || savedPin || profile?.pincode || '',
     }));
   }, [user, profile]);
 
@@ -200,6 +230,21 @@ export default function ProductDetails() {
       if (isMounted) {
         setProduct(findProductFromCatalog(id));
         applySettings(getPaymentSettings());
+        setSelectedLocation(getSavedLocationDisplayLabel());
+
+        const latestLoc = getSavedDeliveryLocation();
+        if (latestLoc) {
+          setFormData(prev => ({
+            ...prev,
+            address:
+              !addressEditedRef.current &&
+              latestLoc.fullAddress &&
+              !isPlaceholderLocation(latestLoc.fullAddress)
+                ? latestLoc.fullAddress
+                : prev.address,
+            pincode: !pincodeEditedRef.current && latestLoc.pincode ? latestLoc.pincode : prev.pincode,
+          }));
+        }
       }
     };
     window.addEventListener('amal_store_updated', handleSync);
@@ -218,7 +263,21 @@ export default function ProductDetails() {
       }
 
       if (id) {
-        if (isProductDeleted(id)) {
+        if (id.startsWith('live_')) {
+          const liveId = id.slice(5);
+          try {
+            const liveSnap = await getDoc(doc(db, 'live_items', liveId));
+            if (isMounted) {
+              if (liveSnap.exists()) {
+                setProduct(liveItemToProduct(mapLiveItemFromDb(liveSnap.data(), liveSnap.id)));
+              } else {
+                setProduct(findProductFromCatalog(id));
+              }
+            }
+          } catch {
+            if (isMounted) setProduct(findProductFromCatalog(id));
+          }
+        } else if (isProductDeleted(id)) {
           if (isMounted) setProduct(null);
         } else {
           try {
@@ -252,22 +311,31 @@ export default function ProductDetails() {
     );
 
     const unsubProd = id
-      ? onSnapshot(
-          doc(db, 'products', id),
-          snap => {
-            if (!isMounted) return;
-            if (isProductDeleted(id)) {
-              setProduct(null);
-              return;
+      ? id.startsWith('live_')
+        ? onSnapshot(
+            doc(db, 'live_items', id.slice(5)),
+            snap => {
+              if (!isMounted || !snap.exists()) return;
+              setProduct(liveItemToProduct(mapLiveItemFromDb(snap.data(), snap.id)));
+            },
+            () => {}
+          )
+        : onSnapshot(
+            doc(db, 'products', id),
+            snap => {
+              if (!isMounted) return;
+              if (isProductDeleted(id)) {
+                setProduct(null);
+                return;
+              }
+              if (snap.exists()) {
+                setProduct(mapProductFromDb(snap.data(), snap.id));
+              }
+            },
+            error => {
+              handleFirestoreError(error, OperationType.GET, `products/${id}`);
             }
-            if (snap.exists()) {
-              setProduct(mapProductFromDb(snap.data(), snap.id));
-            }
-          },
-          error => {
-            handleFirestoreError(error, OperationType.GET, `products/${id}`);
-          }
-        )
+          )
       : null;
 
     const localRev = safeJsonParse<any[]>(localStorage.getItem(`amal_reviews_${id}`), []);
@@ -498,7 +566,7 @@ export default function ProductDetails() {
         promoterEmail: activeRefCode ? promoterEmail.slice(0, 200) : '',
         promoterCommission: activeRefCode ? commissionAmt : 0,
         deliveryStatus: 'pending',
-        status: 'pending_verification',
+        status: formData.paymentMethod === 'Gateway' ? 'confirmed' : 'pending_verification',
         paymentScreenshot: safeScreenshot,
         createdAt: serverTimestamp(),
       });
@@ -626,7 +694,12 @@ export default function ProductDetails() {
     product.galleryImages && product.galleryImages.length > 0
       ? product.galleryImages
       : [product.imageUrl];
-  const safeImgIndex = selectedImageIndex < imagesList.length ? selectedImageIndex : 0;
+  const videosList = product.liveVideos || [];
+  const totalMediaCount = imagesList.length + videosList.length;
+  const safeImgIndex = selectedImageIndex < totalMediaCount ? selectedImageIndex : 0;
+  const isVideoSlide = safeImgIndex >= imagesList.length;
+  const activeVideoUrl = isVideoSlide ? videosList[safeImgIndex - imagesList.length] : '';
+  const activeYoutubeEmbed = activeVideoUrl ? getYoutubeEmbedUrl(activeVideoUrl) : null;
 
   const totals = calculateProductTotals(product);
   const itemBasePrice = totals.basePrice;
@@ -641,6 +714,9 @@ export default function ProductDetails() {
     ...(paymentSettings.enableUPI !== false ? [{ id: 'UPI', label: 'UPI' }] : []),
     ...(paymentSettings.enableCard !== false ? [{ id: 'Card', label: 'Credit / Debit / ATM Card' }] : []),
     ...(paymentSettings.enableCOD !== false ? [{ id: 'COD', label: 'Cash on Delivery' }] : []),
+    ...(paymentSettings.enablePaymentGateway && paymentSettings.paymentGatewayCode?.trim()
+      ? [{ id: 'Gateway', label: paymentSettings.paymentGatewayName || 'Automated Payment Gateway' }]
+      : []),
   ];
 
   const discountPercent = product.price && product.discountPrice
@@ -714,50 +790,100 @@ export default function ProductDetails() {
       {/* Responsive Flipkart-Grade Product Detail Container */}
       <div className="max-w-6xl mx-auto sm:px-6 lg:px-8 pt-0 sm:pt-5">
         <div className="lg:grid lg:grid-cols-12 lg:gap-6 lg:items-start">
-          {/* Left Column: Image Gallery + Tap to Zoom */}
+          {/* Left Column: Image + Video Gallery + Tap to Zoom */}
           <div className="lg:col-span-5 lg:sticky lg:top-20 bg-white sm:rounded-xl border-b sm:border border-gray-200 p-4 space-y-3">
             <div
-              onClick={() => {
-                setZoomScale(2);
-                setIsZoomOpen(true);
+              onTouchStart={e => {
+                galleryTouchStartXRef.current = e.touches[0]?.clientX ?? null;
               }}
-              className="relative w-full aspect-square sm:aspect-[4/3] lg:aspect-square bg-gray-50 rounded-xl overflow-hidden cursor-zoom-in border border-gray-100 group"
+              onTouchEnd={e => {
+                const startX = galleryTouchStartXRef.current;
+                const endX = e.changedTouches[0]?.clientX ?? null;
+                galleryTouchStartXRef.current = null;
+                if (startX !== null && endX !== null && totalMediaCount > 1) {
+                  const diff = startX - endX;
+                  if (Math.abs(diff) > 40) {
+                    setSelectedImageIndex(prev =>
+                      diff > 0
+                        ? (prev + 1) % totalMediaCount
+                        : (prev - 1 + totalMediaCount) % totalMediaCount
+                    );
+                  }
+                }
+              }}
+              onClick={() => {
+                if (!isVideoSlide) {
+                  setZoomScale(2);
+                  setIsZoomOpen(true);
+                }
+              }}
+              className={`relative w-full aspect-square sm:aspect-[4/3] lg:aspect-square bg-transparent rounded-xl overflow-hidden border border-gray-200/60 group ${
+                isVideoSlide ? '' : 'cursor-zoom-in'
+              }`}
             >
-              <img
-                src={imagesList[safeImgIndex]}
-                alt={product.name}
-                referrerPolicy="no-referrer"
-                className="w-full h-full object-contain sm:object-cover group-hover:scale-105 transition duration-300"
-              />
+              {isVideoSlide && activeVideoUrl ? (
+                activeYoutubeEmbed ? (
+                  <iframe
+                    src={activeYoutubeEmbed}
+                    title={product.name}
+                    allow="autoplay; encrypted-media"
+                    allowFullScreen
+                    className="w-full h-full border-0"
+                  />
+                ) : (
+                  <video
+                    src={activeVideoUrl}
+                    controls
+                    playsInline
+                    className="w-full h-full object-cover object-center bg-black"
+                  />
+                )
+              ) : (
+                <img
+                  src={imagesList[safeImgIndex] || imagesList[0]}
+                  alt={product.name}
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover object-center group-hover:scale-105 transition duration-300"
+                />
+              )}
               {discountPercent > 0 && (
-                <span className="absolute top-3 left-3 bg-emerald-600 text-white text-[11px] font-bold px-2.5 py-1 rounded-md shadow-xs tabular-nums">
+                <span className="absolute top-3 left-3 bg-emerald-600 text-white text-[11px] font-bold px-2.5 py-1 rounded-md shadow-xs tabular-nums pointer-events-none">
                   {discountPercent}% OFF
                 </span>
               )}
-              <button
-                type="button"
-                onClick={e => {
-                  e.stopPropagation();
-                  setZoomScale(2);
-                  setIsZoomOpen(true);
-                }}
-                className="absolute bottom-3 right-3 h-8 px-3 rounded-lg bg-white/95 border border-gray-200 text-gray-800 text-[11px] font-bold shadow-sm flex items-center gap-1.5 hover:bg-white transition"
-              >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                  <circle cx="11" cy="11" r="8" />
-                  <path d="m21 21-4.3-4.3" />
-                  <path d="M11 8v6M8 11h6" />
-                </svg>
-                <span>{t('tapToZoom')}</span>
-              </button>
+              {!isVideoSlide && (
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    setZoomScale(2);
+                    setIsZoomOpen(true);
+                  }}
+                  className="absolute bottom-3 right-3 h-8 px-3 rounded-lg bg-white/95 border border-gray-200 text-gray-800 text-[11px] font-bold shadow-sm flex items-center gap-1.5 hover:bg-white transition"
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                    <circle cx="11" cy="11" r="8" />
+                    <path d="m21 21-4.3-4.3" />
+                    <path d="M11 8v6M8 11h6" />
+                  </svg>
+                  <span>{t('tapToZoom')}</span>
+                </button>
+              )}
             </div>
 
-            {/* Thumbnails Strip */}
+            {/* Pagination Dots Indicator Directly Underneath Main Gallery Card */}
+            <CardPaginationDots
+              total={totalMediaCount}
+              activeIndex={safeImgIndex}
+              onSelect={setSelectedImageIndex}
+            />
+
+            {/* Thumbnails Strip (Photos + Videos) */}
             <div className="flex gap-2.5 overflow-x-auto no-scrollbar pb-1">
               {imagesList.map((img, idx) => (
                 <button
                   type="button"
-                  key={idx}
+                  key={`img_${idx}`}
                   onClick={() => setSelectedImageIndex(idx)}
                   className={`w-16 h-16 rounded-lg overflow-hidden border-2 flex-shrink-0 transition ${
                     safeImgIndex === idx
@@ -765,9 +891,27 @@ export default function ProductDetails() {
                       : 'border-gray-200 opacity-75 hover:opacity-100'
                   }`}
                 >
-                  <img src={img} alt="thumb" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                  <img src={img} alt="thumb" referrerPolicy="no-referrer" className="w-full h-full object-cover object-center" />
                 </button>
               ))}
+              {videosList.map((_, vIdx) => {
+                const mediaIdx = imagesList.length + vIdx;
+                return (
+                  <button
+                    type="button"
+                    key={`vid_${vIdx}`}
+                    onClick={() => setSelectedImageIndex(mediaIdx)}
+                    className={`w-16 h-16 rounded-lg overflow-hidden border-2 flex-shrink-0 transition bg-slate-900 text-white flex flex-col items-center justify-center text-[10px] font-extrabold ${
+                      safeImgIndex === mediaIdx
+                        ? 'border-rose-600 ring-2 ring-rose-300'
+                        : 'border-slate-700 opacity-85 hover:opacity-100'
+                    }`}
+                  >
+                    <span className="text-sm">▶</span>
+                    <span>Vid {vIdx + 1}</span>
+                  </button>
+                );
+              })}
             </div>
 
             {/* Desktop Primary Purchase CTA right under gallery */}
@@ -789,9 +933,19 @@ export default function ProductDetails() {
             <div className="bg-white sm:rounded-xl border-y sm:border border-gray-200 p-4 sm:p-6 space-y-4">
               {/* Unboxed Category + Rating Header */}
               <div className="flex items-center justify-between gap-2 flex-wrap">
-                <span className="text-xs font-bold uppercase tracking-wider text-blue-700">
-                  {product.category}
-                </span>
+                <div className="flex items-center gap-2 min-w-0 truncate">
+                  <span className="text-xs font-bold uppercase tracking-wider text-blue-700 truncate">
+                    {product.category}
+                  </span>
+                  {product.tag && (
+                    <>
+                      <span aria-hidden="true" className="text-gray-300">·</span>
+                      <span className="text-xs font-bold text-emerald-700 truncate">
+                        {product.tag}
+                      </span>
+                    </>
+                  )}
+                </div>
                 <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-gray-600">
                   <span className="bg-emerald-600 text-white text-[11px] font-bold px-2 py-0.5 rounded tabular-nums">
                     {product.rating || 4.8} ★
@@ -859,8 +1013,8 @@ export default function ProductDetails() {
                     </div>
                     <button
                       type="button"
-                      onClick={openCheckout}
-                      className="text-xs font-bold text-blue-600 hover:underline shrink-0 whitespace-nowrap"
+                      onClick={() => setShowLocationModal(true)}
+                      className="text-xs font-bold text-blue-600 hover:underline shrink-0 whitespace-nowrap cursor-pointer"
                     >
                       Change
                     </button>
@@ -1092,7 +1246,7 @@ export default function ProductDetails() {
             className="flex-1 overflow-auto flex items-center justify-center p-4 cursor-zoom-in relative"
           >
             <img
-              src={imagesList[safeImgIndex]}
+              src={imagesList[safeImgIndex] || imagesList[0]}
               alt={product.name}
               referrerPolicy="no-referrer"
               style={{
@@ -1118,7 +1272,7 @@ export default function ProductDetails() {
                     safeImgIndex === idx ? 'border-blue-500' : 'border-white/20 opacity-60'
                   }`}
                 >
-                  <img src={img} alt="zoom thumb" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                  <img src={img} alt="zoom thumb" referrerPolicy="no-referrer" className="w-full h-full object-cover object-center" />
                 </button>
               ))}
             </div>
@@ -1272,12 +1426,14 @@ export default function ProductDetails() {
                   {/* Clean Order Summary Box */}
                   <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-xs">
                     <div className="flex items-center gap-3 pb-3 border-b border-gray-100">
-                      <img
-                        src={product.imageUrl}
-                        alt={product.name}
-                        referrerPolicy="no-referrer"
-                        className="w-16 h-16 rounded-lg object-cover border border-gray-200 shrink-0"
-                      />
+                      <div className="w-16 h-16 rounded-lg overflow-hidden border border-gray-200 bg-transparent shrink-0">
+                        <img
+                          src={product.imageUrl}
+                          alt={product.name}
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover object-center"
+                        />
+                      </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-bold text-gray-900 truncate">{product.name}</p>
                         <p className="text-xs text-gray-500 mt-0.5 tabular-nums">Qty: 1</p>
@@ -1347,12 +1503,48 @@ export default function ProductDetails() {
               <div className="flex-1 flex flex-col justify-between">
                 <div className="p-4 space-y-3">
                   <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-5 space-y-4">
-                    <div>
-                      <h3 className="text-sm font-extrabold text-gray-900">Contact & Delivery Details</h3>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        Enter the address where you want this order delivered.
-                      </p>
+                    <div className="flex items-start justify-between gap-2.5">
+                      <div>
+                        <h3 className="text-sm font-extrabold text-gray-900">Contact & Delivery Details</h3>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          Enter or auto-fill via live GPS / Google Maps pin.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowLocationModal(true)}
+                        className="h-8 px-2.5 rounded-xl bg-[#151F32] hover:bg-[#1E293B] border-[1px] border-sky-400/50 text-sky-300 text-[11px] font-bold inline-flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer transition"
+                      >
+                        <span aria-hidden="true">📍</span>
+                        <span>Use GPS / Map</span>
+                      </button>
                     </div>
+
+                    {!isPlaceholderLocation(selectedLocation) && (
+                      <div className="rounded-xl bg-[#0F172A] border-[1px] border-slate-700/80 px-3 py-2 flex items-center justify-between gap-2 text-[11px]">
+                        <span className="text-slate-200 truncate">
+                          Saved location: <strong className="text-sky-300">{selectedLocation}</strong>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const savedLoc = getSavedDeliveryLocation();
+                            if (savedLoc) {
+                              addressEditedRef.current = false;
+                              pincodeEditedRef.current = false;
+                              setFormData(prev => ({
+                                ...prev,
+                                address: savedLoc.fullAddress || prev.address,
+                                pincode: savedLoc.pincode || prev.pincode,
+                              }));
+                            }
+                          }}
+                          className="text-sky-300 hover:text-white font-bold underline whitespace-nowrap shrink-0 cursor-pointer"
+                        >
+                          Re-apply
+                        </button>
+                      </div>
+                    )}
 
                     <div>
                       <label className="block text-xs font-bold text-gray-700 mb-1.5">Full Name *</label>
@@ -1389,7 +1581,10 @@ export default function ProductDetails() {
                         required
                         rows={3}
                         value={formData.address}
-                        onChange={e => setFormData({ ...formData, address: e.target.value })}
+                        onChange={e => {
+                          addressEditedRef.current = true;
+                          setFormData({ ...formData, address: e.target.value });
+                        }}
                         className="w-full p-3.5 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                       />
                     </div>
@@ -1401,7 +1596,10 @@ export default function ProductDetails() {
                         placeholder="e.g. 673001"
                         required
                         value={formData.pincode}
-                        onChange={e => setFormData({ ...formData, pincode: e.target.value })}
+                        onChange={e => {
+                          pincodeEditedRef.current = true;
+                          setFormData({ ...formData, pincode: e.target.value });
+                        }}
                         className="w-full h-11 px-3.5 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white tabular-nums"
                       />
                     </div>
@@ -1483,12 +1681,14 @@ export default function ProductDetails() {
                   <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
                     <div className="flex items-start gap-3.5">
                       <div className="flex flex-col items-center gap-1.5 shrink-0">
-                        <img
-                          src={product.imageUrl}
-                          alt={product.name}
-                          referrerPolicy="no-referrer"
-                          className="w-20 h-20 rounded-lg object-cover border border-gray-200"
-                        />
+                        <div className="w-20 h-20 rounded-lg overflow-hidden border border-gray-200 bg-transparent">
+                          <img
+                            src={product.imageUrl}
+                            alt={product.name}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover object-center"
+                          />
+                        </div>
                         <span className="px-2 py-0.5 rounded border border-gray-200 bg-gray-50 text-[11px] font-bold text-gray-700 tabular-nums">
                           Qty: 1
                         </span>
@@ -1732,11 +1932,13 @@ export default function ProductDetails() {
                                 )}
                                 {screenshotPreview ? (
                                   <div className="flex items-center gap-3">
-                                    <img
-                                      src={screenshotPreview}
-                                      alt="Payment screenshot"
-                                      className="w-12 h-12 rounded-md object-cover border border-gray-200"
-                                    />
+                                    <div className="w-12 h-12 rounded-md overflow-hidden border border-gray-200 shrink-0">
+                                      <img
+                                        src={screenshotPreview}
+                                        alt="Payment screenshot"
+                                        className="w-full h-full object-cover object-center"
+                                      />
+                                    </div>
                                     <span className="text-xs font-bold text-emerald-700 flex-1">
                                       Receipt attached
                                     </span>
@@ -1912,6 +2114,77 @@ export default function ProductDetails() {
                           )}
                         </div>
                       )}
+
+                      {/* 4. Automated Payment Gateway Option */}
+                      {paymentSettings.enablePaymentGateway && paymentSettings.paymentGatewayCode?.trim() && (
+                        <div
+                          className={`bg-white rounded-xl border transition overflow-hidden ${
+                            formData.paymentMethod === 'Gateway'
+                              ? 'border-blue-600 ring-1 ring-blue-200'
+                              : 'border-gray-200'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, paymentMethod: 'Gateway' })}
+                            className="w-full p-4 flex items-center justify-between gap-3 text-left"
+                          >
+                            <div className="flex items-start gap-3 min-w-0">
+                              <span className="w-9 h-9 rounded-lg border border-amber-300 bg-amber-50 flex items-center justify-center text-amber-700 shrink-0">
+                                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" />
+                                </svg>
+                              </span>
+                              <div className="min-w-0">
+                                <p className="text-sm font-bold text-gray-900">
+                                  {paymentSettings.paymentGatewayName || 'Automated Payment Gateway'}
+                                  <span className="ml-2 text-[10px] font-black uppercase px-2 py-0.5 rounded bg-amber-100 text-amber-900">
+                                    {paymentSettings.paymentGatewayMode || 'test'} mode
+                                  </span>
+                                </p>
+                                <p className="text-xs text-gray-500">
+                                  Instant automated gateway payment (Secured by pasted key/script)
+                                </p>
+                              </div>
+                            </div>
+                            <svg
+                              className={`w-4 h-4 text-gray-500 shrink-0 transition-transform ${
+                                formData.paymentMethod === 'Gateway' ? 'rotate-180 text-blue-600' : ''
+                              }`}
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2.2"
+                            >
+                              <path d="m6 9 6 6 6-6" />
+                            </svg>
+                          </button>
+
+                          {formData.paymentMethod === 'Gateway' && (
+                            <div className="px-4 pb-4 pt-2 border-t border-gray-100 space-y-3">
+                              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-950 space-y-1">
+                                <p className="font-extrabold">⚡ Instant Auto-Payment Gateway Active</p>
+                                <p className="text-[11px] text-amber-900">
+                                  Using configured gateway code / key. Clicking below will securely process payment and confirm your order instantly without manual screenshot uploads.
+                                </p>
+                              </div>
+                              <button
+                                type="submit"
+                                disabled={submitting}
+                                className="flipkart-cta-btn w-full h-11 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-extrabold text-sm rounded-lg shadow-md transition cursor-pointer disabled:opacity-50 tabular-nums flex items-center justify-center gap-2"
+                              >
+                                {submitting ? (
+                                  'Processing Auto-Payment...'
+                                ) : (
+                                  <>
+                                    <span>⚡ Pay ₹{finalTotalPayable} via {paymentSettings.paymentGatewayName || 'Gateway'}</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -1935,6 +2208,28 @@ export default function ProductDetails() {
           </div>
         </div>
       )}
+
+      {/* Interactive Live GPS & Google Maps Location Modal */}
+      <LocationPickerModal
+        isOpen={showLocationModal}
+        onClose={() => setShowLocationModal(false)}
+        onSaved={loc => {
+          addressEditedRef.current = false;
+          pincodeEditedRef.current = false;
+          setSelectedLocation(loc.displayName);
+          setFormData(prev => ({
+            ...prev,
+            address: loc.fullAddress || prev.address,
+            pincode: loc.pincode || prev.pincode,
+          }));
+          if (user) {
+            void updateUserProfile({
+              address: loc.fullAddress,
+              pincode: loc.pincode || undefined,
+            }).catch(() => {});
+          }
+        }}
+      />
     </div>
   );
 }

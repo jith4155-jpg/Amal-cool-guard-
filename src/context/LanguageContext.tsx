@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 
 export type Language = 'en' | 'ml' | 'hi' | 'ta';
 
@@ -31,6 +31,8 @@ const translations: Record<Language, Record<string, string>> = {
     account: 'Account',
     orders: 'Orders',
     home: 'Home',
+    categories: 'Categories',
+    live: 'Live',
     wishlist: 'Wishlist',
     helpCenter: 'Help Center',
     coupons: 'Coupons',
@@ -76,6 +78,8 @@ const translations: Record<Language, Record<string, string>> = {
     account: 'അക്കൗണ്ട്',
     orders: 'ഓർഡറുകൾ',
     home: 'ഹോം',
+    categories: 'വിഭാഗങ്ങൾ',
+    live: 'ലൈവ്',
     wishlist: 'വിഷ്‌ലിസ്റ്റ്',
     helpCenter: 'സഹായ കേന്ദ്രം',
     coupons: 'കൂപ്പണുകൾ',
@@ -121,6 +125,8 @@ const translations: Record<Language, Record<string, string>> = {
     account: 'खाता',
     orders: 'आदेश',
     home: 'होम',
+    categories: 'श्रेणियाँ',
+    live: 'लाइव',
     wishlist: 'विशलिस्ट',
     helpCenter: 'सहायता केंद्र',
     coupons: 'कूपन',
@@ -166,6 +172,8 @@ const translations: Record<Language, Record<string, string>> = {
     account: 'கணக்கு',
     orders: 'ஆர்டர்கள்',
     home: 'முகப்பு',
+    categories: 'வகைகள்',
+    live: 'லைவ்',
     wishlist: 'விருப்பப்பட்டியல்',
     helpCenter: 'உதவி மையம்',
     coupons: 'கூப்பன்கள்',
@@ -220,8 +228,13 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
 export const useLanguage = () => useContext(LanguageContext);
 
-export const LanguageSelector: React.FC<{ className?: string }> = ({ className = '' }) => {
+export const LanguageSelector: React.FC<{ className?: string; compact?: boolean }> = ({
+  className = '',
+  compact = false,
+}) => {
   const { lang, setLang } = useLanguage();
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const languageOptions: { code: Language; short: string; name: string }[] = [
     { code: 'en', short: 'EN', name: 'English' },
@@ -229,6 +242,60 @@ export const LanguageSelector: React.FC<{ className?: string }> = ({ className =
     { code: 'hi', short: 'HI', name: 'हिन्दी' },
     { code: 'ta', short: 'TA', name: 'தமிழ்' },
   ];
+
+  useEffect(() => {
+    if (!compact) return;
+    const handleOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, [compact]);
+
+  const currentOpt = languageOptions.find(opt => opt.code === lang) || languageOptions[0];
+
+  if (compact) {
+    return (
+      <div ref={containerRef} className={`relative inline-flex items-center shrink-0 ${className}`}>
+        <button
+          type="button"
+          onClick={() => setOpen(prev => !prev)}
+          title={`Language: ${currentOpt.name}`}
+          aria-label="Select Language"
+          className="h-8 sm:h-9 px-2 sm:px-2.5 bg-white border border-gray-200 text-gray-800 text-[11px] font-extrabold rounded-full shadow-xs hover:border-blue-400 transition cursor-pointer inline-flex items-center gap-1 whitespace-nowrap"
+        >
+          <span>{currentOpt.short}</span>
+          <span className="text-[8px] opacity-60">▼</span>
+        </button>
+
+        {open && (
+          <div className="theme-popover absolute right-0 top-full mt-2 w-36 rounded-xl shadow-2xl border border-gray-200 bg-white p-1.5 z-[300] space-y-0.5">
+            {languageOptions.map(opt => {
+              const active = opt.code === lang;
+              return (
+                <button
+                  key={opt.code}
+                  type="button"
+                  onClick={() => {
+                    setLang(opt.code);
+                    setOpen(false);
+                  }}
+                  className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                    active ? 'bg-blue-600 text-white' : 'text-gray-800 hover:bg-gray-100'
+                  }`}
+                >
+                  <span>{opt.name}</span>
+                  <span className="text-[10px] opacity-75">{opt.short}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className={`relative inline-flex items-center shrink-0 ${className}`}>

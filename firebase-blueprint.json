@@ -67,7 +67,7 @@
     },
     "product": {
       "title": "Product",
-      "description": "A product available for booking in the storefront.",
+      "description": "A product or multi-photo showcase card available for booking in the storefront.",
       "type": "object",
       "properties": {
         "name": { "type": "string", "maxLength": 200 },
@@ -77,6 +77,11 @@
         "imageUrl": { "type": "string", "maxLength": 950000 },
         "galleryImages": { "type": "array" },
         "category": { "type": "string", "maxLength": 100 },
+        "tag": { "type": "string", "maxLength": 60 },
+        "placement": { "type": "string", "enum": ["grid", "banner", "deals", "spotlight"] },
+        "sectionLabel": { "type": "string", "maxLength": 80 },
+        "visible": { "type": "boolean" },
+        "isDemo": { "type": "boolean" },
         "rating": { "type": "number" },
         "reviewsCount": { "type": "number" },
         "features": { "type": "array" },
@@ -88,6 +93,22 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["name", "price"]
+    },
+    "category": {
+      "title": "Category",
+      "description": "Storefront category with auto-matched or custom image, visibility toggle, and sort order.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "imageUrl": { "type": "string", "maxLength": 950000 },
+        "visible": { "type": "boolean" },
+        "sortOrder": { "type": "number" },
+        "isDemo": { "type": "boolean" },
+        "subTags": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "visible"]
     },
     "promoter": {
       "title": "Promoter",
@@ -163,6 +184,7 @@
         "list": { "type": "array" },
         "initialized": { "type": "boolean" },
         "deletedIds": { "type": "array" },
+        "deletedCategoryIds": { "type": "array" },
         "enableCOD": { "type": "boolean" },
         "enableUPI": { "type": "boolean" },
         "enableCard": { "type": "boolean" },
@@ -179,8 +201,82 @@
         "blockAccountWishlist": { "type": "boolean" },
         "blockAccountCoupons": { "type": "boolean" },
         "blockAccountHelp": { "type": "boolean" },
+        "enableLocationBar": { "type": "boolean" },
+        "enableLoginButton": { "type": "boolean" },
+        "enableWhatsAppWidget": { "type": "boolean" },
+        "enableHeroBanner": { "type": "boolean" },
+        "enableValueDeals": { "type": "boolean" },
+        "enableSpotlight": { "type": "boolean" },
+        "enableSuggestedGrid": { "type": "boolean" },
+        "enablePaymentGateway": { "type": "boolean" },
+        "paymentGatewayName": { "type": "string", "maxLength": 100 },
+        "paymentGatewayMode": { "type": "string", "enum": ["test", "live"] },
+        "paymentGatewayCode": { "type": "string", "maxLength": 10000 },
+        "sectionTitleBanner": { "type": "string", "maxLength": 80 },
+        "sectionTitleDeals": { "type": "string", "maxLength": 80 },
+        "sectionTitleSpotlight": { "type": "string", "maxLength": 80 },
+        "sectionTitleGrid": { "type": "string", "maxLength": 80 },
+        "active": { "type": "boolean" },
+        "headerLabel": { "type": "string", "maxLength": 80 },
+        "subtitle": { "type": "string", "maxLength": 200 },
+        "durationHours": { "type": "number" },
+        "durationMinutes": { "type": "number" },
+        "durationText": { "type": "string", "maxLength": 100 },
+        "startedAt": { "type": "string", "maxLength": 100 },
+        "endsAt": { "type": "string", "maxLength": 100 },
+        "defaultDiscountPercent": { "type": "number" },
+        "defaultOfferAmount": { "type": "number" },
+        "liveBoxes": { "type": "array" },
+        "deletedLiveIds": { "type": "array" },
         "updatedAt": { "type": "string", "format": "date-time" }
       }
+    },
+    "liveItem": {
+      "title": "LiveSaleItem",
+      "description": "Live sale product/model card with offer pricing, % discount, multi-images, and video links.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "boxId": { "type": "string", "maxLength": 64 },
+        "sectionName": { "type": "string", "maxLength": 80 },
+        "title": { "type": "string", "maxLength": 200 },
+        "modelName": { "type": "string", "maxLength": 120 },
+        "category": { "type": "string", "maxLength": 100 },
+        "originalPrice": { "type": "number" },
+        "offerPrice": { "type": "number" },
+        "discountPercent": { "type": "number" },
+        "offerAmount": { "type": "number" },
+        "tag": { "type": "string", "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "images": { "type": "array" },
+        "videos": { "type": "array" },
+        "linkedProductId": { "type": "string", "maxLength": 128 },
+        "visible": { "type": "boolean" },
+        "sortOrder": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "originalPrice", "offerPrice", "visible"]
+    },
+    "review": {
+      "title": "ProductReview",
+      "description": "Customer ratings and reviews submitted from storefront or managed in Admin Panel.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "productName": { "type": "string", "maxLength": 200 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "userEmail": { "type": "string", "maxLength": 200 },
+        "userName": { "type": "string", "maxLength": 120 },
+        "location": { "type": "string", "maxLength": 120 },
+        "rating": { "type": "number" },
+        "comment": { "type": "string", "maxLength": 2000 },
+        "status": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["productId", "rating", "comment", "createdAt"]
     }
   },
   "firestore": {
@@ -196,6 +292,14 @@
       "schema": "product",
       "description": "Storefront product catalog."
     },
+    "/categories/{categoryId}": {
+      "schema": "category",
+      "description": "Storefront categories with image, visibility toggle, and ordering."
+    },
+    "/live_items/{itemId}": {
+      "schema": "liveItem",
+      "description": "Live sale cards/models with offers, discounts, multi-images, and video previews."
+    },
     "/promoters/{promoterId}": {
       "schema": "promoter",
       "description": "Private promoter & affiliate profiles bound to verified Gmail accounts."
@@ -210,7 +314,11 @@
     },
     "/settings/{settingId}": {
       "schema": "setting",
-      "description": "Store configuration docs: payment, categories, catalog, order_counter."
+      "description": "Store configuration docs: payment, categories, catalog, order_counter, live."
+    },
+    "/reviews/{reviewId}": {
+      "schema": "review",
+      "description": "Customer ratings and reviews collection accessible by customers and admin."
     }
   }
 }

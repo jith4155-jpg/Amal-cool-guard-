@@ -48,8 +48,9 @@ service cloud.firestore {
       return data.keys().hasAll(['name', 'price']) &&
         data.keys().hasOnly([
           'name', 'price', 'discountPrice', 'description', 'imageUrl', 'galleryImages',
-          'category', 'rating', 'reviewsCount', 'features', 'stock', 'gstPercent',
-          'deliveryCharge', 'estimatedDeliveryDays', 'createdAt', 'updatedAt'
+          'category', 'tag', 'placement', 'sectionLabel', 'visible', 'isDemo', 'rating', 'reviewsCount',
+          'features', 'stock', 'gstPercent', 'deliveryCharge', 'estimatedDeliveryDays',
+          'createdAt', 'updatedAt'
         ]) &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
         data.price is number && data.price >= 0 &&
@@ -57,6 +58,11 @@ service cloud.firestore {
         isOptString(data, 'description', 2000) &&
         isOptString(data, 'imageUrl', 950000) &&
         isOptString(data, 'category', 100) &&
+        isOptString(data, 'tag', 60) &&
+        (!('placement' in data) || data.placement == null || data.placement in ['grid', 'banner', 'deals', 'spotlight']) &&
+        isOptString(data, 'sectionLabel', 80) &&
+        isOptBool(data, 'visible') &&
+        isOptBool(data, 'isDemo') &&
         isOptNumber(data, 'rating') &&
         isOptNumber(data, 'reviewsCount') &&
         isOptNumber(data, 'stock') &&
@@ -65,6 +71,21 @@ service cloud.firestore {
         isOptString(data, 'estimatedDeliveryDays', 100) &&
         (!('galleryImages' in data) || (data.galleryImages is list && data.galleryImages.size() <= 15 && (data.galleryImages.size() == 0 || (data.galleryImages[0] is string && data.galleryImages[0].size() <= 950000)))) &&
         (!('features' in data) || (data.features is list && data.features.size() <= 20 && (data.features.size() == 0 || (data.features[0] is string && data.features[0].size() <= 200))));
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['id', 'name', 'visible']) &&
+        data.keys().hasOnly([
+          'id', 'name', 'imageUrl', 'visible', 'sortOrder', 'isDemo', 'subTags', 'updatedAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.visible is bool &&
+        isOptString(data, 'imageUrl', 950000) &&
+        isOptNumber(data, 'sortOrder') &&
+        isOptBool(data, 'isDemo') &&
+        isOptString(data, 'updatedAt', 100) &&
+        (!('subTags' in data) || (data.subTags is list && data.subTags.size() <= 15 && (data.subTags.size() == 0 || (data.subTags[0] is string && data.subTags[0].size() <= 60))));
     }
 
     function isValidBooking(data) {
@@ -180,10 +201,12 @@ service cloud.firestore {
 
     function isValidCategoriesSetting(data) {
       return data.keys().hasAll(['list']) &&
-        data.keys().hasOnly(['list', 'updatedAt']) &&
+        data.keys().hasOnly(['list', 'initialized', 'deletedCategoryIds', 'updatedAt']) &&
         data.list is list &&
-        data.list.size() <= 100 &&
-        (data.list.size() == 0 || (data.list[0] is string && data.list[0].size() <= 100));
+        data.list.size() <= 150 &&
+        (data.list.size() == 0 || (data.list[0] is string && data.list[0].size() <= 100)) &&
+        isOptBool(data, 'initialized') &&
+        (!('deletedCategoryIds' in data) || (data.deletedCategoryIds is list && data.deletedCategoryIds.size() <= 200 && (data.deletedCategoryIds.size() == 0 || (data.deletedCategoryIds[0] is string && data.deletedCategoryIds[0].size() <= 128))));
     }
 
     function isValidOrderCounterSetting(data) {
@@ -198,7 +221,12 @@ service cloud.firestore {
           'enableCOD', 'enableUPI', 'enableCard', 'merchantUpiId', 'whatsappNumber',
           'storeBaseUrl', 'gstNumber', 'pickupName', 'pickupPhone', 'pickupAddress',
           'pickupPincode', 'defaultDeliveryDays', 'blockAccountOrders',
-          'blockAccountWishlist', 'blockAccountCoupons', 'blockAccountHelp', 'updatedAt'
+          'blockAccountWishlist', 'blockAccountCoupons', 'blockAccountHelp',
+          'enableLocationBar', 'enableLoginButton', 'enableWhatsAppWidget',
+          'enableHeroBanner', 'enableValueDeals', 'enableSpotlight', 'enableSuggestedGrid',
+          'enablePaymentGateway', 'paymentGatewayName', 'paymentGatewayMode', 'paymentGatewayCode',
+          'sectionTitleBanner', 'sectionTitleDeals', 'sectionTitleSpotlight', 'sectionTitleGrid',
+          'updatedAt'
         ]) &&
         isOptBool(data, 'enableCOD') &&
         isOptBool(data, 'enableUPI') &&
@@ -215,7 +243,92 @@ service cloud.firestore {
         isOptBool(data, 'blockAccountOrders') &&
         isOptBool(data, 'blockAccountWishlist') &&
         isOptBool(data, 'blockAccountCoupons') &&
-        isOptBool(data, 'blockAccountHelp');
+        isOptBool(data, 'blockAccountHelp') &&
+        isOptBool(data, 'enableLocationBar') &&
+        isOptBool(data, 'enableLoginButton') &&
+        isOptBool(data, 'enableWhatsAppWidget') &&
+        isOptBool(data, 'enableHeroBanner') &&
+        isOptBool(data, 'enableValueDeals') &&
+        isOptBool(data, 'enableSpotlight') &&
+        isOptBool(data, 'enableSuggestedGrid') &&
+        isOptBool(data, 'enablePaymentGateway') &&
+        isOptString(data, 'paymentGatewayName', 100) &&
+        (!('paymentGatewayMode' in data) || data.paymentGatewayMode == null || data.paymentGatewayMode in ['test', 'live']) &&
+        isOptString(data, 'paymentGatewayCode', 10000) &&
+        isOptString(data, 'sectionTitleBanner', 80) &&
+        isOptString(data, 'sectionTitleDeals', 80) &&
+        isOptString(data, 'sectionTitleSpotlight', 80) &&
+        isOptString(data, 'sectionTitleGrid', 80);
+    }
+
+    function isValidLiveSetting(data) {
+      return data.keys().hasAll(['active', 'headerLabel']) &&
+        data.keys().hasOnly([
+          'active', 'headerLabel', 'subtitle', 'durationHours', 'durationMinutes',
+          'durationText', 'startedAt', 'endsAt', 'defaultDiscountPercent',
+          'defaultOfferAmount', 'liveBoxes', 'deletedLiveIds', 'updatedAt'
+        ]) &&
+        data.active is bool &&
+        data.headerLabel is string && data.headerLabel.size() >= 1 && data.headerLabel.size() <= 80 &&
+        isOptString(data, 'subtitle', 200) &&
+        isOptNumber(data, 'durationHours') &&
+        isOptNumber(data, 'durationMinutes') &&
+        isOptString(data, 'durationText', 100) &&
+        isOptString(data, 'startedAt', 100) &&
+        isOptString(data, 'endsAt', 100) &&
+        isOptNumber(data, 'defaultDiscountPercent') &&
+        isOptNumber(data, 'defaultOfferAmount') &&
+        isOptString(data, 'updatedAt', 100) &&
+        (!('liveBoxes' in data) || (data.liveBoxes is list && data.liveBoxes.size() <= 20)) &&
+        (!('deletedLiveIds' in data) || (data.deletedLiveIds is list && data.deletedLiveIds.size() <= 200 && (data.deletedLiveIds.size() == 0 || (data.deletedLiveIds[0] is string && data.deletedLiveIds[0].size() <= 128))));
+    }
+
+    function isValidLiveItem(data) {
+      return data.keys().hasAll(['id', 'title', 'originalPrice', 'offerPrice', 'visible']) &&
+        data.keys().hasOnly([
+          'id', 'boxId', 'sectionName', 'title', 'modelName', 'category', 'originalPrice', 'offerPrice',
+          'discountPercent', 'offerAmount', 'tag', 'description', 'images', 'videos',
+          'linkedProductId', 'visible', 'sortOrder', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        isOptString(data, 'boxId', 64) &&
+        isOptString(data, 'sectionName', 80) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.originalPrice is number && data.originalPrice >= 0 &&
+        data.offerPrice is number && data.offerPrice >= 0 &&
+        data.visible is bool &&
+        isOptString(data, 'modelName', 120) &&
+        isOptString(data, 'category', 100) &&
+        isOptNumber(data, 'discountPercent') &&
+        isOptNumber(data, 'offerAmount') &&
+        isOptString(data, 'tag', 80) &&
+        isOptString(data, 'description', 2000) &&
+        isOptString(data, 'linkedProductId', 128) &&
+        isOptNumber(data, 'sortOrder') &&
+        isOptString(data, 'createdAt', 100) &&
+        isOptString(data, 'updatedAt', 100) &&
+        (!('images' in data) || (data.images is list && data.images.size() <= 15 && (data.images.size() == 0 || (data.images[0] is string && data.images[0].size() <= 950000)))) &&
+        (!('videos' in data) || (data.videos is list && data.videos.size() <= 10 && (data.videos.size() == 0 || (data.videos[0] is string && data.videos[0].size() <= 950000))));
+    }
+
+    function isValidReview(data) {
+      return data.keys().hasAll(['productId', 'rating', 'comment', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'productId', 'productName', 'userId', 'userEmail', 'userName',
+          'location', 'rating', 'comment', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.productId is string && data.productId.size() >= 1 && data.productId.size() <= 128 &&
+        data.rating is number && data.rating >= 1 && data.rating <= 5 &&
+        data.comment is string && data.comment.size() >= 1 && data.comment.size() <= 2000 &&
+        isOptString(data, 'id', 128) &&
+        isOptString(data, 'productName', 200) &&
+        isOptString(data, 'userId', 128) &&
+        isOptString(data, 'userEmail', 200) &&
+        isOptString(data, 'userName', 120) &&
+        isOptString(data, 'location', 120) &&
+        isOptString(data, 'status', 50) &&
+        isOptString(data, 'createdAt', 100) &&
+        isOptString(data, 'updatedAt', 100);
     }
 
     // 4. Collection Rules
@@ -227,6 +340,18 @@ service cloud.firestore {
       allow get, list: if true;
       allow create, update: if isValidId(productId) && isValidProduct(incoming());
       allow delete: if isValidId(productId);
+    }
+
+    match /categories/{categoryId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(categoryId) && isValidCategory(incoming());
+      allow delete: if isValidId(categoryId);
+    }
+
+    match /live_items/{itemId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(itemId) && isValidLiveItem(incoming());
+      allow delete: if isValidId(itemId);
     }
 
     match /users/{userId} {
@@ -251,7 +376,8 @@ service cloud.firestore {
         (settingId == 'order_counter' && isValidOrderCounterSetting(incoming())) ||
         (settingId == 'categories' && isValidCategoriesSetting(incoming())) ||
         (settingId == 'catalog' && isValidCatalogSetting(incoming())) ||
-        (settingId == 'payment' && isValidPaymentSetting(incoming()))
+        (settingId == 'payment' && isValidPaymentSetting(incoming())) ||
+        (settingId == 'live' && isValidLiveSetting(incoming()))
       );
       allow delete: if isValidId(settingId);
     }
@@ -275,6 +401,12 @@ service cloud.firestore {
         incoming().createdAt == request.time;
       allow update: if isValidId(saleId) && isValidPromoterSale(incoming());
       allow delete: if isValidId(saleId);
+    }
+
+    match /reviews/{reviewId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(reviewId) && isValidReview(incoming());
+      allow delete: if isValidId(reviewId);
     }
   }
 }

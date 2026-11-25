@@ -168,14 +168,22 @@ export const ThemeSwitcher: React.FC<{ compact?: boolean; className?: string }> 
         onClick={() => setOpen(prev => !prev)}
         title={`Theme: ${currentThemeOption.name}`}
         aria-label="Change Color Theme"
-        className="h-9 flex items-center gap-1.5 bg-white border border-gray-200 text-gray-800 text-xs font-bold px-2.5 rounded-lg shadow-xs hover:border-blue-400 transition cursor-pointer whitespace-nowrap"
+        className={
+          compact
+            ? 'w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center bg-white border border-gray-200 text-gray-800 shadow-xs hover:border-blue-400 transition cursor-pointer shrink-0'
+            : 'h-9 flex items-center gap-1.5 bg-white border border-gray-200 text-gray-800 text-xs font-bold px-2.5 rounded-lg shadow-xs hover:border-blue-400 transition cursor-pointer whitespace-nowrap'
+        }
       >
         <span
-          className="w-3.5 h-3.5 rounded-full border border-gray-400/50 shrink-0"
+          className={
+            compact
+              ? 'w-4 h-4 rounded-full border border-gray-400/60 shrink-0 shadow-2xs'
+              : 'w-3.5 h-3.5 rounded-full border border-gray-400/50 shrink-0'
+          }
           style={{ backgroundColor: currentThemeOption.swatch }}
         />
         {!compact && <span>{currentThemeOption.shortName}</span>}
-        <span className="text-[9px] opacity-60">▼</span>
+        {!compact && <span className="text-[9px] opacity-60">▼</span>}
       </button>
 
       {open && (
